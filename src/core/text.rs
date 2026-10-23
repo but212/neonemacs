@@ -27,8 +27,12 @@ impl Text {
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.buf.len() - (self.gap_end - self.gap_start)
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn byte_at(&self, pos: usize) -> u8 {

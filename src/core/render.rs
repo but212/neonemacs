@@ -3,14 +3,36 @@
 
 use crate::core::commands::column;
 use crate::core::editor::{Buffer, Dir, Editor, Layout, Window};
+use crate::core::syntax::{TokenKind, detect_lang, highlight_line};
 use crate::core::text::{Text, Unit};
 use crate::core::width::{char_width, unit_width};
+
+/// A single terminal cell containing display glyph and syntax style (I-22).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cell {
+    pub glyph: String,
+    pub style: TokenKind,
+}
+
+impl Cell {
+    pub fn plain(glyph: String) -> Self {
+        Self {
+            glyph,
+            style: TokenKind::Normal,
+        }
+    }
+
+    pub fn space() -> Self {
+        Self::plain(" ".to_owned())
+    }
+}
 
 /// A screen as text rows of exactly the terminal width, and the cursor as `(x, y)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub rows: Vec<String>,
     pub cursor: (usize, usize),
+    pub styles: Vec<Vec<TokenKind>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +149,7 @@ fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
 /// Builds the screen. Pure: call `scroll` first to bring point into view.
 pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     let tab = usize::from(ed.config.tab_width);
-    let mut grid = vec![vec![" ".to_owned(); cols]; rows];
+    let mut grid = vec![vec![Cell::space(); cols]; rows];
     let leaves = ed.layout.windows();
     let mut cursor = (0, 0);
 
@@ -137,12 +159,19 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
             .iter()
             .find(|b| b.id == w.buffer)
             .expect("window refers to a live buffer (I-08)");
-        let (body, (row, col)) = window_cells(&buf.text, w, area, tab);
+        let lang = detect_lang(&buf.name);
+        let (body, (row, col)) = window_cells(&buf.text, w, area, tab, lang);
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
         let status = fit(&status_text(buf, w.point), area.w, '-');
-        grid = put(grid, area.y + area.h.saturating_sub(1), area.x, status);
+        let status_cells: Vec<Cell> = status.into_iter().map(Cell::plain).collect();
+        grid = put(
+            grid,
+            area.y + area.h.saturating_sub(1),
+            area.x,
+            status_cells,
+        );
         if i == ed.selected {
             cursor = (area.x + col, area.y + row);
         }
@@ -150,19 +179,31 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
 
     if rows > 0 {
         let echo = fit(&ed.message, cols, ' ');
-        grid = put(grid, rows - 1, 0, echo);
+        let echo_cells: Vec<Cell> = echo.into_iter().map(Cell::plain).collect();
+        grid = put(grid, rows - 1, 0, echo_cells);
     }
+
+    let rows_str = grid
+        .iter()
+        .map(|row| row.iter().map(|c| c.glyph.as_str()).collect::<String>())
+        .collect();
+    let styles = grid
+        .iter()
+        .map(|row| row.iter().map(|c| c.style).collect())
+        .collect();
+
     Frame {
-        rows: grid.iter().map(|r| r.concat()).collect(),
+        rows: rows_str,
         cursor,
+        styles,
     }
 }
 
-fn put(mut grid: Vec<Vec<String>>, row: usize, col: usize, cells: Vec<String>) -> Vec<Vec<String>> {
+fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
     if let Some(line) = grid.get_mut(row) {
-        for (i, cell) in cells.into_iter().enumerate() {
+        for (i, item) in items.into_iter().enumerate() {
             if let Some(slot) = line.get_mut(col + i) {
-                *slot = cell;
+                *slot = item;
             }
         }
     }
@@ -175,7 +216,8 @@ fn window_cells(
     w: &Window,
     area: Rect,
     tab: usize,
-) -> (Vec<Vec<String>>, (usize, usize)) {
+    lang: Option<&str>,
+) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
     let p = w.point.min(text.len());
     let mut cursor = (0, 0);
@@ -183,7 +225,7 @@ fn window_cells(
     let mut s = w.top;
     for r in 0..height {
         if s > text.len() {
-            body.push(vec![" ".to_owned(); area.w]);
+            body.push(vec![Cell::space(); area.w]);
             continue;
         }
         let e = text.line_end(s);
@@ -191,7 +233,7 @@ fn window_cells(
             let col = column(text, p, tab).saturating_sub(w.left_col);
             cursor = (r, col);
         }
-        body.push(line_cells(text, s, e, w.left_col, area.w, tab));
+        body.push(line_cells(text, s, e, w.left_col, area.w, tab, lang));
         s = e + 1;
     }
     (body, cursor)
@@ -206,16 +248,29 @@ fn line_cells(
     left: usize,
     width: usize,
     tab: usize,
-) -> Vec<String> {
-    let mut cells = vec![" ".to_owned(); width];
+    lang: Option<&str>,
+) -> Vec<Cell> {
+    let mut cells = vec![Cell::space(); width];
     let right = left + width;
     let mut col = 0;
     let mut p = start;
     let mut cut = false;
+
+    let line_bytes = text.bytes(start..end);
+    let line_str = String::from_utf8_lossy(&line_bytes);
+    let token_kinds = highlight_line(lang, &line_str);
+    let mut char_idx = 0;
+
     while p < end {
         let Some((unit, n)) = text.unit_at(p) else {
             break;
         };
+        let style = token_kinds
+            .get(char_idx)
+            .copied()
+            .unwrap_or(TokenKind::Normal);
+        char_idx += 1;
+
         if col >= right {
             cut = true;
             break;
@@ -224,13 +279,13 @@ fn line_cells(
         if w == 0 {
             // Combining mark: attach to the cell before it.
             if col > left && col - left - 1 < width {
-                cells[col - left - 1].push(unit_char(unit));
+                cells[col - left - 1].glyph.push(unit_char(unit));
             }
         } else {
             for (k, g) in glyph(unit_char(unit), w).into_iter().enumerate() {
                 let c = col + k;
                 if c >= left && c < right {
-                    cells[c - left] = g;
+                    cells[c - left] = Cell { glyph: g, style };
                 }
             }
         }
@@ -238,7 +293,7 @@ fn line_cells(
         p += n;
     }
     if cut && width > 0 {
-        cells[width - 1] = "$".to_owned();
+        cells[width - 1] = Cell::plain("$".to_owned());
     }
     cells
 }

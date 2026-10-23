@@ -8,6 +8,7 @@ pub mod file;
 pub mod keymap;
 pub mod render;
 pub mod search;
+pub mod syntax;
 pub mod text;
 pub mod undo;
 pub mod width;

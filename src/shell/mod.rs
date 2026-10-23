@@ -7,7 +7,9 @@
 
 pub mod file;
 pub mod lua;
+pub mod session;
 pub mod terminal;
+pub mod wal;
 
 use crate::core::editor::Editor;
 use crate::core::effect::{Effect, Effects, Event};
@@ -17,6 +19,47 @@ use mlua::Lua;
 use std::cell::RefCell;
 use std::fs;
 use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
+
+/// A running background shell command.
+pub struct ShellTask {
+    pub receiver: mpsc::Receiver<Result<String, String>>,
+}
+
+/// Runs `command` in a background thread without blocking the editor UI (I-24).
+pub fn spawn_shell(command: String) -> ShellTask {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let res = run_shell(&command);
+        let _ = tx.send(res);
+    });
+    ShellTask { receiver: rx }
+}
+
+/// Applies `event` in an interactive session. Spawns `RunShell` in the background (I-24)
+/// while performing other effects immediately.
+pub fn handle_interactive(
+    ed: Editor,
+    lua: Option<&Lua>,
+    event: Event,
+) -> (Editor, Option<ShellTask>) {
+    let (ed, effects) = step(ed, event);
+    let mut async_task = None;
+    let mut sync_effects = Vec::new();
+    for effect in effects {
+        if let Effect::RunShell { command } = effect {
+            async_task = Some(spawn_shell(command));
+        } else {
+            sync_effects.push(effect);
+        }
+    }
+    let mut ed = perform_all(ed, lua, sync_effects);
+    if async_task.is_some() {
+        ed.message = "[Running...]".to_owned();
+    }
+    (ed, async_task)
+}
 
 /// Applies `event` to the editor and performs the effects it causes. Returns the new editor.
 pub fn handle(ed: Editor, lua: Option<&Lua>, event: Event) -> Editor {
@@ -85,10 +128,13 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             id,
             state: file::disk_state(&path),
         },
-        Effect::WriteFile { id, path, bytes } => Event::Written {
-            id,
-            result: file::save(&path, &bytes).map_err(|e| e.to_string()),
-        },
+        Effect::WriteFile { id, path, bytes } => {
+            let result = file::save(&path, &bytes).map_err(|e| e.to_string());
+            if result.is_ok() {
+                wal::remove_wal(&path);
+            }
+            Event::Written { id, result }
+        }
         Effect::WriteUndo { id, path, bytes } => Event::UndoWritten {
             id,
             result: file::save(&undo::undo_path(&path), &bytes)

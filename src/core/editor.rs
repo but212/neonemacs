@@ -12,6 +12,7 @@ use crate::core::text::Text;
 use crate::core::undo::{Edit, UndoLog};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct BufferId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +52,7 @@ impl Layout {
         }
     }
 
-    pub fn leaf_count(&self) -> usize {
+    pub const fn leaf_count(&self) -> usize {
         match self {
             Layout::Leaf(_) => 1,
             Layout::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
@@ -262,6 +263,12 @@ pub struct Editor {
 /// Typed characters that share one undo group.
 const TYPED_GROUP: usize = 20;
 
+impl Default for Editor {
+    fn default() -> Self {
+        Self::new(Config::default())
+    }
+}
+
 impl Editor {
     pub fn new(config: Config) -> Self {
         let scratch = Buffer::new(
@@ -325,6 +332,27 @@ impl Editor {
     pub fn with_current_buffer(self, f: impl FnOnce(Buffer) -> Buffer) -> Self {
         let id = self.window().buffer;
         self.with_buffer(id, f)
+    }
+
+    /// Restores the content of the buffer visiting `path` from WAL bytes (I-23).
+    pub fn restore_buffer_content(self, path: &std::path::Path, bytes: &[u8]) -> Self {
+        let found = self
+            .buffers
+            .iter()
+            .find(|b| match &b.backing {
+                Backing::File { path: p, .. } => p == path,
+                Backing::None => false,
+            })
+            .map(|b| b.id);
+        if let Some(id) = found {
+            self.with_buffer(id, |mut buf| {
+                buf.text = Text::from_bytes(bytes);
+                buf.modified = true;
+                buf
+            })
+        } else {
+            self
+        }
     }
 
     /// Adds a buffer and returns its id. Ids are never reused.

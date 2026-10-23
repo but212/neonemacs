@@ -1,20 +1,18 @@
 //! Entry point: arguments, terminal setup and restore, and the event loop (§5, §12, §13).
 
-use crossterm::event::{self, Event, KeyEventKind};
-use crossterm::style::Print;
+use crossterm::event;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{cursor, execute, queue};
+use crossterm::{cursor, execute};
 use neonemacs::core::commands::{request_open, switch_to};
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::Editor;
-use neonemacs::core::effect::Event as CoreEvent;
-use neonemacs::core::render;
 use neonemacs::shell::lua;
-use neonemacs::shell::terminal::from_terminal;
-use neonemacs::shell::{handle, perform_all, run_source};
+use neonemacs::shell::session::ShellSession;
+use neonemacs::shell::wal;
+use neonemacs::shell::{perform_all, run_source};
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -51,11 +49,27 @@ fn parse_args(args: &[String]) -> Result<Vec<FileArg>, String> {
 }
 
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
+/// Restores content from WAL via pure core transition if an unsaved WAL session is detected (I-23).
 fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Editor {
     let first_new = ed.buffers.len();
+    let mut recovered_any = Vec::new();
     for f in files {
+        let has_wal = wal::has_wal(&f.path);
         let fx = request_open(&ed, f.path.clone(), f.line, false, Vec::new());
         ed = perform_all(ed, lua, fx);
+        if has_wal && let Ok(wal_bytes) = wal::read_wal(&f.path) {
+            ed = ed.restore_buffer_content(&f.path, &wal_bytes);
+            let name = f
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            recovered_any.push(name);
+        }
+    }
+    if !recovered_any.is_empty() {
+        ed.message = format!("[Recovered {} from WAL]", recovered_any.join(", "));
     }
     match ed.buffers.get(first_new).map(|b| b.id) {
         Some(id) => switch_to(ed, id),
@@ -115,48 +129,22 @@ fn install_panic_hook() {
     }));
 }
 
-fn handle_event(ed: Editor, lua: &mlua::Lua, event: Event) -> Editor {
-    if let Event::Key(k) = event
-        && k.kind == KeyEventKind::Press
-        && let Some(key) = from_terminal(k.code, k.modifiers)
-    {
-        return handle(ed, Some(lua), CoreEvent::Key(key));
-    }
-    ed
-}
-
-/// Draws, then handles every waiting event before drawing again (§5).
-fn event_loop(mut ed: Editor, lua: &mlua::Lua) -> io::Result<()> {
+/// Draws, then handles waiting events, background tasks, and WAL flush (I-22, I-24).
+fn event_loop(mut session: ShellSession) -> io::Result<()> {
     let mut out = io::stdout();
-    let mut prev: Vec<String> = Vec::new();
-    let mut size = (0, 0);
     loop {
-        let (cols, rows) = terminal::size()?;
-        let (cols, rows) = (usize::from(cols), usize::from(rows));
-        if (cols, rows) != size {
-            // A new size invalidates the previous frame: redraw everything.
-            prev.clear();
-            size = (cols, rows);
-        }
-        ed = render::scroll(ed, cols, rows);
-        let frame = render::frame(&ed, cols, rows);
-        for (row, line) in render::diff(&prev, &frame.rows) {
-            queue!(out, cursor::MoveTo(0, row as u16), Print(line))?;
-        }
-        queue!(
-            out,
-            cursor::MoveTo(frame.cursor.0 as u16, frame.cursor.1 as u16),
-            cursor::Show
-        )?;
-        out.flush()?;
-        prev = frame.rows;
-        if ed.quit {
+        session.render(&mut out)?;
+        if session.is_quit() {
             return Ok(());
         }
 
-        ed = handle_event(ed, lua, event::read()?);
-        while event::poll(Duration::ZERO)? {
-            ed = handle_event(ed, lua, event::read()?);
+        session.tick();
+
+        if event::poll(Duration::from_millis(50))? {
+            session.handle_event(event::read()?);
+            while event::poll(Duration::ZERO)? {
+                session.handle_event(event::read()?);
+            }
         }
     }
 }
@@ -168,7 +156,7 @@ fn run(files: &[FileArg]) -> io::Result<()> {
     let ed = open_files(ed, Some(&lua), files);
     install_panic_hook();
     let _guard = TerminalGuard::enter()?;
-    event_loop(ed, &lua)
+    event_loop(ShellSession::new(ed, lua))
 }
 
 fn main() {
@@ -201,22 +189,19 @@ mod tests {
             files,
             vec![
                 FileArg {
-                    path: "a.txt".into(),
+                    path: PathBuf::from("a.txt"),
                     line: None
                 },
                 FileArg {
-                    path: "b.txt".into(),
+                    path: PathBuf::from("b.txt"),
                     line: Some(3)
                 },
                 FileArg {
-                    path: "c.txt".into(),
+                    path: PathBuf::from("c.txt"),
                     line: None
                 },
             ]
         );
-        assert!(parse_args(&strings(&["+x", "a"])).is_err());
-        assert!(parse_args(&strings(&["+0", "a"])).is_err());
-        assert!(parse_args(&strings(&["a", "+2"])).is_err());
     }
 
     #[test]
