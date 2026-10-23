@@ -312,7 +312,7 @@ impl Editor {
         self
     }
 
-    pub fn leaf_count(&self) -> usize {
+    pub const fn leaf_count(&self) -> usize {
         self.layout.leaf_count()
     }
 
@@ -421,7 +421,7 @@ impl Editor {
         (ed.end_command(), fx)
     }
 
-    fn begin_command(mut self) -> Self {
+    const fn begin_command(mut self) -> Self {
         self.prev = self.last;
         self.last = LastCommand::Other;
         self

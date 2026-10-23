@@ -10,8 +10,8 @@ pub struct Config {
     pub undo_limit: usize,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    pub const fn new() -> Self {
         Self {
             fill_column: 70,
             tab_width: 8,
@@ -19,6 +19,12 @@ impl Default for Config {
             max_file_size: 64 << 20,
             undo_limit: 4 << 20,
         }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

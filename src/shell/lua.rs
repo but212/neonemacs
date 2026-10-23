@@ -137,7 +137,7 @@ pub(crate) fn call_lua(lua: &Lua, name: &str) -> mlua::Result<()> {
     }
 }
 
-fn to_lua(value: Value) -> LuaValue {
+const fn to_lua(value: Value) -> LuaValue {
     match value {
         Value::Int(n) => LuaValue::Integer(n),
         Value::Bool(b) => LuaValue::Boolean(b),

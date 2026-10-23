@@ -29,7 +29,7 @@ pub struct Key {
 pub struct KeyError(pub String);
 
 impl Key {
-    pub fn plain(code: Code) -> Key {
+    pub const fn plain(code: Code) -> Key {
         Key {
             code,
             ctrl: false,
@@ -37,16 +37,16 @@ impl Key {
         }
     }
 
-    pub fn ctrl(c: char) -> Key {
+    pub const fn ctrl(c: char) -> Key {
         ctrl_key(c)
     }
 
-    pub fn with_meta(self) -> Key {
+    pub const fn with_meta(self) -> Key {
         Key { meta: true, ..self }
     }
 
     /// The character this key inserts, if it is plain text.
-    pub fn text(self) -> Option<char> {
+    pub const fn text(self) -> Option<char> {
         match (self.code, self.ctrl, self.meta) {
             (Code::Char(c), false, false) => Some(c),
             (Code::Enter, false, false) => Some('\n'),
@@ -82,7 +82,7 @@ impl Key {
     }
 }
 
-pub fn ctrl_key(c: char) -> Key {
+pub const fn ctrl_key(c: char) -> Key {
     let code = match c.to_ascii_lowercase() {
         '_' | '/' | '7' => Code::Char('_'),
         ' ' | '@' | '2' => Code::Char(' '),

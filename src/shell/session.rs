@@ -31,7 +31,7 @@ pub struct ActiveShell {
 }
 
 impl ActiveShell {
-    pub fn new(task: ShellTask) -> Self {
+    pub const fn new(task: ShellTask) -> Self {
         Self {
             task,
             tick: 0,
@@ -39,7 +39,7 @@ impl ActiveShell {
         }
     }
 
-    pub fn set_notice(&mut self, notice: ShellNotice) {
+    pub const fn set_notice(&mut self, notice: ShellNotice) {
         self.notice = Some(notice);
     }
 
@@ -80,7 +80,7 @@ impl ShellSession {
         }
     }
 
-    pub fn is_quit(&self) -> bool {
+    pub const fn is_quit(&self) -> bool {
         self.ed.quit
     }
 

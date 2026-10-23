@@ -30,7 +30,7 @@ impl Edit {
         }
     }
 
-    fn size(&self) -> usize {
+    const fn size(&self) -> usize {
         match self {
             Edit::Insert { bytes, .. } | Edit::Delete { bytes, .. } => bytes.len(),
         }
@@ -47,7 +47,7 @@ pub struct UndoLog {
 }
 
 impl UndoLog {
-    pub fn new(limit: usize) -> Self {
+    pub const fn new(limit: usize) -> Self {
         Self {
             groups: Vec::new(),
             open: false,
@@ -75,7 +75,7 @@ impl UndoLog {
         self.trim()
     }
 
-    pub fn close(mut self) -> Self {
+    pub const fn close(mut self) -> Self {
         self.open = false;
         self
     }

@@ -14,6 +14,13 @@ pub struct Text {
 }
 
 impl Text {
+    pub const fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            gap_start: 0,
+            gap_end: 0,
+        }
+    }
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Self::from_vec(bytes.to_vec())
     }
