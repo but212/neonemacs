@@ -8,8 +8,8 @@ use crate::core::step;
 use crate::core::syntax::TokenKind;
 use crate::shell::terminal::from_terminal;
 use crate::shell::wal;
-use crate::shell::{ShellTask, handle_interactive, perform_all};
-use crossterm::event::{Event as TermEvent, KeyEventKind};
+use crate::shell::{ShellOutcome, ShellTask, handle_interactive, perform_all};
+use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal;
 use crossterm::{cursor, queue};
@@ -17,11 +17,50 @@ use mlua::Lua;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
+/// Notice attached to a running shell task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellNotice {
+    AlreadyRunning,
+}
+
+/// State of an active background shell command.
+pub struct ActiveShell {
+    pub task: ShellTask,
+    tick: usize,
+    notice: Option<ShellNotice>,
+}
+
+impl ActiveShell {
+    pub fn new(task: ShellTask) -> Self {
+        Self {
+            task,
+            tick: 0,
+            notice: None,
+        }
+    }
+
+    pub fn set_notice(&mut self, notice: ShellNotice) {
+        self.notice = Some(notice);
+    }
+
+    pub fn format_status(&mut self) -> String {
+        const SPINNER: &[char] = &['|', '/', '-', '\\'];
+        self.tick = self.tick.wrapping_add(1);
+        let ch = SPINNER[self.tick % SPINNER.len()];
+        match self.notice {
+            Some(ShellNotice::AlreadyRunning) => {
+                format!("[Running... {ch}] A shell command is already running")
+            }
+            None => format!("[Running... {ch}]"),
+        }
+    }
+}
+
 /// Manages interactive editor state, background tasks, idle WAL scheduling, and screen updates.
 pub struct ShellSession {
     pub ed: Editor,
     pub lua: Lua,
-    active_shell: Option<(ShellTask, usize)>,
+    active_shell: Option<ActiveShell>,
     last_edit_time: Instant,
     needs_wal_flush: bool,
     prev_rows: Vec<String>,
@@ -52,10 +91,20 @@ impl ShellSession {
             && let Some(key) = from_terminal(k.code, k.modifiers)
         {
             let ed = std::mem::take(&mut self.ed);
-            let (new_ed, new_task) = handle_interactive(ed, Some(&self.lua), CoreEvent::Key(key));
+            let shell_busy = self.active_shell.is_some();
+            let (new_ed, outcome) =
+                handle_interactive(ed, Some(&self.lua), CoreEvent::Key(key), shell_busy);
             self.ed = new_ed;
-            if let Some(task) = new_task {
-                self.active_shell = Some((task, 0));
+            match outcome {
+                ShellOutcome::Spawned(task) => {
+                    self.active_shell = Some(ActiveShell::new(task));
+                }
+                ShellOutcome::BusyRejected => {
+                    if let Some(active) = &mut self.active_shell {
+                        active.set_notice(ShellNotice::AlreadyRunning);
+                    }
+                }
+                ShellOutcome::None => {}
             }
             self.last_edit_time = Instant::now();
             self.needs_wal_flush = true;
@@ -65,8 +114,8 @@ impl ShellSession {
     /// Periodic tick for background tasks and idle WAL scheduling (I-23, I-24).
     pub fn tick(&mut self) {
         // 1. Check background shell task
-        if let Some((task, tick)) = &mut self.active_shell {
-            match task.receiver.try_recv() {
+        if let Some(active) = &mut self.active_shell {
+            match active.task.receiver.try_recv() {
                 Ok(result) => {
                     let ed = std::mem::take(&mut self.ed);
                     let (new_ed, fx) = step(ed, CoreEvent::ShellDone(result));
@@ -74,10 +123,7 @@ impl ShellSession {
                     self.active_shell = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    const SPINNER: &[char] = &['|', '/', '-', '\\'];
-                    *tick += 1;
-                    let ch = SPINNER[*tick % SPINNER.len()];
-                    self.ed.message = format!("[Running... {ch}]");
+                    self.ed.message = active.format_status();
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.active_shell = None;
@@ -125,6 +171,25 @@ impl ShellSession {
         out.flush()?;
         self.prev_rows = frame.rows;
         Ok(())
+    }
+
+    /// Draws, then handles waiting events, background tasks, and WAL flush in a loop (I-22, I-24).
+    pub fn run(mut self, out: &mut impl Write) -> io::Result<()> {
+        loop {
+            self.render(out)?;
+            if self.is_quit() {
+                return Ok(());
+            }
+
+            self.tick();
+
+            if event::poll(Duration::from_millis(50))? {
+                self.handle_event(event::read()?);
+                while event::poll(Duration::ZERO)? {
+                    self.handle_event(event::read()?);
+                }
+            }
+        }
     }
 }
 

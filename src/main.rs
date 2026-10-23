@@ -1,6 +1,5 @@
 //! Entry point: arguments, terminal setup and restore, and the event loop (§5, §12, §13).
 
-use crossterm::event;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
 use neonemacs::core::commands::{request_open, switch_to};
@@ -14,7 +13,6 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// One file argument with the line from a preceding `+n`, if any.
 #[derive(Debug, PartialEq, Eq)]
@@ -129,26 +127,6 @@ fn install_panic_hook() {
     }));
 }
 
-/// Draws, then handles waiting events, background tasks, and WAL flush (I-22, I-24).
-fn event_loop(mut session: ShellSession) -> io::Result<()> {
-    let mut out = io::stdout();
-    loop {
-        session.render(&mut out)?;
-        if session.is_quit() {
-            return Ok(());
-        }
-
-        session.tick();
-
-        if event::poll(Duration::from_millis(50))? {
-            session.handle_event(event::read()?);
-            while event::poll(Duration::ZERO)? {
-                session.handle_event(event::read()?);
-            }
-        }
-    }
-}
-
 fn run(files: &[FileArg]) -> io::Result<()> {
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().map_err(|e| io::Error::other(e.to_string()))?;
@@ -156,7 +134,7 @@ fn run(files: &[FileArg]) -> io::Result<()> {
     let ed = open_files(ed, Some(&lua), files);
     install_panic_hook();
     let _guard = TerminalGuard::enter()?;
-    event_loop(ShellSession::new(ed, lua))
+    ShellSession::new(ed, lua).run(&mut io::stdout())
 }
 
 fn main() {

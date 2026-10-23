@@ -23,8 +23,17 @@ use std::sync::mpsc;
 use std::thread;
 
 /// A running background shell command.
+#[derive(Debug)]
 pub struct ShellTask {
     pub receiver: mpsc::Receiver<Result<String, String>>,
+}
+
+/// The result of an interactive shell command dispatch.
+#[derive(Debug)]
+pub enum ShellOutcome {
+    None,
+    Spawned(ShellTask),
+    BusyRejected,
 }
 
 /// Runs `command` in a background thread without blocking the editor UI (I-24).
@@ -38,27 +47,38 @@ pub fn spawn_shell(command: String) -> ShellTask {
 }
 
 /// Applies `event` in an interactive session. Spawns `RunShell` in the background (I-24)
-/// while performing other effects immediately.
+/// while performing other effects immediately. If `shell_busy` is true, rejects new shell commands.
 pub fn handle_interactive(
     ed: Editor,
     lua: Option<&Lua>,
     event: Event,
-) -> (Editor, Option<ShellTask>) {
+    shell_busy: bool,
+) -> (Editor, ShellOutcome) {
     let (ed, effects) = step(ed, event);
-    let mut async_task = None;
+    let mut outcome = ShellOutcome::None;
     let mut sync_effects = Vec::new();
     for effect in effects {
         if let Effect::RunShell { command } = effect {
-            async_task = Some(spawn_shell(command));
+            if shell_busy {
+                outcome = ShellOutcome::BusyRejected;
+            } else {
+                outcome = ShellOutcome::Spawned(spawn_shell(command));
+            }
         } else {
             sync_effects.push(effect);
         }
     }
     let mut ed = perform_all(ed, lua, sync_effects);
-    if async_task.is_some() {
-        ed.message = "[Running...]".to_owned();
+    match &outcome {
+        ShellOutcome::Spawned(_) => {
+            ed.message = "[Running...]".to_owned();
+        }
+        ShellOutcome::BusyRejected => {
+            ed.message = "[Running...] A shell command is already running".to_owned();
+        }
+        ShellOutcome::None => {}
     }
-    (ed, async_task)
+    (ed, outcome)
 }
 
 /// Applies `event` to the editor and performs the effects it causes. Returns the new editor.

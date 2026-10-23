@@ -31,6 +31,7 @@ Previously:
 
 - Uses `std::thread::spawn` and `std::sync::mpsc` without pulling in heavy async runtimes like Tokio.
 - `handle_interactive` in `src/shell/mod.rs` intercepts `Effect::RunShell`, dispatches it to a background thread, and immediately returns control to the editor with a `[Running...]` status.
+- If a shell command is already active when another is submitted, the new request is rejected with `[Running... <spinner>] A shell command is already running`, preventing background thread leaks and silent result loss (**I-24**).
 - The event loop polls crossterm with a 50ms timeout. Background shell tasks rotate a smooth spinner in the echo area and emit `Event::ShellDone` to the core upon completion (**I-24**).
 
 ### 3. Idle Delta WAL Crash Recovery (I-23, I-25)
