@@ -1,0 +1,258 @@
+//! Gap buffer over raw bytes. Boundaries are local (I-02).
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    Char(char),
+    Raw(u8),
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Text {
+    buf: Vec<u8>,
+    gap_start: usize,
+    gap_end: usize,
+}
+
+impl Text {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self::from_vec(bytes.to_vec())
+    }
+
+    pub fn from_vec(buf: Vec<u8>) -> Self {
+        let n = buf.len();
+        Self {
+            buf,
+            gap_start: n,
+            gap_end: n,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.len() - (self.gap_end - self.gap_start)
+    }
+
+    pub fn byte_at(&self, pos: usize) -> u8 {
+        if pos < self.gap_start {
+            self.buf[pos]
+        } else {
+            self.buf[pos + self.gap_end - self.gap_start]
+        }
+    }
+
+    pub fn bytes(&self, range: std::ops::Range<usize>) -> Vec<u8> {
+        range.map(|i| self.byte_at(i)).collect()
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.len());
+        out.extend_from_slice(&self.buf[..self.gap_start]);
+        out.extend_from_slice(&self.buf[self.gap_end..]);
+        out
+    }
+
+    pub fn insert(self, pos: usize, bytes: &[u8]) -> Self {
+        let mut t = self.move_gap(pos).reserve_gap(bytes.len());
+        t.buf[t.gap_start..t.gap_start + bytes.len()].copy_from_slice(bytes);
+        t.gap_start += bytes.len();
+        t
+    }
+
+    /// Removes `range`. Read the bytes first with `bytes` if they are needed.
+    pub fn delete(self, range: std::ops::Range<usize>) -> Self {
+        let mut t = self.move_gap(range.start);
+        t.gap_end += range.len();
+        t
+    }
+
+    fn move_gap(mut self, pos: usize) -> Self {
+        if pos < self.gap_start {
+            let n = self.gap_start - pos;
+            self.buf.copy_within(pos..self.gap_start, self.gap_end - n);
+            self.gap_start = pos;
+            self.gap_end -= n;
+        } else if pos > self.gap_start {
+            let n = pos - self.gap_start;
+            self.buf
+                .copy_within(self.gap_end..self.gap_end + n, self.gap_start);
+            self.gap_start += n;
+            self.gap_end += n;
+        }
+        self
+    }
+
+    fn reserve_gap(mut self, need: usize) -> Self {
+        if self.gap_end - self.gap_start >= need {
+            return self;
+        }
+        let grow = need + self.len().max(64) / 2;
+        let tail = self.buf.split_off(self.gap_end);
+        self.buf.truncate(self.gap_start);
+        self.buf.resize(self.gap_start + grow, 0);
+        self.buf.extend_from_slice(&tail);
+        self.gap_end = self.gap_start + grow;
+        self
+    }
+
+    fn decode_at(&self, pos: usize) -> (Unit, usize) {
+        let lead = self.byte_at(pos);
+        let (extra, bits) = match lead {
+            0x00..=0x7F => return (Unit::Char(lead as char), 1),
+            0xC0..=0xDF => (1, 0x1F),
+            0xE0..=0xEF => (2, 0x0F),
+            0xF0..=0xF7 => (3, 0x07),
+            _ => return (Unit::Raw(lead), 1),
+        };
+        if pos + extra >= self.len() {
+            return (Unit::Raw(lead), 1);
+        }
+        let mut cp = u32::from(lead & bits);
+        for i in 1..=extra {
+            let b = self.byte_at(pos + i);
+            if b & 0xC0 != 0x80 {
+                return (Unit::Raw(lead), 1);
+            }
+            cp = cp << 6 | u32::from(b & 0x3F);
+        }
+        match char::from_u32(cp) {
+            Some(c) => (Unit::Char(c), extra + 1),
+            None => (Unit::Raw(lead), 1),
+        }
+    }
+
+    /// Unit starting at `pos`, with its byte length. `None` at end.
+    pub fn unit_at(&self, pos: usize) -> Option<(Unit, usize)> {
+        (pos < self.len()).then(|| self.decode_at(pos))
+    }
+
+    /// True when `pos` is the start of a unit or the end of the text.
+    pub fn is_boundary(&self, pos: usize) -> bool {
+        let len = self.len();
+        if pos > len {
+            return false;
+        }
+        if pos == 0 || pos == len || self.byte_at(pos) & 0xC0 != 0x80 {
+            return true;
+        }
+        let lo = pos.saturating_sub(3);
+        !(lo..pos).any(|q| q + self.decode_at(q).1 > pos)
+    }
+
+    /// Largest boundary strictly before `pos`. `pos` must be in `1..=len`.
+    pub fn prev_boundary(&self, pos: usize) -> usize {
+        let mut q = pos - 1;
+        while !self.is_boundary(q) {
+            q -= 1;
+        }
+        q
+    }
+
+    /// Smallest boundary strictly after `pos`.
+    pub fn next_boundary(&self, pos: usize) -> usize {
+        let len = self.len();
+        let mut q = pos + 1;
+        while q < len && !self.is_boundary(q) {
+            q += 1;
+        }
+        q.min(len)
+    }
+
+    /// Start of line `n` (1-based). Past the last line, the start of the last line.
+    pub fn nth_line_start(&self, n: usize) -> usize {
+        let mut pos = 0;
+        for _ in 1..n {
+            let end = self.line_end(pos);
+            if end >= self.len() {
+                break;
+            }
+            pos = end + 1;
+        }
+        pos
+    }
+
+    /// Start of the line containing `pos`.
+    pub fn line_start(&self, pos: usize) -> usize {
+        (0..pos)
+            .rev()
+            .find(|&i| self.byte_at(i) == b'\n')
+            .map_or(0, |i| i + 1)
+    }
+
+    /// Position of the `\n` ending the line containing `pos`, or the end of text.
+    pub fn line_end(&self, pos: usize) -> usize {
+        let len = self.len();
+        (pos..len)
+            .find(|&i| self.byte_at(i) == b'\n')
+            .unwrap_or(len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn starts(t: &Text) -> Vec<usize> {
+        let mut v = Vec::new();
+        let mut p = 0;
+        while let Some((_, n)) = t.unit_at(p) {
+            v.push(p);
+            p += n;
+        }
+        v.push(t.len());
+        v
+    }
+
+    #[test]
+    fn decode_units() {
+        let t = Text::from_bytes("가".as_bytes());
+        assert_eq!(t.unit_at(0), Some((Unit::Char('가'), 3)));
+
+        let t = Text::from_bytes(&[0xC0, 0xAF]);
+        assert_eq!(t.unit_at(0), Some((Unit::Char('/'), 2)));
+
+        let t = Text::from_bytes(&[0xE9]);
+        assert_eq!(t.unit_at(0), Some((Unit::Raw(0xE9), 1)));
+
+        let t = Text::from_bytes(&[0xE4, 0xB8]);
+        assert_eq!(t.unit_at(0), Some((Unit::Raw(0xE4), 1)));
+        assert_eq!(t.unit_at(1), Some((Unit::Raw(0xB8), 1)));
+    }
+
+    #[test]
+    fn boundary_symmetry() {
+        // a | 가 | E4 | B8 | b | C0 AF
+        let t = Text::from_bytes(&[b'a', 0xEA, 0xB0, 0x80, 0xE4, 0xB8, b'b', 0xC0, 0xAF]);
+        let s = starts(&t);
+        assert_eq!(s, vec![0, 1, 4, 5, 6, 7, 9]);
+        for p in 0..=t.len() {
+            assert_eq!(t.is_boundary(p), s.contains(&p), "is_boundary({p})");
+            if p > 0 {
+                let prev = *s.iter().rev().find(|&&b| b < p).unwrap();
+                assert_eq!(t.prev_boundary(p), prev, "prev_boundary({p})");
+            }
+            if p < t.len() {
+                let next = *s.iter().find(|&&b| b > p).unwrap();
+                assert_eq!(t.next_boundary(p), next, "next_boundary({p})");
+            }
+        }
+    }
+
+    #[test]
+    fn gap_edits_round_trip() {
+        let t = Text::from_bytes(b"hello")
+            .insert(5, b" world")
+            .insert(0, b">> ");
+        assert_eq!(t.to_bytes(), b">> hello world");
+        assert_eq!(t.bytes(3..9), b"hello ");
+        let t = t.delete(3..9);
+        assert_eq!(t.to_bytes(), b">> world");
+        assert_eq!(t.byte_at(3), b'w');
+    }
+
+    #[test]
+    fn line_helpers() {
+        let t = Text::from_bytes(b"ab\ncd\n");
+        assert_eq!(t.line_start(4), 3);
+        assert_eq!(t.line_end(4), 5);
+        assert_eq!(t.line_start(0), 0);
+    }
+}
