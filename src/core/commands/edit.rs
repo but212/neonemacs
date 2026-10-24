@@ -1,13 +1,16 @@
 //! Text modification, kill ring, and formatting commands (§6).
 
 use crate::core::commands::motion::region;
-use crate::core::commands::util::{delete_range, insert_at, is_space, paragraph_at, span_width};
+use crate::core::commands::util::{
+    delete_range, insert_at, is_space, paragraph_at, safe_point, sanitize_point, span_width,
+};
 use crate::core::editor::{Buffer, Editor, LastCommand};
 use crate::core::effect::Effects;
 use crate::core::undo::Edit;
 
 pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
+    let ed = sanitize_point(ed);
+    let p = safe_point(&ed);
     if p == 0 {
         return (ed, fx);
     }
@@ -16,7 +19,8 @@ pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects)
 }
 
 pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
+    let ed = sanitize_point(ed);
+    let p = safe_point(&ed);
     if p >= ed.buffer().text.len() {
         return (ed, fx);
     }
@@ -49,7 +53,8 @@ pub(crate) fn kill_ring_save(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 /// Kills to the end of the line, or the newline when already at the end.
 pub(crate) fn kill_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
+    let ed = sanitize_point(ed);
+    let p = safe_point(&ed);
     let text = &ed.buffer().text;
     let line_end = text.line_end(p);
     let end = if line_end == p && p < text.len() {
