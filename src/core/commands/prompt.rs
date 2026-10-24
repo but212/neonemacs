@@ -327,4 +327,121 @@ mod tests {
         assert_eq!(out.text.to_bytes(), b"a\nb");
         assert_eq!(ed.leaf_count(), 2);
     }
+
+    #[test]
+    fn common_prefix_edge_cases() {
+        assert_eq!(common_prefix(&[]), "");
+        assert_eq!(common_prefix(&["only"]), "only");
+        assert_eq!(common_prefix(&["abc", "xyz"]), "");
+        assert_eq!(common_prefix(&["prefix_a", "prefix_b", "prefix_c"]), "prefix_");
+        assert_eq!(common_prefix(&["short", "shorthand"]), "short");
+        // UTF-8 multibyte characters and emojis
+        assert_eq!(common_prefix(&["가나다라", "가나다마"]), "가나다");
+        assert_eq!(common_prefix(&["가나", "각"]), "");
+        assert_eq!(common_prefix(&["🦀rust", "🦀ruby"]), "🦀ru");
+    }
+
+    #[test]
+    fn completion_multi_candidate_and_no_match() {
+        let ed = editor();
+        // Multi candidate expands to common prefix and formats candidate notes
+        let p = Prompt {
+            label: "M-x ".into(),
+            input: "is".into(),
+            purpose: Purpose::ExecuteCommand,
+        };
+        let (p, note) = complete(&ed, p);
+        assert_eq!(p.input, "isearch-");
+        let note = note.expect("should produce candidates note");
+        assert!(note.contains("isearch-forward"));
+        assert!(note.contains("isearch-backward"));
+
+        // No match candidate
+        let p_none = Prompt {
+            label: "M-x ".into(),
+            input: "nonexistent_command_prefix".into(),
+            purpose: Purpose::ExecuteCommand,
+        };
+        let (p_none, note_none) = complete(&ed, p_none);
+        assert_eq!(p_none.input, "nonexistent_command_prefix");
+        assert_eq!(note_none.as_deref(), Some("No match"));
+
+        // Buffer candidates completion
+        let (ed, _) = ed.add_buffer("alpha_1", Text::default(), Backing::None);
+        let (ed, _) = ed.add_buffer("alpha_2", Text::default(), Backing::None);
+        let p_buf = Prompt {
+            label: "Switch to buffer: ".into(),
+            input: "alph".into(),
+            purpose: Purpose::SwitchBuffer,
+        };
+        let (p_buf, note_buf) = complete(&ed, p_buf);
+        assert_eq!(p_buf.input, "alpha_");
+        let note_buf = note_buf.expect("should produce buffer candidates note");
+        assert!(note_buf.contains("alpha_1"));
+        assert!(note_buf.contains("alpha_2"));
+    }
+
+    #[test]
+    fn prompt_key_non_prompt_mode_is_noop() {
+        let ed = editor();
+        assert_eq!(ed.mode(), &Mode::Normal { prefix: Prefix::None });
+        let (same_ed, same_fx) = prompt_key(ed.clone(), Key::plain(Code::Char('a')), Vec::new());
+        assert_eq!(same_ed.mode(), ed.mode());
+        assert!(same_fx.is_empty());
+    }
+
+    #[test]
+    fn shell_done_and_lua_done_hostile_and_edge_branches() {
+        let ed = editor();
+
+        // Empty shell output
+        let ed_empty = shell_done(ed.clone(), Ok(String::new()));
+        assert_eq!(ed_empty.message(), "(no output)");
+        let ed_crlf = shell_done(ed.clone(), Ok("\r\n\r\n".into()));
+        assert_eq!(ed_crlf.message(), "(no output)");
+
+        // Shell error output
+        let ed_err = shell_done(ed.clone(), Err("command failed: 127".into()));
+        assert_eq!(ed_err.message(), "command failed: 127");
+
+        // Shell command with empty string produces no effects
+        let fx = run_shell("", Vec::new());
+        assert!(fx.is_empty());
+
+        // Multi-line shell output when windows are already split
+        let ed_split = split(ed.clone(), Dir::Below);
+        assert_eq!(ed_split.leaf_count(), 2);
+        let ed_out1 = shell_done(ed_split, Ok("line 1\r\nline 2".into()));
+        assert_eq!(ed_out1.leaf_count(), 2);
+        assert_eq!(
+            ed_out1
+                .buffers()
+                .iter()
+                .find(|b| b.name == "*Shell Command Output*")
+                .map(|b| b.text.to_bytes()),
+            Some(b"line 1\nline 2".to_vec())
+        );
+
+        // Re-running reuses the existing *Shell Command Output* buffer and selects other window from leaf
+        let ed_out2 = shell_done(ed_out1, Ok("new 1\nnew 2\nnew 3".into()));
+        assert_eq!(ed_out2.leaf_count(), 2);
+        assert_eq!(
+            ed_out2
+                .buffers()
+                .iter()
+                .filter(|b| b.name == "*Shell Command Output*")
+                .count(),
+            1
+        );
+
+        // lua_done success and multi-line error
+        let ed_lua_ok = lua_done(ed.clone(), Ok(()));
+        assert!(ed_lua_ok.message().is_empty());
+
+        let ed_lua_err = lua_done(
+            ed,
+            Err("first error line\nsecond traceback line\nthird line".into()),
+        );
+        assert_eq!(ed_lua_err.message(), "first error line");
+    }
 }
