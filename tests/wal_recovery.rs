@@ -1,13 +1,19 @@
 //! C-04, C-05, C-06, I-23, I-25: Lightweight WAL (Write-Ahead Log) crash recovery.
 
+use crossterm::event::{
+    Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+};
 use neonemacs::core::commands::request_open;
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::Editor;
 use neonemacs::core::effect::Event;
-use neonemacs::core::keymap::{Code, Key, parse_keys};
+use neonemacs::core::keymap::parse_keys;
+use neonemacs::shell::lua;
+use neonemacs::shell::session::ShellSession;
 use neonemacs::shell::wal;
 use neonemacs::shell::{handle, perform_all};
 use std::fs;
+use std::time::{Duration, Instant};
 
 #[test]
 fn regular_save_cleans_up_existing_wal() {
@@ -73,18 +79,33 @@ fn typing_and_idle_wal_recording() {
     fs::write(&file, "line1\n").unwrap();
 
     let ed = Editor::new(Config::default());
+    let lua = lua::new_state().unwrap();
     let fx = request_open(&ed, file.clone(), None, true, Vec::new());
-    let mut ed = perform_all(ed, None, fx);
+    let ed = perform_all(ed, Some(&lua), fx);
+    let mut session = ShellSession::new(ed, lua);
+    let t0 = Instant::now();
 
-    // Type "new text"
+    // Type "new text" through ShellSession
     for c in "new text".chars() {
-        ed = handle(ed, None, Event::Key(Key::plain(Code::Char(c))));
+        session.handle_event_at(
+            TermEvent::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            }),
+            t0,
+        );
     }
 
-    assert!(ed.buffer().modified);
+    assert!(session.ed.buffer().modified);
 
-    // Simulate the Idle flush (as in main.rs 1s timer)
-    wal::write_wal(&file, &ed.buffer().text.to_bytes()).unwrap();
+    // Before 1s idle threshold (999ms): WAL must not be written yet
+    session.tick_at(t0 + Duration::from_millis(999));
+    assert!(!wal::has_wal(&file));
+
+    // At 1s idle threshold (1000ms): ShellSession::tick_at persists WAL automatically
+    session.tick_at(t0 + Duration::from_millis(1000));
     assert!(wal::has_wal(&file));
 
     let recovered = wal::read_wal(&file).unwrap();

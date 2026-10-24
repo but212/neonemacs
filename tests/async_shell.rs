@@ -1,12 +1,16 @@
 //! C-02, C-03, I-24: Async shell task queue execution without blocking.
 
+use crossterm::event::{
+    Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+};
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::Editor;
 use neonemacs::core::effect::Event;
 use neonemacs::core::keymap::parse_keys;
-use neonemacs::shell::session::{ActiveShell, ShellNotice};
+use neonemacs::shell::lua;
+use neonemacs::shell::session::{ActiveShell, ShellNotice, ShellSession};
 use neonemacs::shell::{ShellOutcome, handle_interactive, spawn_shell};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[test]
 fn async_shell_spawns_and_receives_output() {
@@ -141,4 +145,59 @@ fn active_shell_tracks_spinner_and_typed_notice() {
     active.set_notice(ShellNotice::AlreadyRunning);
     let s2 = active.format_status();
     assert!(s2.starts_with("[Running... -] A shell command is already running"));
+}
+
+#[test]
+fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
+    let ed = Editor::new(Config::default());
+    let lua = lua::new_state().unwrap();
+    let mut session = ShellSession::new(ed, lua);
+    let t0 = Instant::now();
+
+    let press = |code: KeyCode, modifiers: KeyModifiers| {
+        TermEvent::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    };
+
+    // Type buffer content, then launch `M-x shell-command RET echo session_async_ok RET`
+    for c in "hello world".chars() {
+        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+    }
+    session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    for c in "shell-command".chars() {
+        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+    }
+    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    for c in "echo session_async_ok".chars() {
+        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+    }
+    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    assert_eq!(session.ed.message, "[Running...]");
+
+    // Move to beginning of buffer (`C-a`) and start I-search (`C-s`) while shell is running;
+    // tick must not overwrite I-search echo even if the background command completes mid-search.
+    session.handle_event_at(press(KeyCode::Char('a'), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(press(KeyCode::Char('s'), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(press(KeyCode::Char('w'), KeyModifiers::NONE), t0);
+    assert_eq!(session.ed.message, "I-search: w");
+    session.tick_at(t0 + Duration::from_millis(50));
+    assert_eq!(session.ed.message, "I-search: w");
+
+    // Exit I-search with Enter -> back to Normal mode
+    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+
+    // Poll tick until background command completes
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        session.tick_at(Instant::now());
+        if session.ed.message == "session_async_ok" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(session.ed.message, "session_async_ok");
 }
