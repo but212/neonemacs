@@ -39,7 +39,7 @@ pub fn typ(mut ed: Editor, s: &str) -> Editor {
 
 /// Runs a command and performs its effects.
 pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Effects)) -> Editor {
-    let (ed, fx) = ed.command(Vec::new(), run);
+    let (ed, fx) = crate::core::dispatch::command(ed, Vec::new(), run);
     perform_all(ed, None, fx)
 }
 

@@ -1,26 +1,66 @@
 //! Text modification, kill ring, and formatting commands (§6).
+//!
+//! Separated into two layers:
+//! - Layer 1: Pure domain calculations on `Text` and positions.
+//! - Layer 2: Built-in command adapters operating on `Editor`.
 
 use crate::core::commands::motion::region;
 use crate::core::commands::util::{delete_range, insert_at};
 use crate::core::editor::{Buffer, Editor, LastCommand};
 use crate::core::effect::Effects;
+use crate::core::text::Text;
+
+// --- Layer 1: Pure domain primitives ---
+
+/// Computes the delete range for backward deletion from `point`.
+pub fn delete_backward_char_range(text: &Text, point: usize) -> Option<(usize, usize)> {
+    if point == 0 {
+        None
+    } else {
+        Some((text.prev_boundary(point), point))
+    }
+}
+
+/// Computes the delete range for forward deletion from `point`.
+pub fn delete_char_range(text: &Text, point: usize) -> Option<(usize, usize)> {
+    if point >= text.len() {
+        None
+    } else {
+        Some((point, text.next_boundary(point)))
+    }
+}
+
+/// Computes the range to kill from `point` to the end of the line (or newline).
+pub fn kill_line_range(text: &Text, point: usize) -> Option<(usize, usize)> {
+    let line_end = text.line_end(point);
+    let end = if line_end == point && point < text.len() {
+        point + 1
+    } else {
+        line_end
+    };
+    if point >= end {
+        None
+    } else {
+        Some((point, end))
+    }
+}
+
+// --- Layer 2: Built-in command adapters ---
 
 pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    if p == 0 {
+    let Some((start, end)) = delete_backward_char_range(&ed.buffer().text, p) else {
         return (ed, fx);
-    }
-    let start = ed.buffer().text.prev_boundary(p);
-    (delete_range(ed, start, p).0, fx)
+    };
+    (delete_range(ed, start, end).0, fx)
 }
 
 pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    if p >= ed.buffer().text.len() {
+    let Some((start, end)) = delete_char_range(&ed.buffer().text, p) else {
         return (ed, fx);
-    }
-    let end = ed.buffer().text.next_boundary(p);
-    (delete_range(ed, p, end).0, fx)
+    };
+    (delete_range(ed, start, end).0, fx)
 }
 
 pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -47,17 +87,10 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
 /// Kills to the end of the line, or the newline when already at the end.
 pub(crate) fn kill_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let text = &ed.buffer().text;
-    let line_end = text.line_end(p);
-    let end = if line_end == p && p < text.len() {
-        p + 1
-    } else {
-        line_end
-    };
-    if p >= end {
+    let Some((start, end)) = kill_line_range(&ed.buffer().text, p) else {
         return (ed, fx);
-    }
-    (ed.kill_range(p, end), fx)
+    };
+    (ed.kill_range(start, end), fx)
 }
 
 pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {

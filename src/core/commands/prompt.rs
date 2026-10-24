@@ -157,7 +157,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
     let input = p.input;
     match p.purpose {
-        Purpose::ExecuteCommand => ed.run_named(&input, fx),
+        Purpose::ExecuteCommand => crate::core::dispatch::run_named(ed, &input, fx),
         Purpose::FindFile => find_file(ed, &input, fx),
         Purpose::WriteFile => write_file(ed, &input, fx),
         Purpose::SwitchBuffer => (switch_to_named(ed, &input), fx),
@@ -178,7 +178,7 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
                 )
             }
         }
-        Purpose::QueryTo { regex, from } => ed.command(fx, |e, fx| {
+        Purpose::QueryTo { regex, from } => crate::core::dispatch::command(ed, fx, |e, fx| {
             let (e, result) = start_query_replace(e, &from, &input, regex);
             let e = match result {
                 Ok(()) => e,

@@ -1,9 +1,21 @@
 //! Buffer switching/killing and window layout commands (§4, §5).
+//!
+//! Separated into two layers:
+//! - Layer 1: Pure domain logic on buffer IDs, layout transitions, and confirmation predicates.
+//! - Layer 2: Built-in command adapters operating on `Editor`.
 
 use crate::core::commands::util::ask;
 use crate::core::editor::{Buffer, BufferId, Confirm, Dir, Editor, Window};
-use crate::core::effect::Effect;
-use crate::core::effect::Effects;
+use crate::core::effect::{Effect, Effects};
+
+// --- Layer 1: Pure domain primitives ---
+
+/// Returns true if killing the buffer requires user confirmation.
+pub fn kill_requires_confirmation(is_modified: bool) -> bool {
+    is_modified
+}
+
+// --- Layer 2: Built-in command adapters ---
 
 pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (split(ed, Dir::Below), fx)
@@ -51,7 +63,7 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
 
 /// Kills buffer `id`. A modified buffer asks first.
 pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
-    if ed.buffer_by_id(id).modified {
+    if kill_requires_confirmation(ed.buffer_by_id(id).modified) {
         (
             ask(
                 ed,

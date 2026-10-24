@@ -1,5 +1,6 @@
 //! File operations: save check flow, reading, reverting, and confirmation (§8, ADR 0002).
 
+use crate::core::buffer::BufferPool;
 use crate::core::commands::buffer_window::{kill_now, switch_to};
 use crate::core::commands::util::{ask, request_open};
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor, Window, snap};
@@ -8,13 +9,49 @@ use crate::core::file::{Backing, DiskState, LoadExtent, loaded_from};
 use crate::core::undo::UndoLog;
 use std::path::PathBuf;
 
+// --- Layer 1: Pure domain primitives ---
+
+/// Returns true if any buffer in the pool has unsaved modifications.
+pub fn has_modified_buffers(pool: &BufferPool) -> bool {
+    pool.iter().any(|b| b.modified)
+}
+
+/// Save check result for a backing file.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SavePrecondition<'a> {
+    NoFile,
+    Truncated(&'a PathBuf),
+    Ready(&'a PathBuf),
+}
+
+/// Checks the save preconditions for a backing in I-04 order.
+pub fn check_save_precondition(backing: &Backing) -> SavePrecondition<'_> {
+    match backing {
+        Backing::File { path, extent, .. } => {
+            if *extent == LoadExtent::Truncated {
+                SavePrecondition::Truncated(path)
+            } else {
+                SavePrecondition::Ready(path)
+            }
+        }
+        Backing::None => SavePrecondition::NoFile,
+    }
+}
+
+/// Returns true if the external disk state changed since read (I-04).
+pub fn is_external_change(backing_disk: DiskState, disk_now: DiskState) -> bool {
+    matches!(backing_disk, DiskState::Known { .. }) && backing_disk != disk_now
+}
+
+// --- Layer 2: Built-in command adapters ---
+
 pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let id = ed.window().buffer;
     save_buffer(ed, id, fx)
 }
 
 pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    if ed.buffers().iter().any(|b| b.modified) {
+    if has_modified_buffers(ed.buffers()) {
         let ed = ask(
             ed,
             Confirm::QuitUnsaved,
@@ -36,19 +73,23 @@ fn file_state(ed: &Editor, id: BufferId) -> Option<(PathBuf, DiskState, LoadExte
 /// Saves `id`. The checks run in I-04 order: truncated file, then external change.
 /// A file-backed buffer asks the shell for its disk state first (`StatDisk`).
 pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
-    let Some((path, _, extent)) = file_state(&ed, id) else {
-        return (ed.set_message("No file is visiting this buffer"), fx);
-    };
-    if extent == LoadExtent::Truncated {
-        let ed = ask(
-            ed,
-            Confirm::SaveTruncated(id),
-            "File was truncated when read; save anyway? (y or n)",
-        );
-        (ed, fx)
-    } else {
-        fx.push(Effect::StatDisk { id, path });
-        (ed, fx)
+    match check_save_precondition(&ed.buffer_by_id(id).backing) {
+        SavePrecondition::NoFile => (ed.set_message("No file is visiting this buffer"), fx),
+        SavePrecondition::Truncated(_) => {
+            let ed = ask(
+                ed,
+                Confirm::SaveTruncated(id),
+                "File was truncated when read; save anyway? (y or n)",
+            );
+            (ed, fx)
+        }
+        SavePrecondition::Ready(path) => {
+            fx.push(Effect::StatDisk {
+                id,
+                path: path.clone(),
+            });
+            (ed, fx)
+        }
     }
 }
 
@@ -57,7 +98,7 @@ pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> 
     let Some((_, disk, _)) = file_state(&ed, id) else {
         return (ed, fx);
     };
-    if matches!(disk, DiskState::Known { .. }) && disk != state {
+    if is_external_change(disk, state) {
         let ed = ask(
             ed,
             Confirm::SaveExternal(id),

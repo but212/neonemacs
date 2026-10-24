@@ -76,7 +76,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
         let ed = ed.set_mode(Mode::Normal {
             prefix: Prefix::None,
         });
-        return ed.handle_normal_key(Prefix::None, key, fx);
+        return crate::core::dispatch::handle_normal_key(ed, Prefix::None, key, fx);
     };
     (ed.set_mode(Mode::Isearch(s)), fx)
 }

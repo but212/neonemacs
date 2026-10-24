@@ -3,6 +3,7 @@
 pub mod buffer;
 pub mod commands;
 pub mod config;
+pub mod dispatch;
 pub mod editor;
 pub mod effect;
 pub mod eol;
@@ -24,8 +25,8 @@ use crate::core::effect::{Effects, Event};
 pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
     let fx = Vec::new();
     match event {
-        Event::Key(key) => ed.handle_key(key, fx),
-        Event::Run(name) => ed.run_named(&name, fx),
+        Event::Key(key) => dispatch::handle_key(ed, key, fx),
+        Event::Run(name) => dispatch::run_named(ed, &name, fx),
         Event::Disk { id, state } => commands::disk_checked(ed, id, state, fx),
         Event::Written { id, result } => commands::written(ed, id, result, fx),
         Event::UndoWritten { id, result } => (commands::undo_written(ed, id, result), fx),

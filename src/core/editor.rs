@@ -3,11 +3,11 @@
 //! Every transition takes the editor by value and returns the new one.
 
 use crate::core::buffer::BufferPool;
-use crate::core::commands::{self, CommandRegistry};
+use crate::core::commands::CommandRegistry;
 use crate::core::config::Config;
-use crate::core::effect::{Effect, Effects};
+use crate::core::effect::Effects;
 use crate::core::file::Backing;
-use crate::core::keymap::{Code, Key, Keymap};
+use crate::core::keymap::Keymap;
 use crate::core::syntax::SyntaxRegistry;
 use crate::core::text::Text;
 use crate::core::undo::Edit;
@@ -405,17 +405,7 @@ impl Editor {
         })
     }
 
-    /// Runs one command. The undo group ends after every command that is not an insert.
-    pub fn command(
-        self,
-        fx: Effects,
-        run: impl FnOnce(Editor, Effects) -> (Editor, Effects),
-    ) -> (Editor, Effects) {
-        let (ed, fx) = run(self.begin_command(), fx);
-        (ed.end_command(), fx)
-    }
-
-    const fn begin_command(mut self) -> Self {
+    pub const fn begin_command(mut self) -> Self {
         self.prev = self.last;
         self.last = LastCommand::Other;
         self
@@ -427,91 +417,6 @@ impl Editor {
             self
         } else {
             self.boundary()
-        }
-    }
-
-    /// Handles one key press: resolves prefixes, then runs a bound command or inserts text.
-    pub fn handle_key(self, key: Key, fx: Effects) -> (Editor, Effects) {
-        match &self.mode {
-            Mode::Normal { prefix } => {
-                let prefix = *prefix;
-                self.handle_normal_key(prefix, key, fx)
-            }
-            Mode::Confirm(question) => {
-                let question = *question;
-                self.answer(question, key, fx)
-            }
-            Mode::Isearch(_) => commands::isearch_key(self, key, fx),
-            Mode::QueryReplace(_) => (commands::query_key(self, key), fx),
-            Mode::Prompt(_) => commands::prompt_key(self, key, fx),
-        }
-    }
-
-    /// Answers a yes-or-no question. `y` confirms, `n` and `C-g` cancel, other keys wait.
-    fn answer(mut self, question: Confirm, key: Key, fx: Effects) -> (Editor, Effects) {
-        let yes = key.text() == Some('y');
-        if yes || key.text() == Some('n') || key == Key::ctrl('g') {
-            self.mode = Mode::Normal {
-                prefix: Prefix::None,
-            };
-            if yes {
-                return commands::confirmed(self, question, fx);
-            }
-            self.message = "Cancelled".to_owned();
-        }
-        (self, fx)
-    }
-
-    pub fn handle_normal_key(mut self, prefix: Prefix, key: Key, fx: Effects) -> (Editor, Effects) {
-        self.mode = Mode::Normal {
-            prefix: Prefix::None,
-        };
-        if key == Key::ctrl('g') {
-            self.message = "Quit".to_owned();
-            return (self, fx);
-        }
-        let keys = match prefix {
-            Prefix::None => {
-                if key == Key::plain(Code::Esc) {
-                    self.mode = Mode::Normal {
-                        prefix: Prefix::Meta,
-                    };
-                    return (self, fx);
-                }
-                if key == Key::ctrl('x') {
-                    self.mode = Mode::Normal {
-                        prefix: Prefix::CtlX,
-                    };
-                    return (self, fx);
-                }
-                vec![key]
-            }
-            Prefix::CtlX => vec![Key::ctrl('x'), key],
-            Prefix::Meta => vec![key.with_meta()],
-        };
-        if let Some(name) = self.keymap.lookup(&keys).map(str::to_owned) {
-            self.run_named(&name, fx)
-        } else if let (Prefix::None, Some(c)) = (prefix, key.text()) {
-            self.command(fx, |e, fx| (e.self_insert(c), fx))
-        } else {
-            let seq: Vec<String> = keys.iter().map(|k| k.describe()).collect();
-            self.message = format!("{} is undefined", seq.join(" "));
-            (self, fx)
-        }
-    }
-
-    /// Runs the command `name`. A built-in runs now. Any other name is sent to Lua as `RunLua`;
-    /// its result comes back as `LuaDone`.
-    pub fn run_named(self, name: &str, mut fx: Effects) -> (Editor, Effects) {
-        match commands::find(name) {
-            Some(run) => self.command(fx, run),
-            None => {
-                let ed = self.begin_command();
-                fx.push(Effect::RunLua {
-                    name: name.to_owned(),
-                });
-                (ed, fx)
-            }
         }
     }
 
@@ -609,7 +514,7 @@ fn remap(edit: &Edit, a: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::core::keymap::{Code, Key};
     use crate::test_support::{press, run_command, text};
 
     fn editor_with(s: &str) -> Editor {
