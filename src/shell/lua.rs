@@ -9,7 +9,7 @@ use crate::core::effect::Event;
 use crate::core::keymap::KeyError;
 use crate::core::syntax::SyntaxDef;
 use crate::shell::{perform_in, step_in};
-use mlua::{Function, Lua, Table, Value as LuaValue};
+use mlua::{Function, Lua, Scope, Table, Value as LuaValue};
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -20,12 +20,16 @@ const COMMANDS: &str = "neonemacs_commands";
 /// The default syntax definitions bundled into the binary (§5, §12).
 pub const BUNDLED_SYNTAX: &str = include_str!("syntax.lua");
 
+/// Standard text transformation commands bundled into the binary (§6, §12).
+pub const BUNDLED_TEXT: &str = include_str!("text.lua");
+
 /// The default extended keymap bundled into the binary (§3, §12).
 pub const BUNDLED_KEYMAP: &str = include_str!("keymap.lua");
 
 /// All bundled scripts loaded during bootstrap, in evaluation order.
 pub const BUNDLED_SCRIPTS: &[(&str, &str)] = &[
     ("syntax.lua", BUNDLED_SYNTAX),
+    ("text.lua", BUNDLED_TEXT),
     ("keymap.lua", BUNDLED_KEYMAP),
 ];
 
@@ -98,100 +102,233 @@ pub fn with_api<R>(
     let depth = Cell::new(0);
     lua.scope(|scope| {
         let g = lua.globals();
-        g.set(
-            "bind",
-            scope.create_function(|_, (keys, name): (String, String)| {
-                mutate_editor(cell, |ed| {
-                    let keymap = ed
-                        .keymap()
-                        .clone()
-                        .bind_str(&keys, &name)
-                        .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
-                    Ok(ed.with_keymap(|_| keymap))
-                })
-            })?,
-        )?;
-        g.set(
-            "unbind",
-            scope.create_function(|_, keys: String| {
-                mutate_editor(cell, |ed| {
-                    let keymap = ed
-                        .keymap()
-                        .clone()
-                        .unbind_str(&keys)
-                        .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
-                    Ok(ed.with_keymap(|_| keymap))
-                })
-            })?,
-        )?;
-        g.set(
-            "command",
-            scope.create_function(|lua, (name, f): (String, Function)| {
-                if commands::find(&name).is_some() {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "{name} is a built-in command"
-                    )));
-                }
-                lua.globals().get::<Table>(COMMANDS)?.set(name, f)
-            })?,
-        )?;
-        g.set(
-            "run",
-            scope.create_function(|lua, name: String| {
-                if depth.get() >= MAX_RUN_DEPTH {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "{name}: run nested too deeply"
-                    )));
-                }
-                depth.set(depth.get() + 1);
-                let result = if commands::find(&name).is_some() {
-                    // The editor is put back before the effects run, so Lua they call can use get and set.
-                    let effects = step_in(cell, Event::Run(name));
-                    perform_in(cell, Some(lua), effects);
-                    Ok(())
-                } else {
-                    call_lua(lua, &name)
-                };
-                depth.set(depth.get() - 1);
-                result
-            })?,
-        )?;
-        g.set(
-            "get",
-            scope.create_function(|_, name: String| {
-                let ed = editor_ref(cell);
-                let value = ed.config().get(&name).map_err(mlua::Error::RuntimeError)?;
-                Ok(to_lua(value))
-            })?,
-        )?;
-        g.set(
-            "set",
-            scope.create_function(|_, (name, value): (String, LuaValue)| {
-                let value = from_lua(&value).map_err(mlua::Error::RuntimeError)?;
-                mutate_editor(cell, |ed| {
-                    let new_config = ed
-                        .config()
-                        .clone()
-                        .set(&name, value)
-                        .map_err(mlua::Error::RuntimeError)?;
-                    Ok(ed.set_config(new_config))
-                })
-            })?,
-        )?;
-        let syntax_table = lua.create_table()?;
-        syntax_table.set(
-            "register",
-            scope.create_function(|_, (name, spec): (String, Table)| {
-                let def = parse_syntax_def(name, spec)?;
-                mutate_editor(cell, |ed| {
-                    let new_registry = ed.syntax_registry().clone().register(def);
-                    Ok(ed.with_syntax_registry(new_registry))
-                })
-            })?,
-        )?;
-        g.set("syntax", syntax_table)?;
+        install_keymap_api(scope, &g, cell)?;
+        install_command_api(lua, scope, &g, cell, &depth)?;
+        install_config_api(scope, &g, cell)?;
+        install_syntax_api(lua, scope, &g, cell)?;
+        install_buffer_api(lua, scope, &g, cell)?;
         body(lua)
     })
+}
+
+fn install_keymap_api<'lua, 'scope>(
+    scope: &'lua Scope<'lua, 'scope>,
+    g: &Table,
+    cell: &'scope RefCell<Option<Editor>>,
+) -> mlua::Result<()> {
+    g.set(
+        "bind",
+        scope.create_function(|_, (keys, name): (String, String)| {
+            mutate_editor(cell, |ed| {
+                let keymap = ed
+                    .keymap()
+                    .clone()
+                    .bind_str(&keys, &name)
+                    .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+                Ok(ed.with_keymap(|_| keymap))
+            })
+        })?,
+    )?;
+    g.set(
+        "unbind",
+        scope.create_function(|_, keys: String| {
+            mutate_editor(cell, |ed| {
+                let keymap = ed
+                    .keymap()
+                    .clone()
+                    .unbind_str(&keys)
+                    .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+                Ok(ed.with_keymap(|_| keymap))
+            })
+        })?,
+    )?;
+    Ok(())
+}
+
+fn install_command_api<'lua, 'scope>(
+    _lua: &'lua Lua,
+    scope: &'lua Scope<'lua, 'scope>,
+    g: &Table,
+    cell: &'scope RefCell<Option<Editor>>,
+    depth: &'scope Cell<usize>,
+) -> mlua::Result<()> {
+    g.set(
+        "command",
+        scope.create_function(|lua, (name, f): (String, Function)| {
+            if commands::find(&name).is_some() {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "{name} is a built-in command"
+                )));
+            }
+            lua.globals().get::<Table>(COMMANDS)?.set(name, f)
+        })?,
+    )?;
+    g.set(
+        "run",
+        scope.create_function(|lua, name: String| {
+            if depth.get() >= MAX_RUN_DEPTH {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "{name}: run nested too deeply"
+                )));
+            }
+            depth.set(depth.get() + 1);
+            let result = if commands::find(&name).is_some() {
+                let effects = step_in(cell, Event::Run(name));
+                perform_in(cell, Some(lua), effects);
+                Ok(())
+            } else {
+                call_lua(lua, &name)
+            };
+            depth.set(depth.get() - 1);
+            result
+        })?,
+    )?;
+    Ok(())
+}
+
+fn install_config_api<'lua, 'scope>(
+    scope: &'lua Scope<'lua, 'scope>,
+    g: &Table,
+    cell: &'scope RefCell<Option<Editor>>,
+) -> mlua::Result<()> {
+    g.set(
+        "get",
+        scope.create_function(|_, name: String| {
+            let ed = editor_ref(cell);
+            let value = ed.config().get(&name).map_err(mlua::Error::RuntimeError)?;
+            Ok(to_lua(value))
+        })?,
+    )?;
+    g.set(
+        "set",
+        scope.create_function(|_, (name, value): (String, LuaValue)| {
+            let value = from_lua(&value).map_err(mlua::Error::RuntimeError)?;
+            mutate_editor(cell, |ed| {
+                let new_config = ed
+                    .config()
+                    .clone()
+                    .set(&name, value)
+                    .map_err(mlua::Error::RuntimeError)?;
+                Ok(ed.set_config(new_config))
+            })
+        })?,
+    )?;
+    Ok(())
+}
+
+fn install_syntax_api<'lua, 'scope>(
+    lua: &'lua Lua,
+    scope: &'lua Scope<'lua, 'scope>,
+    g: &Table,
+    cell: &'scope RefCell<Option<Editor>>,
+) -> mlua::Result<()> {
+    let syntax_table = lua.create_table()?;
+    syntax_table.set(
+        "register",
+        scope.create_function(|_, (name, spec): (String, Table)| {
+            let def = parse_syntax_def(name, spec)?;
+            mutate_editor(cell, |ed| {
+                let new_registry = ed.syntax_registry().clone().register(def);
+                Ok(ed.with_syntax_registry(new_registry))
+            })
+        })?,
+    )?;
+    g.set("syntax", syntax_table)?;
+    Ok(())
+}
+
+fn install_buffer_api<'lua, 'scope>(
+    lua: &'lua Lua,
+    scope: &'lua Scope<'lua, 'scope>,
+    g: &Table,
+    cell: &'scope RefCell<Option<Editor>>,
+) -> mlua::Result<()> {
+    let buffer_table = lua.create_table()?;
+    buffer_table.set(
+        "point",
+        scope.create_function(|_, ()| Ok(editor_ref(cell).window().point))?,
+    )?;
+    buffer_table.set(
+        "set_point",
+        scope.create_function(|_, pos: usize| {
+            mutate_editor(cell, |ed| Ok(ed.move_point(pos)))
+        })?,
+    )?;
+    buffer_table.set(
+        "len",
+        scope.create_function(|_, ()| Ok(editor_ref(cell).buffer().text.len()))?,
+    )?;
+    buffer_table.set(
+        "get_text",
+        scope.create_function(|_, (start, end): (Option<usize>, Option<usize>)| {
+            let ed = editor_ref(cell);
+            let text = &ed.buffer().text;
+            let len = text.len();
+            let s = start.unwrap_or(0).min(len);
+            let e = end.unwrap_or(len).min(len);
+            if s >= e {
+                return Ok(String::new());
+            }
+            let bytes = text.bytes(s..e);
+            String::from_utf8(bytes).map_err(|e| mlua::Error::RuntimeError(e.to_string()))
+        })?,
+    )?;
+    buffer_table.set(
+        "line_start",
+        scope.create_function(|_, pos: usize| {
+            let ed = editor_ref(cell);
+            let pos = pos.min(ed.buffer().text.len());
+            Ok(ed.buffer().text.line_start(pos))
+        })?,
+    )?;
+    buffer_table.set(
+        "line_end",
+        scope.create_function(|_, pos: usize| {
+            let ed = editor_ref(cell);
+            let pos = pos.min(ed.buffer().text.len());
+            Ok(ed.buffer().text.line_end(pos))
+        })?,
+    )?;
+    buffer_table.set(
+        "width",
+        scope.create_function(|_, s: String| {
+            let ed = editor_ref(cell);
+            let tab = usize::from(ed.config().tab_width);
+            Ok(crate::core::width::str_width(&s, tab))
+        })?,
+    )?;
+    buffer_table.set(
+        "insert",
+        scope.create_function(|_, (pos, text): (usize, String)| {
+            mutate_editor(cell, |ed| Ok(ed.insert_at(pos, text.as_bytes())))
+        })?,
+    )?;
+    buffer_table.set(
+        "delete",
+        scope.create_function(|_, (start, end): (usize, usize)| {
+            mutate_editor(cell, |ed| {
+                let (ed, _) = ed.delete_range(start, end);
+                Ok(ed)
+            })
+        })?,
+    )?;
+    buffer_table.set(
+        "kill",
+        scope.create_function(|_, (start, end): (usize, usize)| {
+            mutate_editor(cell, |ed| Ok(ed.kill_range(start, end)))
+        })?,
+    )?;
+    buffer_table.set(
+        "replace",
+        scope.create_function(|_, (start, end, text): (usize, usize, String)| {
+            mutate_editor(cell, |ed| {
+                let (ed, _) = ed.delete_range(start, end);
+                Ok(ed.insert_at(start, text.as_bytes()))
+            })
+        })?,
+    )?;
+    g.set("buffer", buffer_table)?;
+    Ok(())
 }
 
 fn parse_syntax_def(name: String, spec: Table) -> mlua::Result<SyntaxDef> {
@@ -438,6 +575,42 @@ mod tests {
     }
 
     #[test]
+    fn api_buffer_inspection_and_mutation() {
+        let lua = new_state().unwrap();
+        let ed = Editor::new(Config::default());
+        let (ed, id) = ed.add_buffer("test", crate::core::text::Text::from_bytes(b"hello world\nline two"), crate::core::file::Backing::None);
+        let ed = ed.with_window(|w| crate::core::editor::Window { buffer: id, point: 0, ..w });
+
+        let (ed, result) = script(&lua, ed, r#"
+            assert(buffer.len() == 20)
+            assert(buffer.point() == 0)
+            assert(buffer.get_text() == "hello world\nline two")
+            assert(buffer.get_text(0, 5) == "hello")
+            assert(buffer.line_start(3) == 0)
+            assert(buffer.line_end(3) == 11)
+            assert(buffer.line_start(15) == 12)
+            assert(buffer.width("가나") == 4)
+
+            buffer.set_point(5)
+            assert(buffer.point() == 5)
+
+            buffer.insert(5, " beautiful")
+            assert(buffer.get_text(0, 21) == "hello beautiful world")
+
+            buffer.delete(5, 15)
+            assert(buffer.get_text(0, 11) == "hello world")
+
+            buffer.replace(0, 5, "hi")
+            assert(buffer.get_text(0, 8) == "hi world")
+
+            buffer.kill(0, 3)
+            assert(buffer.get_text(0, 5) == "world")
+        "#);
+        result.unwrap();
+        assert_eq!(ed.kill_ring().entries(), &[b"hi ".to_vec()]);
+    }
+
+    #[test]
     fn bundled_keymap_loaded_by_bootstrap() {
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
@@ -467,20 +640,126 @@ mod tests {
     }
 
     #[test]
-    fn bundled_keymap_commands_all_exist_in_builtins() {
+    fn bundled_keymap_commands_all_exist() {
+        let lua = new_state().unwrap();
+        let _ed = bootstrap(Editor::new(Config::default()), &lua);
+        let commands_table: Table = lua.globals().get(COMMANDS).unwrap();
+
         for line in BUNDLED_KEYMAP.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("bind(") {
                 let parts: Vec<&str> = trimmed.split('"').collect();
                 if parts.len() >= 4 {
                     let cmd_name = parts[3];
+                    let in_builtins = commands::find(cmd_name).is_some();
+                    let in_lua = commands_table
+                        .get::<Option<Function>>(cmd_name)
+                        .unwrap()
+                        .is_some();
                     assert!(
-                        commands::find(cmd_name).is_some(),
-                        "bundled keymap.lua references non-existent builtin: '{cmd_name}'"
+                        in_builtins || in_lua,
+                        "bundled keymap.lua references non-existent command: '{cmd_name}'"
                     );
                 }
             }
         }
+    }
+
+    #[test]
+    fn text_commands_case_conversion_and_words() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"hello world test"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+
+        // upcase-word
+        let (ed, res) = script(&lua, ed, r#"run("upcase-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"HELLO world test");
+        assert_eq!(ed.window().point, 5);
+
+        // downcase-word
+        let ed = ed.move_point(0);
+        let (ed, res) = script(&lua, ed, r#"run("downcase-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"hello world test");
+
+        // capitalize-word
+        let ed = ed.move_point(6); // at 'world'
+        let (ed, res) = script(&lua, ed, r#"run("capitalize-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"hello World test");
+    }
+
+    #[test]
+    fn text_commands_whitespace_and_kills() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"first   second\t\tthird"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 7, // between "first" and "second" in spaces
+            ..w
+        });
+
+        // just-one-space
+        let (ed, res) = script(&lua, ed, r#"run("just-one-space")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"first second\t\tthird");
+
+        // delete-horizontal-space
+        let ed = ed.move_point(14); // in tabs between second and third
+        let (ed, res) = script(&lua, ed, r#"run("delete-horizontal-space")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"first secondthird");
+
+        // kill-word
+        let ed = ed.move_point(0);
+        let (ed, res) = script(&lua, ed, r#"run("kill-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b" secondthird");
+        assert_eq!(ed.kill_ring().entries(), &[b"first".to_vec()]);
+
+        // backward-kill-word
+        let ed = ed.move_point(12); // end of secondthird
+        let (ed, res) = script(&lua, ed, r#"run("backward-kill-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b" ");
+    }
+
+    #[test]
+    fn text_fill_paragraph_in_lua() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"  hello world foo bar"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+        let mut cfg = ed.config().clone();
+        cfg.fill_column = 12;
+        let ed = ed.set_config(cfg);
+
+        let (ed, res) = script(&lua, ed, r#"run("fill-paragraph")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"  hello\n  world foo\n  bar");
     }
 
     #[test]

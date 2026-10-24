@@ -17,6 +17,13 @@ bind("C-k", "kill-line")
 bind("C-x u", "undo")
 bind("M-y", "yank-pop")
 bind("M-q", "fill-paragraph")
+bind("M-u", "upcase-word")
+bind("M-l", "downcase-word")
+bind("M-c", "capitalize-word")
+bind("M-d", "kill-word")
+bind("M-DEL", "backward-kill-word")
+bind("M-SPC", "just-one-space")
+bind("M-\\", "delete-horizontal-space")
 
 -- Search & Navigation
 bind("C-r", "isearch-backward")

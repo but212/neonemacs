@@ -7,11 +7,6 @@ use crate::core::undo::Edit;
 use crate::core::width::unit_width;
 use std::path::PathBuf;
 
-pub(crate) const fn is_space(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\n')
-}
-
-/// Display column of `pos` from the start of its line.
 pub fn column(text: &Text, pos: usize, tab: usize) -> usize {
     let mut col = 0;
     let mut p = text.line_start(pos);
@@ -43,67 +38,13 @@ pub(crate) fn pos_at_column(text: &Text, line: usize, col: usize, tab: usize) ->
     p
 }
 
-/// Display width of `start..end`, with tabs measured from column 0.
-pub(crate) fn span_width(text: &Text, start: usize, end: usize, tab: usize) -> usize {
-    let mut col = 0;
-    let mut p = start;
-    while p < end {
-        let Some((unit, n)) = text.unit_at(p) else {
-            break;
-        };
-        col += unit_width(unit, col, tab);
-        p += n;
-    }
-    col
-}
-
-/// The paragraph around `p`: lines between blank lines. `None` on a blank line.
-pub(crate) fn paragraph_at(text: &Text, p: usize) -> Option<(usize, usize)> {
-    let blank = |line: usize| {
-        let end = text.line_end(line);
-        (line..end).all(|i| matches!(text.byte_at(i), b' ' | b'\t'))
-    };
-    let line = text.line_start(p);
-    if blank(line) {
-        return None;
-    }
-    let mut start = line;
-    while start > 0 {
-        let prev = text.line_start(start - 1);
-        if blank(prev) {
-            break;
-        }
-        start = prev;
-    }
-    let mut end = text.line_end(p);
-    while end < text.len() {
-        let next = end + 1;
-        if blank(next) {
-            break;
-        }
-        end = text.line_end(next);
-    }
-    Some((start, end))
-}
-
 pub(crate) fn ask(ed: Editor, question: Confirm, text: &str) -> Editor {
     ed.set_mode(Mode::Confirm(question)).set_message(text)
 }
 
 /// Deletes `start..end`. Returns the editor and the removed bytes.
 pub(crate) fn delete_range(ed: Editor, start: usize, end: usize) -> (Editor, Vec<u8>) {
-    let len = ed.buffer().text.len();
-    let start = start.min(len);
-    let end = end.min(len);
-    if start >= end {
-        return (ed, Vec::new());
-    }
-    let bytes = ed.buffer().text.bytes(start..end);
-    let (ed, _) = ed.apply(Edit::Delete {
-        pos: start,
-        bytes: bytes.clone(),
-    });
-    (ed, bytes)
+    ed.delete_range(start, end)
 }
 
 /// Inserts `bytes` at `pos` and leaves point after them.

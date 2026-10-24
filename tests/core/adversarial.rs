@@ -4,8 +4,7 @@
 use crate::common::{editor, keys, point, text, typ};
 use neonemacs::core::commands::find;
 use neonemacs::core::commands::table::BUILTINS;
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::{Editor, Mode, Prefix, Window};
+use neonemacs::core::editor::{Mode, Prefix, Window};
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {
@@ -67,36 +66,6 @@ fn snap_and_insert_clamping_prevents_gap_buffer_panic() {
     let oob_ed = typ(editor(), "abc").with_window(|w| Window { point: 9999, ..w });
     let oob_ed = oob_ed.self_insert('!');
     assert_eq!(text(&oob_ed), "abc!");
-}
-
-#[test]
-fn extreme_whitespace_and_empty_paragraphs() {
-    let fill_paragraph = find("fill-paragraph").unwrap();
-
-    // Only newlines and spaces
-    let ed = typ(editor(), "   \n\n\t\t\n   \n\n");
-    let (ed, _) = fill_paragraph(ed, Vec::new());
-    assert_eq!(ed.message(), "No paragraph at point");
-
-    // Single character with huge fill column
-    let config = Config {
-        fill_column: 1000,
-        ..Default::default()
-    };
-    let mut ed2 = Editor::new(config);
-    ed2 = typ(ed2, "x");
-    let (ed2, _) = fill_paragraph(ed2, Vec::new());
-    assert_eq!(text(&ed2), "x");
-
-    // Paragraph with fill_column smaller than word length
-    let config3 = Config {
-        fill_column: 2,
-        ..Default::default()
-    };
-    let mut ed3 = Editor::new(config3);
-    ed3 = typ(ed3, "supercalifragilistic");
-    let (ed3, _) = fill_paragraph(ed3, Vec::new());
-    assert_eq!(text(&ed3), "supercalifragilistic");
 }
 
 #[test]

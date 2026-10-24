@@ -1,10 +1,9 @@
 //! Text modification, kill ring, and formatting commands (§6).
 
 use crate::core::commands::motion::region;
-use crate::core::commands::util::{delete_range, insert_at, is_space, paragraph_at, span_width};
+use crate::core::commands::util::{delete_range, insert_at};
 use crate::core::editor::{Buffer, Editor, LastCommand};
 use crate::core::effect::Effects;
-use crate::core::undo::Edit;
 
 pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
@@ -31,9 +30,9 @@ pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
     if start >= end {
         return (ed, fx);
     }
-    let (ed, bytes) = delete_range(ed, start, end);
+    let ed = ed.kill_range(start, end);
     let ed = ed.with_current_buffer(|b| Buffer { mark: None, ..b });
-    (push_kill(ed, bytes), fx)
+    (ed, fx)
 }
 
 pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -58,18 +57,7 @@ pub(crate) fn kill_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
     if p >= end {
         return (ed, fx);
     }
-    let (ed, bytes) = delete_range(ed, p, end);
-    (push_kill(ed, bytes), fx)
-}
-
-/// Adds killed bytes to the kill ring. Consecutive kills append to one entry (I-09).
-fn push_kill(ed: Editor, bytes: Vec<u8>) -> Editor {
-    let ed = if ed.prev() == LastCommand::Kill {
-        ed.with_kill_ring(|kr| kr.append_last(&bytes))
-    } else {
-        ed.with_kill_ring(|kr| kr.push(bytes))
-    };
-    ed.set_last(LastCommand::Kill)
+    (ed.kill_range(p, end), fx)
 }
 
 pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -105,68 +93,6 @@ pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
-pub(crate) fn fill_paragraph(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
-    let fill = usize::from(ed.config().fill_column);
-    let tab = usize::from(ed.config().tab_width);
-    let text = &ed.buffer().text;
-    let Some((start, end)) = paragraph_at(text, p) else {
-        return (ed.set_message("No paragraph at point"), fx);
-    };
-    // The first line's indent is repeated on every line (A10).
-    let mut indent_end = start;
-    while indent_end < text.line_end(start) && matches!(text.byte_at(indent_end), b' ' | b'\t') {
-        indent_end += 1;
-    }
-    let indent = text.bytes(start..indent_end);
-    let indent_width = span_width(text, start, indent_end, tab);
-
-    let mut words = Vec::new();
-    let mut i = start;
-    while i < end {
-        if is_space(text.byte_at(i)) {
-            i += 1;
-            continue;
-        }
-        let word_start = i;
-        while i < end && !is_space(text.byte_at(i)) {
-            i += 1;
-        }
-        words.push((word_start, i));
-    }
-
-    let mut out = indent.clone();
-    let mut line_width = indent_width;
-    let mut line_has_word = false;
-    for (s, e) in words {
-        let w = span_width(text, s, e, tab);
-        if line_has_word && line_width + 1 + w > fill {
-            out.push(b'\n');
-            out.extend_from_slice(&indent);
-            line_width = indent_width;
-            line_has_word = false;
-        }
-        if line_has_word {
-            out.push(b' ');
-            line_width += 1;
-        }
-        out.extend(text.bytes(s..e));
-        line_width += w;
-        line_has_word = true;
-    }
-
-    let old = text.bytes(start..end);
-    let (ed, _) = ed.apply(Edit::Delete {
-        pos: start,
-        bytes: old,
-    });
-    let (ed, _) = ed.apply(Edit::Insert {
-        pos: start,
-        bytes: out,
-    });
-    (ed.move_point(start), fx)
-}
-
 pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let on = !ed.buffer().view_only;
     let ed = ed.with_current_buffer(|b| Buffer { view_only: on, ..b });
@@ -177,8 +103,7 @@ pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::Config;
-    use crate::core::editor::{KillRing, Window};
+    use crate::core::editor::KillRing;
     use crate::test_support::{editor, keys, point, run_command, text, typ};
 
     #[test]
@@ -230,36 +155,5 @@ mod tests {
         assert_eq!(text(&ed), "A");
         let ed = run_command(ed, yank_pop);
         assert_eq!(text(&ed), "B");
-    }
-
-    #[test]
-    fn fill_paragraph_breaks_at_spaces_by_width() {
-        let ed = editor().set_config(Config {
-            fill_column: 20,
-            ..*editor().config()
-        });
-        let ed = typ(ed, "가나다 라마바 사아자 차카타 파하");
-        let ed = run_command(ed, fill_paragraph);
-        assert_eq!(text(&ed), "가나다 라마바 사아자\n차카타 파하");
-    }
-
-    #[test]
-    fn fill_paragraph_keeps_indent_and_stops_at_blank_lines() {
-        let ed = editor().set_config(Config {
-            fill_column: 10,
-            ..*editor().config()
-        });
-        let ed = typ(ed, "  hello world foo");
-        let ed = run_command(ed, fill_paragraph);
-        assert_eq!(text(&ed), "  hello\n  world\n  foo");
-
-        let ed = editor().set_config(Config {
-            fill_column: 8,
-            ..*editor().config()
-        });
-        let ed = typ(ed, "aa bb cc dd ee ff\n\ndd ee");
-        let ed = ed.with_window(|w| Window { point: 0, ..w });
-        let ed = run_command(ed, fill_paragraph);
-        assert_eq!(text(&ed), "aa bb cc\ndd ee ff\n\ndd ee");
     }
 }

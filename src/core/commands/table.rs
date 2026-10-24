@@ -4,8 +4,8 @@ use crate::core::commands::buffer_window::{
     delete_other_windows, other_window, split_window_below, split_window_right,
 };
 use crate::core::commands::edit::{
-    delete_backward_char, delete_char, fill_paragraph, kill_line, kill_region, kill_ring_save,
-    view_mode, yank, yank_pop,
+    delete_backward_char, delete_char, kill_line, kill_region, kill_ring_save, view_mode, yank,
+    yank_pop,
 };
 use crate::core::commands::file::{
     revert_buffer, save_buffer_cmd, save_buffers_kill_emacs, toggle_eol,
@@ -42,7 +42,6 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
         "execute-extended-command",
         execute_extended_command as Builtin,
     ),
-    ("fill-paragraph", fill_paragraph as Builtin),
     ("find-file", find_file_cmd as Builtin),
     ("forward-char", forward_char as Builtin),
     ("goto-line", goto_line_cmd as Builtin),

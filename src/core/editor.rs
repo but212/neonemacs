@@ -339,6 +339,47 @@ impl Editor {
         (self, dropped_res)
     }
 
+    /// Deletes `start..end`. Returns the editor and the removed bytes.
+    pub fn delete_range(self, start: usize, end: usize) -> (Self, Vec<u8>) {
+        let len = self.buffer().text.len();
+        let start = start.min(len);
+        let end = end.min(len);
+        if start >= end {
+            return (self, Vec::new());
+        }
+        let bytes = self.buffer().text.bytes(start..end);
+        let (ed, _) = self.apply(Edit::Delete {
+            pos: start,
+            bytes: bytes.clone(),
+        });
+        (ed, bytes)
+    }
+
+    /// Deletes `start..end` and pushes the removed bytes to the kill ring.
+    /// Consecutive kills append to one entry (I-09).
+    pub fn kill_range(self, start: usize, end: usize) -> Self {
+        let (ed, bytes) = self.delete_range(start, end);
+        if bytes.is_empty() {
+            return ed;
+        }
+        let ed = if ed.prev == LastCommand::Kill || ed.last == LastCommand::Kill {
+            ed.with_kill_ring(|kr| kr.append_last(&bytes))
+        } else {
+            ed.with_kill_ring(|kr| kr.push(bytes))
+        };
+        ed.set_last(LastCommand::Kill)
+    }
+
+    /// Inserts `bytes` at `pos` and moves point after them.
+    pub fn insert_at(self, pos: usize, bytes: &[u8]) -> Self {
+        let pos = pos.min(self.buffer().text.len());
+        let (ed, _) = self.apply(Edit::Insert {
+            pos,
+            bytes: bytes.to_vec(),
+        });
+        ed.move_point(pos + bytes.len())
+    }
+
     /// Moves point to `pos`, snapped to a unit boundary (I-01).
     pub fn move_point(self, pos: usize) -> Self {
         let pos = snap(&self.buffer().text, pos);
@@ -738,5 +779,22 @@ mod tests {
         let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());
         let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
         assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
+    }
+
+    #[test]
+    fn editor_delete_and_kill_range_appends_consecutive() {
+        let ed = Editor::new(Config::default());
+        let (ed, id) = ed.add_buffer("test", crate::core::text::Text::from_bytes(b"hello wonderful world"), crate::core::editor::Backing::None);
+        let ed = ed.with_window(|w| Window { buffer: id, point: 0, ..w });
+
+        // Kill "hello "
+        let ed = ed.kill_range(0, 6);
+        assert_eq!(ed.buffer().text.to_bytes(), b"wonderful world");
+        assert_eq!(ed.kill_ring().entries(), &[b"hello ".to_vec()]);
+
+        // Consecutive kill "wonderful " -> should append to the same kill ring entry (I-09)
+        let ed = ed.kill_range(0, 10);
+        assert_eq!(ed.buffer().text.to_bytes(), b"world");
+        assert_eq!(ed.kill_ring().entries(), &[b"hello wonderful ".to_vec()]);
     }
 }

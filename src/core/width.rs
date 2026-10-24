@@ -23,6 +23,15 @@ pub fn char_width(c: char) -> usize {
     }
 }
 
+/// Display columns occupied by string `s`, starting at column 0.
+pub fn str_width(s: &str, tab_width: usize) -> usize {
+    let mut col = 0;
+    for c in s.chars() {
+        col += unit_width(Unit::Char(c), col, tab_width);
+    }
+    col
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,5 +52,10 @@ mod tests {
         assert_eq!(unit_width(Unit::Char('\u{1161}'), 0, 8), 0);
         assert_eq!(unit_width(Unit::Char('\u{11AB}'), 0, 8), 0);
         assert_eq!(unit_width(Unit::Char('\u{200D}'), 0, 8), 0);
+
+        assert_eq!(str_width("hello", 8), 5);
+        assert_eq!(str_width("가나", 8), 4);
+        assert_eq!(str_width("\t", 8), 8);
+        assert_eq!(str_width("a\tb", 8), 9);
     }
 }
