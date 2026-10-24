@@ -421,7 +421,11 @@ mod tests {
         // Without WAL: returns (ed, None) and opens in background
         let (ed, rec) = open_and_recover_single(ed, None, &arg);
         assert_eq!(rec, None);
-        let buf = ed.buffers().iter().find(|b| b.name == "single.txt").unwrap();
+        let buf = ed
+            .buffers()
+            .iter()
+            .find(|b| b.name == "single.txt")
+            .unwrap();
         assert_eq!(buf.text.to_bytes(), b"initial");
         assert!(!buf.modified);
 
@@ -430,7 +434,11 @@ mod tests {
         wal::write_wal(&path, cur_disk, b"wal draft").unwrap();
         let (ed2, rec2) = open_and_recover_single(Editor::new(Config::default()), None, &arg);
         assert_eq!(rec2, Some("single.txt".to_string()));
-        let buf2 = ed2.buffers().iter().find(|b| b.name == "single.txt").unwrap();
+        let buf2 = ed2
+            .buffers()
+            .iter()
+            .find(|b| b.name == "single.txt")
+            .unwrap();
         assert_eq!(buf2.text.to_bytes(), b"wal draft");
         assert!(buf2.modified);
     }
