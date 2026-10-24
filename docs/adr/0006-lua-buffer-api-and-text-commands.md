@@ -1,4 +1,4 @@
-# ADR 0006: Lua Buffer API and Bundled Text Editing Commands
+# ADR 0006: Lua Buffer API and Pareto Core Text Editing Commands
 
 - Status: accepted
 - Date: 2026-10-25
@@ -6,38 +6,29 @@
 
 ## Context
 
-Prior to this ADR, NeonEmacs lacked standard Emacs word transformation commands (`upcase-word`, `downcase-word`, `capitalize-word`), whitespace manipulation commands (`just-one-space`, `delete-horizontal-space`), and word deletion commands (`kill-word`, `backward-kill-word`). Furthermore, `fill-paragraph` (`M-q`) was hardcoded directly in Rust core (`src/core/commands/edit.rs`), along with single-purpose paragraph boundary and formatting helpers in `src/core/commands/util.rs`.
-
-Lua had no buffer inspection or mutation primitives, only allowing key binding, configuration get/set, and syntax registration.
+Prior to this ADR, text formatting and advanced editing commands were either hardcoded into the Rust core (`src/core/commands/edit.rs`) or fragmented across experimental extensions. In accordance with the Pareto principle (80/20 rule) and specification normalization, NeonEmacs consolidates user-facing text editing into a minimal Lua Buffer API and a bundled Pareto-core script (`src/shell/text.lua`).
 
 ## Decision
 
-1. **Expose `buffer` module in Lua (§12):**
-   - Inspection: `buffer.point()`, `buffer.len()`, `buffer.get_text(start, end)`, `buffer.line_start(pos)`, `buffer.line_end(pos)`, `buffer.width(text)`.
-   - Mutation: `buffer.set_point(pos)`, `buffer.insert(pos, text)`, `buffer.delete(start, end)`, `buffer.kill(start, end)`, `buffer.replace(start, end, text)`.
+1. **Expose minimal `buffer` module in Lua (§12):**
+   - Inspection: `buffer.point()`, `buffer.len()`, `buffer.get_text(start, end)`, `buffer.line_start(pos)`, `buffer.line_end(pos)`, `buffer.width(text)`, `buffer.mark()`, `buffer.comment_prefix()`.
+   - Mutation: `buffer.set_point(pos)`, `buffer.set_mark(pos)`, `buffer.insert(pos, text)`, `buffer.delete(start, end)`, `buffer.kill(start, end)`, `buffer.replace(start, end, text)`.
    - All positions use 0-based UTF-8 byte offsets matching Rust `Text`. Any cursor repositioning automatically snaps to valid unit boundaries (I-01).
    - `buffer.kill(start, end)` deletes text and pushes it to the kill ring, merging consecutive kills into a single kill ring entry (I-09).
-2. **Bundle `src/shell/text.lua` (§6, §12):**
-   - Implement 8 standard text transformation commands in Lua:
-     - `fill-paragraph` (`M-q`): formats paragraph respecting `fill-column`, display width, tab width, and first-line indentation.
-     - `upcase-word` (`M-u`): converts from point to end of word to uppercase.
-     - `downcase-word` (`M-l`): converts from point to end of word to lowercase.
-     - `capitalize-word` (`M-c`): capitalizes current word.
-     - `kill-word` (`M-d`): kills to end of word.
-     - `backward-kill-word` (`M-DEL`): kills backward to start of word.
-     - `just-one-space` (`M-SPC`): collapses surrounding horizontal whitespace into a single space.
-     - `delete-horizontal-space` (`M-\`): deletes all surrounding horizontal whitespace.
+2. **Bundle Pareto-core `src/shell/text.lua` (§6, §12):**
+   - Implement only the highest-frequency, essential editing commands in Lua:
+     - Word navigation & deletion: `forward-word` (`M-f`), `backward-word` (`M-b`), `kill-word` (`M-d`), `backward-kill-word` (`M-DEL`).
+     - Buffer navigation: `beginning-of-buffer` (`M-<`), `end-of-buffer` (`M->`).
+     - Paragraph formatting: `fill-paragraph` (`M-q`) respecting `fill-column`, display width, tab width, and indentation.
+     - Commenting: `comment-dwim` (`M-;`) with auto-detection of buffer syntax comment prefixes.
+     - Selection: `mark-whole-buffer` (`C-x h`).
    - Bundle `text.lua` via `include_str!` into `BUNDLED_SCRIPTS` evaluated during bootstrap before `keymap.lua`.
-3. **Core cleanup:**
-   - Remove `fill_paragraph` from `src/core/commands/edit.rs` and `commands::BUILTINS`.
-   - Remove single-use paragraph and space measurement helpers from `src/core/commands/util.rs`.
-   - Add pure `Editor::kill_range`, `Editor::delete_range`, and `Editor::insert_at` methods returning `Self` (I-18).
-4. **Keymap bindings:**
-   - Add bindings for `M-u`, `M-l`, `M-c`, `M-d`, `M-DEL`, `M-SPC`, and `M-\` to `src/shell/keymap.lua`.
-   - Update keymap integrity tests to validate commands against either Rust `BUILTINS` or registered Lua commands.
+3. **Core purity and minimal FFI surface:**
+   - Low-frequency commands (sentence navigation, transpositions, line join/open, horizontal space cleanup, blank line compression, region case switching, cursor inspection) and special FFI (`buffer.count_lines`) are pruned to keep the maintenance surface minimal.
+   - Core Rust signatures retain zero `&mut` parameters (I-18).
 
 ## Consequences
 
-- Rust core remains pure, minimal, and completely free of text formatting heuristics.
-- Users can customize, override, or extend word navigation and paragraph formatting logic directly in `init.lua`.
-- Single-binary packaging (< 5MB) and zero-dependency runtime remain intact.
+- Essential editing muscle memory is fully served with approximately 250 lines of clean Lua rather than thousands of lines of heuristic code.
+- Core binary size remains strictly under 5MB.
+- Users can override or extend commands directly in `~/.config/neonemacs/init.lua`.

@@ -13,12 +13,9 @@
 | [0003](0003-async-shell-wal-syntax.md) | Async Shell, Idle WAL Crash Recovery, and 1-Pass Syntax Highlighting | Accepted | 2026-10-24 | §4, §5, §7 | Non-blocking shell queue (`I-24`), 1s idle delta WAL (`I-23`, `I-25`), zero-alloc ANSI-free tokenizer (`I-22`) |
 | [0004](0004-lua-syntax-api.md) | Lua syntax registration API | Accepted | 2026-10-25 | §5, §12 | Declarative `syntax.register` module, `SyntaxRegistry` (`I-27`), bundled `syntax.lua` |
 | [0005](0005-lua-keymap-prelude.md) | Bundled Lua keymap prelude and unbind API | Accepted | 2026-10-25 | §3, §12 | `unbind` API, bundled `keymap.lua`, separation of 25-key survival set from extended keybindings |
-| [0006](0006-lua-buffer-api-and-text-commands.md) | Lua Buffer API and Bundled Text Editing Commands | Accepted | 2026-10-25 | §6, §12 | `buffer` manipulation FFI, bundled `text.lua`, case conversion (`M-u`/`M-l`/`M-c`), word kill (`M-d`/`M-DEL`), space cleanup (`M-SPC`/`M-\`), `fill-paragraph` (`M-q`) |
-| [0007](0007-lua-text-movement-and-editing.md) | Lua Text Movement and Advanced Editing Commands | Accepted | 2026-10-25 | §6, §12 | Word/buffer motion (`M-f`/`M-b`/`M-<`/`M->`), `open-line` (`C-o`), `delete-indentation` (`M-^`), transposition (`C-t`/`M-t`) |
-| [0008](0008-lua-paragraph-sentence-motion-and-killing.md) | Lua Paragraph and Sentence Motion, Marking, and Killing | Accepted | 2026-10-25 | §6, §12 | Buffer mark FFI (`buffer.mark`/`set_mark`), paragraph navigation & mark (`M-}`/`M-{`/`M-h`), sentence navigation & kill (`M-e`/`M-a`/`M-k`) |
-| [0009](0009-lua-comment-dwim-and-mx-completion.md) | Lua Comment DWIM and M-x Command Completion Integration | Accepted | 2026-10-25 | §4, §6, §12 | Unified `M-x` completion for Lua commands, `buffer.comment_prefix`, echo `message`, indent-aware `comment-dwim` (`M-;`) |
-| [0010](0010-lua-buffer-and-region-operations.md) | Lua Buffer and Region Operations | Accepted | 2026-10-25 | §6, §12 | `mark-whole-buffer` (`C-x h`), `delete-blank-lines` (`C-x C-o`), `upcase-region` (`C-x C-u`), `downcase-region` (`C-x C-l`), `kill-whole-line` |
-| [0011](0011-lua-text-metrics-and-inspection.md) | Lua Text Metrics and Cursor Inspection | Accepted | 2026-10-25 | §6, §12 | Thin SIMD FFI `buffer.count_lines` (`I-28`), `count-words-region` (`M-=`), `what-cursor-position` (`C-x =`, `I-29`, `I-30`), `what-line` |
+| [0006](0006-lua-buffer-api-and-text-commands.md) | Lua Buffer API and Pareto Core Text Editing Commands | Accepted | 2026-10-25 | §6, §12 | Minimal `buffer` FFI, bundled `text.lua` Pareto core (`forward/backward-word`, `kill-word`, `beginning/end-of-buffer`, `fill-paragraph`, `comment-dwim`, `mark-whole-buffer`) |
+| [0007](0007-lua-extended-text-operations-and-inspection.md) | Lua Extended Text Operations and Inspection (Historical) | Superseded | 2026-10-25 | §6, §12 | Superseded by ADR 0006 Pareto Spec Normalization (Consolidates former ADRs 0007, 0008, 0010, 0011) |
+| [0008](0008-lua-comment-dwim-and-mx-completion.md) | Lua Comment DWIM and M-x Command Completion Integration | Accepted | 2026-10-25 | §4, §6, §12 | Unified `M-x` completion for Lua commands, `buffer.comment_prefix`, echo `message`, indent-aware `comment-dwim` (`M-;`) |
 
 ---
 
@@ -46,26 +43,30 @@
 ```
 
 ### Pillar I: Pure Functional Core
+
 - State is immutable value data transformed by pure step functions: `step(Editor, Event) -> (Editor, Effects)`.
 - Core never imports I/O crates (`std::fs`, `std::process`, `mlua`, `crossterm`) (**I-14**).
 - Zero `&mut` in any function or method signature in `src/core` (**I-18**).
 - All anchors (cursor, mark) are strictly snapped to valid UTF-8 character boundaries in `0..=len` (**I-01**).
 
 ### Pillar II: Imperative Shell & Crash Resilience
+
 - The shell handles all external interactions and stateful drivers.
 - Non-blocking asynchronous task execution (`Effect::RunShell` -> `Event::ShellDone`) (**I-24**).
 - Safe idle delta WAL (Write-Ahead Log) flushed after 1 second of typing inactivity (**I-23**) and purged upon clean save/revert (**I-25**).
 - Atomic file writes using temporary isolation and `rename` to prevent corrupted 0-byte files upon sudden power loss.
 
 ### Pillar III: Minimal Public Lua FFI Bridge
+
 - Lua is embedded exclusively in the shell (`src/shell/lua.rs`).
 - The public API is deliberately small and compatibility-stable (ADR 0001, ADR 0004, ADR 0006).
 - Re-entrancy protection: Lua commands execute synchronously with a maximum nesting limit of 50.
 - Bundled prelude scripts (`syntax.lua`, `keymap.lua`, `text.lua`) boot ahead of user `init.lua`, enabling standard editor functionality without core code bloat.
 
 ### Pillar IV: Standard Editing & High-Level Text Primitives
+
 - High-level text transformations, word/sentence/paragraph navigation, structural transpositions, region operations, and inspection are implemented in declarative Lua.
-- Core commands table merges built-in Rust commands with Lua-registered commands for unified `M-x` TAB completion and keymap introspection (ADR 0009).
+- Core commands table merges built-in Rust commands with Lua-registered commands for unified `M-x` TAB completion and keymap introspection (ADR 0008).
 
 ---
 
@@ -100,17 +101,19 @@
 | **I-25** | Regular save, revert, or close immediately deletes sibling WAL file | Runtime (`wal.rs`) | ADR 0003 |
 | **I-26** | Kill ring history is encapsulated in `KillRing` with ring rotation invariants | Data structure | ADR 0006, Spec §6 |
 | **I-27** | Syntax definitions are purely declarative in `SyntaxRegistry` | Data structure | ADR 0004 |
-| **I-28** | Line counting semantics: empty range is 0 lines; otherwise `\n` count + 1 | Runtime (`count_lines`) | ADR 0011 |
-| **I-29** | UTF-8 inspection slicing never crosses line ends to avoid partial-byte errors | Runtime boundary | ADR 0011 |
-| **I-30** | Cursor inspection coordinate system is 0-based with distinct EOF status | Pure formatting | ADR 0011 |
+| **I-28** | [Pruned] Line counting semantics (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
+| **I-29** | [Pruned] UTF-8 inspection slicing (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
+| **I-30** | [Pruned] Cursor inspection coordinates (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
 
 ---
 
 ## 4. ADR Authoring Guide
 
-When creating a new ADR (`0012-*.md`):
+When creating a new ADR (`0009-*.md`):
+
 1. **Filename**: `NNNN-kebab-case-title.md`
 2. **Metadata Header**:
+
    ```markdown
    # ADR NNNN: Title
 
@@ -118,6 +121,7 @@ When creating a new ADR (`0012-*.md`):
    - Date: YYYY-MM-DD
    - Spec: `docs/spec.md` §X, §Y
    ```
+
 3. **Required Sections**:
    - `## Context`: The problem, existing constraints, and architectural gap.
    - `## Decision`: Detailed technical choices, API schemas, and invariants.

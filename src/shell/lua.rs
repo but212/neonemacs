@@ -294,13 +294,6 @@ fn install_buffer_api<'lua, 'scope>(
         })?,
     )?;
     buffer_table.set(
-        "count_lines",
-        scope.create_function(|_, (start, end): (usize, usize)| {
-            let ed = editor_ref(cell);
-            Ok(ed.buffer().text.count_lines(start, end))
-        })?,
-    )?;
-    buffer_table.set(
         "width",
         scope.create_function(|_, s: String| {
             let ed = editor_ref(cell);
@@ -712,80 +705,6 @@ mod tests {
     }
 
     #[test]
-    fn text_commands_case_conversion_and_words() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-        let (ed, id) = ed.add_buffer(
-            "test",
-            crate::core::text::Text::from_bytes(b"hello world test"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 0,
-            ..w
-        });
-
-        // upcase-word
-        let (ed, res) = script(&lua, ed, r#"run("upcase-word")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"HELLO world test");
-        assert_eq!(ed.window().point, 5);
-
-        // downcase-word
-        let ed = ed.move_point(0);
-        let (ed, res) = script(&lua, ed, r#"run("downcase-word")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"hello world test");
-
-        // capitalize-word
-        let ed = ed.move_point(6); // at 'world'
-        let (ed, res) = script(&lua, ed, r#"run("capitalize-word")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"hello World test");
-    }
-
-    #[test]
-    fn text_commands_whitespace_and_kills() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-        let (ed, id) = ed.add_buffer(
-            "test",
-            crate::core::text::Text::from_bytes(b"first   second\t\tthird"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 7, // between "first" and "second" in spaces
-            ..w
-        });
-
-        // just-one-space
-        let (ed, res) = script(&lua, ed, r#"run("just-one-space")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"first second\t\tthird");
-
-        // delete-horizontal-space
-        let ed = ed.move_point(14); // in tabs between second and third
-        let (ed, res) = script(&lua, ed, r#"run("delete-horizontal-space")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"first secondthird");
-
-        // kill-word
-        let ed = ed.move_point(0);
-        let (ed, res) = script(&lua, ed, r#"run("kill-word")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b" secondthird");
-        assert_eq!(ed.kill_ring().entries(), &[b"first".to_vec()]);
-
-        // backward-kill-word
-        let ed = ed.move_point(12); // end of secondthird
-        let (ed, res) = script(&lua, ed, r#"run("backward-kill-word")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b" ");
-    }
-
-    #[test]
     fn text_fill_paragraph_in_lua() {
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
@@ -848,101 +767,6 @@ mod tests {
     }
 
     #[test]
-    fn text_open_line_and_join_line() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-        let (ed, id) = ed.add_buffer(
-            "test",
-            crate::core::text::Text::from_bytes(b"first line\n   second line"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 5, // inside "first"
-            ..w
-        });
-
-        // open-line: inserts \n, point stays at 5
-        let (ed, res) = script(&lua, ed, r#"run("open-line")"#);
-        res.unwrap();
-        assert_eq!(ed.window().point, 5);
-        assert_eq!(ed.buffer().text.to_bytes(), b"first\n line\n   second line");
-
-        // join-line / delete-indentation on 3rd line
-        let ed = ed.move_point(20); // inside "second line"
-        let (ed, res) = script(&lua, ed, r#"run("join-line")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"first\n line second line");
-
-        // delete-indentation alias on 2nd line
-        let ed = ed.move_point(8);
-        let (ed, res) = script(&lua, ed, r#"run("delete-indentation")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"first line second line");
-    }
-
-    #[test]
-    fn text_transpose_chars_and_words() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        // transpose-chars in middle
-        let (ed, id) = ed.add_buffer(
-            "test1",
-            crate::core::text::Text::from_bytes(b"abc"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 1, // before 'b'
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("transpose-chars")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"bac");
-        assert_eq!(ed.window().point, 2);
-
-        // transpose-chars at EOL
-        let ed = ed.move_point(3);
-        let (ed, res) = script(&lua, ed, r#"run("transpose-chars")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"bca");
-        assert_eq!(ed.window().point, 3);
-
-        // transpose-chars UTF-8 Korean: "가나다" (3 bytes each)
-        let (ed, id2) = ed.add_buffer(
-            "test2",
-            crate::core::text::Text::from_bytes("가나다".as_bytes()),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id2,
-            point: 3, // before '나'
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("transpose-chars")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), "나가다".as_bytes());
-        assert_eq!(ed.window().point, 6);
-
-        // transpose-words: "hello world" -> "world hello"
-        let (ed, id3) = ed.add_buffer(
-            "test3",
-            crate::core::text::Text::from_bytes(b"hello world!"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id3,
-            point: 5,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("transpose-words")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"world hello!");
-        assert_eq!(ed.window().point, 11);
-    }
-
-    #[test]
     fn buffer_mark_api() {
         let lua = new_state().unwrap();
         let ed = Editor::new(Config::default());
@@ -999,75 +823,6 @@ mod tests {
     }
 
     #[test]
-    fn text_paragraph_motion_and_mark() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        let text = b"First paragraph line 1.\nFirst paragraph line 2.\n\nSecond paragraph line 1.";
-        let (ed, id) = ed.add_buffer(
-            "test_para",
-            crate::core::text::Text::from_bytes(text),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 5,
-            ..w
-        });
-
-        // forward-paragraph moves to blank line
-        let (ed, res) = script(&lua, ed, r#"run("forward-paragraph")"#);
-        res.unwrap();
-        assert_eq!(ed.window().point, 48); // start of "\n\n"
-
-        // backward-paragraph moves to beginning of first paragraph
-        let (ed, res) = script(&lua, ed, r#"run("backward-paragraph")"#);
-        res.unwrap();
-        assert_eq!(ed.window().point, 0);
-
-        // mark-paragraph sets point to 0 and mark to end of paragraph (48)
-        let ed = ed.move_point(10);
-        let (ed, res) = script(&lua, ed, r#"run("mark-paragraph")"#);
-        res.unwrap();
-        assert_eq!(ed.window().point, 0);
-        assert_eq!(ed.buffer().mark, Some(48));
-    }
-
-    #[test]
-    fn text_sentence_motion_and_kill() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        let text = b"Hello world. Second sentence! Third?";
-        let (ed, id) = ed.add_buffer(
-            "test_sent",
-            crate::core::text::Text::from_bytes(text),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 0,
-            ..w
-        });
-
-        // forward-sentence moves right after punctuation
-        let (ed, res) = script(&lua, ed, r#"run("forward-sentence")"#);
-        res.unwrap();
-        assert_eq!(ed.window().point, 12); // "Hello world."
-
-        // backward-sentence moves to start of sentence
-        let (ed, res) = script(&lua, ed, r#"run("backward-sentence")"#);
-        res.unwrap();
-        assert_eq!(ed.window().point, 0);
-
-        // kill-sentence from point 0 kills "Hello world. "
-        let (ed, res) = script(&lua, ed, r#"run("kill-sentence")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"Second sentence! Third?");
-        assert_eq!(ed.window().point, 0);
-    }
-
-    #[test]
     fn comment_prefix_message_and_command_sync() {
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
@@ -1094,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn comment_dwim_and_comment_line_tests() {
+    fn test_comment_dwim_integration() {
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
         let (ed, id) = ed.add_buffer(
@@ -1116,8 +871,8 @@ mod tests {
             b"    // let x = 1;\n    let y = 2;"
         );
 
-        // Uncommenting single line with comment-line alias
-        let (ed, res) = script(&lua, ed, r#"run("comment-line")"#);
+        // Uncommenting single line with comment-dwim
+        let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
         res.unwrap();
         assert_eq!(
             ed.buffer().text.to_bytes(),
@@ -1202,425 +957,56 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_blank_lines() {
+    fn test_pruned_commands_unregistered() {
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        // Case 1: On non-blank line, delete following blank lines
-        let (ed, id1) = ed.add_buffer(
-            "test1.txt",
-            crate::core::text::Text::from_bytes(b"hello\n\n   \nworld"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id1,
-            point: 2,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"hello\nworld");
-        assert_eq!(ed.window().point, 2);
-
-        // Case 2: On blank line in a cluster, compress to 1 blank line
-        let (ed, id2) = ed.add_buffer(
-            "test2.txt",
-            crate::core::text::Text::from_bytes(b"line 1\n\n\n\nline 2"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id2,
-            point: 8,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\n\nline 2");
-
-        // Case 3: On isolated single blank line, delete it completely
-        let (ed, id3) = ed.add_buffer(
-            "test3.txt",
-            crate::core::text::Text::from_bytes(b"line 1\n\nline 2"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id3,
-            point: 7,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\nline 2");
-        assert_eq!(ed.window().point, 7);
-
-        // Case 4: On isolated single blank line at EOF
-        let (ed, id4) = ed.add_buffer(
-            "test4.txt",
-            crate::core::text::Text::from_bytes(b"line 1\n"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id4,
-            point: 7,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"line 1");
+        let pruned = [
+            "what-cursor-position",
+            "what-line",
+            "count-words",
+            "count-words-region",
+            "transpose-chars",
+            "transpose-words",
+            "open-line",
+            "join-line",
+            "delete-indentation",
+            "just-one-space",
+            "delete-horizontal-space",
+            "delete-blank-lines",
+            "upcase-region",
+            "downcase-region",
+            "kill-whole-line",
+            "upcase-word",
+            "downcase-word",
+            "capitalize-word",
+            "forward-sentence",
+            "backward-sentence",
+            "kill-sentence",
+            "forward-paragraph",
+            "backward-paragraph",
+            "mark-paragraph",
+            "comment-line",
+        ];
+        for cmd in pruned {
+            assert!(
+                !ed.commands().contains(cmd),
+                "Command '{cmd}' should be pruned from registered commands"
+            );
+        }
     }
 
     #[test]
-    fn test_case_region() {
+    fn test_count_lines_ffi_removed() {
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        // Guard: mark not set
-        let (ed, id) = ed.add_buffer(
-            "test.txt",
-            crate::core::text::Text::from_bytes(b"hello WORLD test"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 5,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("upcase-region")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "The mark is not set now");
-        assert_eq!(ed.buffer().text.to_bytes(), b"hello WORLD test");
-
-        // Execution: mark set (mark < point)
-        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(0), ..b });
-        let ed = ed.move_point(11); // covers "hello WORLD"
-        let (ed, res) = script(&lua, ed, r#"run("downcase-region")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"hello world test");
-        assert_eq!(ed.window().point, 11);
-        assert_eq!(ed.buffer().mark, Some(0));
-
-        let (ed, res) = script(&lua, ed, r#"run("upcase-region")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"HELLO WORLD test");
-        assert_eq!(ed.window().point, 11);
-        assert_eq!(ed.buffer().mark, Some(0));
-
-        // Execution: inverse region (point < mark)
-        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(5), ..b });
-        let ed = ed.move_point(0);
-        let (ed, res) = script(&lua, ed, r#"run("downcase-region")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"hello WORLD test");
-        assert_eq!(ed.window().point, 0);
-        assert_eq!(ed.buffer().mark, Some(5));
-    }
-
-    #[test]
-    fn test_kill_whole_line() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        // Case 1: Kill middle line with newline
-        let (ed, id) = ed.add_buffer(
-            "test.txt",
-            crate::core::text::Text::from_bytes(b"line 1\nline 2\nline 3"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 9,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("kill-whole-line")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\nline 3");
-        assert_eq!(ed.window().point, 7);
-
-        // Yank to confirm it was stored in kill ring with newline
-        let (ed, res) = script(&lua, ed, r#"run("yank")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\nline 2\nline 3");
-
-        // Case 2: Kill final line at EOF without trailing newline
-        let (ed, id2) = ed.add_buffer(
-            "test2.txt",
-            crate::core::text::Text::from_bytes(b"line 1\nline 2"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id2,
-            point: 9,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("kill-whole-line")"#);
-        res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\n");
-        assert_eq!(ed.window().point, 7);
-    }
-
-    #[test]
-    fn test_buffer_count_lines_ffi() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-        let (ed, id) = ed.add_buffer(
-            "test.txt",
-            crate::core::text::Text::from_bytes(b"line 1\nline 2\nline 3\n"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window { buffer: id, ..w });
         let (_ed, res) = script(
             &lua,
             ed,
             r#"
-            assert(buffer.count_lines(0, 0) == 0)
-            assert(buffer.count_lines(0, 6) == 0)
-            assert(buffer.count_lines(0, 7) == 1)
-            assert(buffer.count_lines(0, 14) == 2)
-            assert(buffer.count_lines(0, 21) == 3)
-            assert(buffer.count_lines(7, 21) == 2)
+            assert(buffer.count_lines == nil, "buffer.count_lines FFI should not exist")
             "#,
         );
         res.unwrap();
-    }
-
-    #[test]
-    fn test_count_words_commands() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        // 1. Empty buffer
-        let (ed, res) = script(&lua, ed, r#"run("count-words-region")"#);
-        res.unwrap();
-        assert_eq!(
-            ed.message(),
-            "Buffer has 0 lines, 0 words, and 0 characters."
-        );
-
-        // 2. Active region
-        let (ed, id) = ed.add_buffer(
-            "test.txt",
-            crate::core::text::Text::from_bytes(b"hello world\n"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 12,
-            ..w
-        });
-        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(0), ..b });
-        let (ed, res) = script(&lua, ed, r#"run("count-words-region")"#);
-        res.unwrap();
-        assert_eq!(
-            ed.message(),
-            "Region has 1 line, 2 words, and 12 characters."
-        );
-
-        // 3. Buffer DWIM (no mark)
-        let (ed, id2) = ed.add_buffer(
-            "test2.txt",
-            crate::core::text::Text::from_bytes(b"abc\ndef"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id2,
-            point: 0,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("count-words-region")"#);
-        res.unwrap();
-        assert_eq!(
-            ed.message(),
-            "Buffer has 2 lines, 2 words, and 7 characters."
-        );
-
-        // 4. count-words alias
-        let (ed, res) = script(&lua, ed, r#"run("count-words")"#);
-        res.unwrap();
-        assert_eq!(
-            ed.message(),
-            "Buffer has 2 lines, 2 words, and 7 characters."
-        );
-    }
-
-    #[test]
-    fn test_what_cursor_position() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        // 1. Mid-buffer ASCII
-        let (ed, id) = ed.add_buffer(
-            "test.txt",
-            crate::core::text::Text::from_bytes(b"hello a world"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 6,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "Char: a (97, 0x61) point=6 of 13 (46%) col=6");
-
-        // 2. Control chars: newline & tab
-        let (ed, id2) = ed.add_buffer(
-            "test2.txt",
-            crate::core::text::Text::from_bytes(b"hi\nthere"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id2,
-            point: 2,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
-        res.unwrap();
-        assert_eq!(
-            ed.message(),
-            "Char: \\n (10, 0x0a) point=2 of 8 (25%) col=2"
-        );
-
-        let (ed, id_tab) = ed.add_buffer(
-            "test_tab.txt",
-            crate::core::text::Text::from_bytes(b"hi\tthere"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id_tab,
-            point: 2,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "Char: \\t (9, 0x09) point=2 of 8 (25%) col=2");
-
-        // 3. EOF & empty buffer
-        let (ed, id3) = ed.add_buffer(
-            "test3.txt",
-            crate::core::text::Text::from_bytes(b"abc"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id3,
-            point: 3,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "point=3 of 3 (100%) col=3 (EOF)");
-
-        let (ed, id_empty) = ed.add_buffer(
-            "empty.txt",
-            crate::core::text::Text::from_bytes(b""),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id_empty,
-            point: 0,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "point=0 of 0 (100%) col=0 (EOF)");
-
-        // 4. Multi-byte UTF-8
-        let (ed, id4) = ed.add_buffer(
-            "test4.txt",
-            crate::core::text::Text::from_bytes("가나다".as_bytes()),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id4,
-            point: 0,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
-        res.unwrap();
-        assert_eq!(
-            ed.message(),
-            "Char: 가 (44032, 0xac00) point=0 of 9 (0%) col=0"
-        );
-
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id4,
-            point: 3,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
-        res.unwrap();
-        assert_eq!(
-            ed.message(),
-            "Char: 나 (45208, 0xb098) point=3 of 9 (33%) col=2"
-        );
-    }
-
-    #[test]
-    fn test_what_line() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-
-        // 1. Empty buffer
-        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "Line 1");
-
-        // 2. Multi-line buffer
-        let (ed, id) = ed.add_buffer(
-            "test.txt",
-            crate::core::text::Text::from_bytes(b"line 1\nline 2\nline 3\n"),
-            crate::core::file::Backing::None,
-        );
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 0,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "Line 1");
-
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 7,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "Line 2");
-
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 14,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "Line 3");
-
-        let ed = ed.with_window(|w| crate::core::editor::Window {
-            buffer: id,
-            point: 21,
-            ..w
-        });
-        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
-        res.unwrap();
-        assert_eq!(ed.message(), "Line 4");
-    }
-
-    #[test]
-    fn test_inspection_keybindings() {
-        let lua = new_state().unwrap();
-        let ed = bootstrap(Editor::new(Config::default()), &lua);
-        assert_eq!(
-            ed.keymap().lookup(&parse_keys("M-=").unwrap()),
-            Some("count-words-region")
-        );
-        assert_eq!(
-            ed.keymap().lookup(&parse_keys("C-x =").unwrap()),
-            Some("what-cursor-position")
-        );
-        assert!(ed.commands().contains("what-line"));
-        assert!(ed.commands().contains("count-words"));
     }
 
     #[test]
