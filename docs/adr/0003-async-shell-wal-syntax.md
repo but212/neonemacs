@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-10-24
-- Target: `neonemacs Next`
+- Spec: `docs/spec.md` §4, §5, §7
 
 ## Context
 

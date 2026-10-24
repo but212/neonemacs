@@ -149,7 +149,7 @@
 ## 12. 확장과 설정 (Lua)
 
 - 설정과 확장은 Lua로 한다. 파일은 `~/.config/neonemacs/init.lua`이며, `XDG_CONFIG_HOME`이 있으면 `$XDG_CONFIG_HOME/neonemacs/init.lua`다. 세 플랫폼 모두 같은 규칙이다.
-- **공개 API는 최소로 한다.** 공개한 API는 호환성 약속이다 (ADR 0001, ADR 0004, ADR 0005, ADR 0006).
+- **공개 API는 최소로 한다.** 공개한 API는 호환성 약속이다 (ADR 0001, ADR 0004, ADR 0005, ADR 0006, ADR 0008, ADR 0009, ADR 0011).
   - `bind(keys, command)`: 키 바인딩 추가와 변경
   - `unbind(keys)`: 키 바인딩 제거
   - `command(name, function)`: 명령 등록

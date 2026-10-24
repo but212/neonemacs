@@ -1,4 +1,4 @@
--- text.lua: Standard text transformation, movement, and editing commands (§6, ADR 0006, ADR 0007, ADR 0008)
+-- text.lua: Standard text transformation, movement, and editing commands (§6, ADR 0006, ADR 0007, ADR 0008, ADR 0009, ADR 0010, ADR 0011)
 
 --------------------------------------------------------------------------------
 -- 1. Core Primitives (Line, Char, Byte Predicates)

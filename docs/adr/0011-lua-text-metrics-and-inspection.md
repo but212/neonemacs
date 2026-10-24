@@ -1,7 +1,8 @@
 # ADR 0011: Lua Text Metrics and Cursor Inspection
 
-## Status
-Accepted
+- Status: accepted
+- Date: 2026-10-25
+- Spec: `docs/spec.md` §6, §12
 
 ## Context
 NeonEmacs delegates user-facing editing operations and commands to Lua (`src/shell/text.lua`). Inspection and text statistics commands were missing:

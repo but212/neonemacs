@@ -1,7 +1,8 @@
 # ADR 0010: Lua Buffer and Region Operations
 
-## Status
-Accepted
+- Status: accepted
+- Date: 2026-10-25
+- Spec: `docs/spec.md` §6, §12
 
 ## Context
 NeonEmacs delegates high-level text transformation and editing commands to Lua (`src/shell/text.lua`) on top of a pure functional Rust core. While word, sentence, paragraph, transposition, and commenting operations were implemented in Lua, several foundational GNU Emacs buffer and region operations remained absent:
