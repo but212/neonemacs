@@ -133,13 +133,14 @@ pub fn highlight_line(syntax: Option<&SyntaxDef>, line: &str) -> Vec<TokenKind> 
         let c = chars[i];
 
         // Line comment check
-        if let Some(ref prefix) = comment_chars {
-            if !prefix.is_empty() && chars[i..].starts_with(prefix) {
-                for slot in out.iter_mut().skip(i) {
-                    *slot = TokenKind::Comment;
-                }
-                break;
+        if let Some(ref prefix) = comment_chars
+            && !prefix.is_empty()
+            && chars[i..].starts_with(prefix)
+        {
+            for slot in out.iter_mut().skip(i) {
+                *slot = TokenKind::Comment;
             }
+            break;
         }
 
         // String literals: "..." or '...' or `...`
