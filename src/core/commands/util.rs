@@ -86,14 +86,18 @@ pub(crate) fn paragraph_at(text: &Text, p: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-pub(crate) fn ask(mut ed: Editor, question: Confirm, text: &str) -> Editor {
-    ed.mode = Mode::Confirm(question);
-    ed.message = text.to_owned();
-    ed
+pub(crate) fn ask(ed: Editor, question: Confirm, text: &str) -> Editor {
+    ed.set_mode(Mode::Confirm(question)).set_message(text)
 }
 
 /// Deletes `start..end`. Returns the editor and the removed bytes.
 pub(crate) fn delete_range(ed: Editor, start: usize, end: usize) -> (Editor, Vec<u8>) {
+    let len = ed.buffer().text.len();
+    let start = start.min(len);
+    let end = end.min(len);
+    if start >= end {
+        return (ed, Vec::new());
+    }
     let bytes = ed.buffer().text.bytes(start..end);
     let (ed, _) = ed.apply(Edit::Delete {
         pos: start,
@@ -127,7 +131,7 @@ pub fn request_open(
     fx.push(Effect::ReadFile {
         target: ReadTarget::Open { line, show },
         path,
-        max_size: ed.config.max_file_size,
+        max_size: ed.config().max_file_size,
     });
     fx
 }

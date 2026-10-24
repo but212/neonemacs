@@ -68,16 +68,14 @@ pub fn handle_interactive(
             sync_effects.push(effect);
         }
     }
-    let mut ed = perform_all(ed, lua, sync_effects);
-    match &outcome {
-        ShellOutcome::Spawned(_) => {
-            ed.message = "[Running...]".to_owned();
-        }
+    let ed = perform_all(ed, lua, sync_effects);
+    let ed = match &outcome {
+        ShellOutcome::Spawned(_) => ed.set_message("[Running...]"),
         ShellOutcome::BusyRejected => {
-            ed.message = "[Running...] A shell command is already running".to_owned();
+            ed.set_message("[Running...] A shell command is already running")
         }
-        ShellOutcome::None => {}
-    }
+        ShellOutcome::None => ed,
+    };
     (ed, outcome)
 }
 
@@ -101,11 +99,11 @@ pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
             Ok(())
         }
     };
-    let mut ed = into_editor(cell);
-    if let Err(e) = bound {
-        ed.message = e.to_string();
+    let ed = into_editor(cell);
+    match bound {
+        Ok(()) => ed,
+        Err(e) => ed.set_message(e.to_string()),
     }
-    ed
 }
 
 /// Applies `event` to the editor in `cell`, then puts the new editor back. The cell is empty
@@ -137,7 +135,7 @@ pub fn run_source(ed: Editor, lua: &Lua, source: &str) -> (Editor, mlua::Result<
     (into_editor(cell), result)
 }
 
-fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
+const fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
     cell.into_inner().expect("editor is in the cell (I-21)")
 }
 
@@ -166,6 +164,9 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             path,
             max_size,
         } => {
+            if matches!(target, crate::core::effect::ReadTarget::Revert(_)) {
+                wal::remove_wal(&path);
+            }
             let result = file::read_raw(&path, max_size).map_err(|e| e.to_string());
             Event::FileRead {
                 target,
@@ -177,6 +178,10 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             id,
             bytes: fs::read(undo::undo_path(&path)).ok(),
         },
+        Effect::RemoveWal { path } => {
+            wal::remove_wal(&path);
+            Event::WalRemoved
+        }
         Effect::RunShell { command } => Event::ShellDone(run_shell(&command)),
         Effect::RunLua { name } => Event::LuaDone(run_lua(lua, &name)),
     }

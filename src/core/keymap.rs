@@ -95,9 +95,22 @@ pub const fn ctrl_key(c: char) -> Key {
     }
 }
 
-/// Parses a key sequence such as `"C-x C-f"`, `"M-x"`, `"C-SPC"`, or `"left"`.
+/// Parses key tokens such as `"C-x C-f"`, `"M-x"`, `"C-SPC"`, or `"left"`.
 pub fn parse_keys(s: &str) -> Result<Vec<Key>, KeyError> {
     s.split_whitespace().map(parse_key).collect()
+}
+
+/// Parses a binding key sequence. Only single keys or C-x 2-key sequences are valid bindings (I-12).
+pub fn parse_key_seq(s: &str) -> Result<Vec<Key>, KeyError> {
+    let keys = parse_keys(s)?;
+    match keys.as_slice() {
+        [] => Err(KeyError("empty key sequence".to_owned())),
+        [_] => Ok(keys),
+        [k1, _] if *k1 == Key::ctrl('x') => Ok(keys),
+        _ => Err(KeyError(format!(
+            "unsupported key binding: '{s}' (only single keys or C-x prefix supported)"
+        ))),
+    }
 }
 
 fn parse_key(tok: &str) -> Result<Key, KeyError> {
@@ -156,7 +169,7 @@ impl Keymap {
     }
 
     pub fn bind_str(self, keys: &str, name: &str) -> Result<Self, KeyError> {
-        Ok(self.bind(parse_keys(keys)?, name))
+        Ok(self.bind(parse_key_seq(keys)?, name))
     }
 
     /// Key sequences bound to `name`, for display.
@@ -239,6 +252,9 @@ mod tests {
         );
         assert!(parse_keys("C-left").is_err());
         assert!(parse_keys("nope").is_err());
+        assert!(parse_key_seq("").is_err());
+        assert!(parse_key_seq("a b").is_err());
+        assert!(parse_key_seq("C-x C-f C-s").is_err());
     }
 
     #[test]

@@ -61,11 +61,12 @@ pub fn with_api<R>(
             "bind",
             scope.create_function(|_, (keys, name): (String, String)| {
                 let mut ed = editor_mut(cell);
-                ed.keymap = ed
-                    .keymap
+                let new_keymap = ed
+                    .keymap()
                     .clone()
                     .bind_str(&keys, &name)
                     .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+                *ed = ed.clone().set_keymap(new_keymap);
                 Ok(())
             })?,
         )?;
@@ -105,7 +106,7 @@ pub fn with_api<R>(
             "get",
             scope.create_function(|_, name: String| {
                 let ed = editor_ref(cell);
-                let value = ed.config.get(&name).map_err(mlua::Error::RuntimeError)?;
+                let value = ed.config().get(&name).map_err(mlua::Error::RuntimeError)?;
                 Ok(to_lua(value))
             })?,
         )?;
@@ -114,11 +115,12 @@ pub fn with_api<R>(
             scope.create_function(|_, (name, value): (String, LuaValue)| {
                 let value = from_lua(&value).map_err(mlua::Error::RuntimeError)?;
                 let mut ed = editor_mut(cell);
-                ed.config = ed
-                    .config
+                let new_config = ed
+                    .config()
                     .clone()
                     .set(&name, value)
                     .map_err(mlua::Error::RuntimeError)?;
+                *ed = ed.clone().set_config(new_config);
                 Ok(())
             })?,
         )?;
@@ -176,7 +178,7 @@ mod tests {
         );
         result.unwrap();
         assert_eq!(
-            ed.keymap.lookup(&parse_keys("C-s").unwrap()),
+            ed.keymap().lookup(&parse_keys("C-s").unwrap()),
             Some("isearch-forward-regexp")
         );
         let (_, result) = script(&lua, ed, r#"bind("C-", "undo")"#);
@@ -193,7 +195,7 @@ mod tests {
         );
         result.unwrap();
         let ed = handle(ed, Some(&lua), Event::Run("wide".to_owned()));
-        assert_eq!(ed.config.fill_column, 33);
+        assert_eq!(ed.config().fill_column, 33);
         let (ed, result) = script(&lua, ed, r#"command("undo", function() end)"#);
         assert!(result.is_err());
         let (_, result) = script(&lua, ed, r#"run("nope")"#);
@@ -211,8 +213,8 @@ mod tests {
         );
         result.unwrap();
         let ed = handle(ed, Some(&lua), Event::Run("outer".to_owned()));
-        assert!(ed.message.is_empty());
-        assert_eq!(ed.config.fill_column, 40);
+        assert!(ed.message().is_empty());
+        assert_eq!(ed.config().fill_column, 40);
     }
 
     #[test]
@@ -233,7 +235,7 @@ mod tests {
         );
         result.unwrap();
         let ed = handle(ed, Some(&lua), Event::Run("finish".to_owned()));
-        assert!(ed.quit);
+        assert!(ed.quit());
         assert_eq!(fs::read(&path).unwrap(), b"xabc");
     }
 
@@ -247,8 +249,8 @@ mod tests {
         );
         result.unwrap();
         let ed = handle(ed, Some(&lua), Event::Run("again".to_owned()));
-        assert!(!ed.message.is_empty());
-        assert!(!ed.quit);
+        assert!(!ed.message().is_empty());
+        assert!(!ed.quit());
     }
 
     #[test]
@@ -262,7 +264,7 @@ mod tests {
         result.unwrap();
         let (ed, result) = script(&lua, ed, r#"set("case-fold-search", false)"#);
         result.unwrap();
-        assert!(!ed.config.case_fold_search);
+        assert!(!ed.config().case_fold_search);
         let (ed, result) = script(&lua, ed, r#"set("tab-width", 0)"#);
         assert!(result.is_err());
         let (ed, result) = script(&lua, ed, r#"set("nope", 1)"#);

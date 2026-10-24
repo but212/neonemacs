@@ -15,7 +15,7 @@ pub struct Cell {
 }
 
 impl Cell {
-    pub fn plain(glyph: String) -> Self {
+    pub const fn plain(glyph: String) -> Self {
         Self {
             glyph,
             style: TokenKind::Normal,
@@ -27,12 +27,20 @@ impl Cell {
     }
 }
 
-/// A screen as text rows of exactly the terminal width, and the cursor as `(x, y)`.
+/// A screen as cell rows of exactly the terminal width, and the cursor as `(x, y)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
-    pub rows: Vec<String>,
+    pub rows: Vec<Vec<Cell>>,
     pub cursor: (usize, usize),
-    pub styles: Vec<Vec<TokenKind>>,
+}
+
+impl Frame {
+    pub fn row_strings(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .map(|row| row.iter().map(|c| c.glyph.as_str()).collect::<String>())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,33 +99,26 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
         w: cols,
         h: rows.saturating_sub(1),
     };
-    rects(&ed.layout, body)
+    rects(ed.windows().layout(), body)
 }
 
 /// Moves each window's `top` and `left_col` so that its point is visible.
-pub fn scroll(mut ed: Editor, cols: usize, rows: usize) -> Editor {
-    let tab = usize::from(ed.config.tab_width);
-    let windows: Vec<Window> = ed.layout.windows().into_iter().cloned().collect();
+pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
+    let tab = usize::from(ed.config().tab_width);
+    let windows: Vec<Window> = ed.windows().windows().into_iter().cloned().collect();
     let scrolled: Vec<Window> = windows
         .into_iter()
         .zip(areas(&ed, cols, rows))
         .map(|(w, area)| {
-            let text = buffer_text(&ed.buffers, w.buffer);
+            let text = &ed.buffer_by_id(w.buffer).text;
             scroll_window(text, w, area, tab)
         })
         .collect();
+    let mut win = ed.windows().clone();
     for (i, w) in scrolled.into_iter().enumerate() {
-        ed.layout = ed.layout.set_leaf(i, w);
+        win = win.set_leaf(i, w);
     }
-    ed
-}
-
-fn buffer_text(buffers: &[Buffer], id: crate::core::editor::BufferId) -> &Text {
-    &buffers
-        .iter()
-        .find(|b| b.id == id)
-        .expect("window refers to a live buffer (I-08)")
-        .text
+    ed.set_windows(win)
 }
 
 fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
@@ -148,17 +149,13 @@ fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
 
 /// Builds the screen. Pure: call `scroll` first to bring point into view.
 pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
-    let tab = usize::from(ed.config.tab_width);
+    let tab = usize::from(ed.config().tab_width);
     let mut grid = vec![vec![Cell::space(); cols]; rows];
-    let leaves = ed.layout.windows();
+    let leaves = ed.windows().windows();
     let mut cursor = (0, 0);
 
     for (i, (w, area)) in leaves.into_iter().zip(areas(ed, cols, rows)).enumerate() {
-        let buf = ed
-            .buffers
-            .iter()
-            .find(|b| b.id == w.buffer)
-            .expect("window refers to a live buffer (I-08)");
+        let buf = ed.buffer_by_id(w.buffer);
         let lang = detect_lang(&buf.name);
         let (body, (row, col)) = window_cells(&buf.text, w, area, tab, lang);
         for (r, cells) in body.into_iter().enumerate() {
@@ -172,31 +169,18 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
             area.x,
             status_cells,
         );
-        if i == ed.selected {
+        if i == ed.windows().selected() {
             cursor = (area.x + col, area.y + row);
         }
     }
 
     if rows > 0 {
-        let echo = fit(&ed.message, cols, ' ');
+        let echo = fit(ed.message(), cols, ' ');
         let echo_cells: Vec<Cell> = echo.into_iter().map(Cell::plain).collect();
         grid = put(grid, rows - 1, 0, echo_cells);
     }
 
-    let rows_str = grid
-        .iter()
-        .map(|row| row.iter().map(|c| c.glyph.as_str()).collect::<String>())
-        .collect();
-    let styles = grid
-        .iter()
-        .map(|row| row.iter().map(|c| c.style).collect())
-        .collect();
-
-    Frame {
-        rows: rows_str,
-        cursor,
-        styles,
-    }
+    Frame { rows: grid, cursor }
 }
 
 fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
@@ -357,11 +341,11 @@ fn fit(s: &str, width: usize, fill: char) -> Vec<String> {
 }
 
 /// Rows that changed, with their new content. An empty `prev` redraws everything.
-pub fn diff(prev: &[String], next: &[String]) -> Vec<(usize, String)> {
+pub fn diff(prev: &[Vec<Cell>], next: &[Vec<Cell>]) -> Vec<(usize, Vec<Cell>)> {
     next.iter()
         .enumerate()
         .filter(|(i, row)| prev.get(*i) != Some(row))
-        .map(|(i, row)| (i, row.clone()))
+        .map(|(i, row)| (i, (*row).clone()))
         .collect()
 }
 
@@ -381,17 +365,21 @@ mod tests {
         frame(&ed, cols, rows)
     }
 
+    fn screen_rows(text: &str, point: usize, cols: usize, rows: usize) -> Vec<String> {
+        screen(text, point, cols, rows).row_strings()
+    }
+
     #[test]
     fn frame_hangul_and_tab() {
-        let f = screen("가나\na\tb", 0, 10, 4);
-        assert_eq!(f.rows[0], format!("가나{}", " ".repeat(6)));
-        assert_eq!(f.rows[1], "a       b ");
+        let r = screen_rows("가나\na\tb", 0, 10, 4);
+        assert_eq!(r[0], format!("가나{}", " ".repeat(6)));
+        assert_eq!(r[1], "a       b ");
     }
 
     #[test]
     fn frame_long_line_is_cut_with_dollar() {
-        let f = screen("abcdefghijklmnop", 0, 10, 3);
-        assert_eq!(f.rows[0], "abcdefghi$");
+        let r = screen_rows("abcdefghijklmnop", 0, 10, 3);
+        assert_eq!(r[0], "abcdefghi$");
     }
 
     #[test]
@@ -402,7 +390,7 @@ mod tests {
         });
         let ed = scroll(ed, 10, 3);
         let f = frame(&ed, 10, 3);
-        assert_eq!(f.rows[0], "^Ax\\85    ");
+        assert_eq!(f.row_strings()[0], "^Ax\\85    ");
     }
 
     #[test]
@@ -416,8 +404,9 @@ mod tests {
         });
         let ed = scroll(ed, 30, 3);
         let f = frame(&ed, 30, 3);
-        assert!(f.rows[1].starts_with("-**-  f.txt (view)  0%"));
-        assert!(f.rows[1].ends_with('-'));
+        let r = f.row_strings();
+        assert!(r[1].starts_with("-**-  f.txt (view)  0%"));
+        assert!(r[1].ends_with('-'));
     }
 
     #[test]
@@ -425,20 +414,20 @@ mod tests {
         let f = screen("가b", 3, 10, 4);
         assert_eq!(f.cursor, (2, 0));
 
-        let f = screen("1\n2\n3\n4\n5", 8, 10, 4);
-        assert_eq!(f.rows[0], "5         ");
+        let r = screen_rows("1\n2\n3\n4\n5", 8, 10, 4);
+        assert_eq!(r[0], "5         ");
     }
 
     #[test]
     fn diff_only_changed_rows() {
-        let prev = vec!["aa".to_owned(), "bb".to_owned()];
-        let next = vec!["aa".to_owned(), "bc".to_owned()];
-        assert_eq!(diff(&prev, &next), vec![(1, "bc".to_owned())]);
+        let prev = vec![vec![Cell::plain("a".into())], vec![Cell::plain("b".into())]];
+        let next = vec![vec![Cell::plain("a".into())], vec![Cell::plain("c".into())]];
+        assert_eq!(diff(&prev, &next), vec![(1, vec![Cell::plain("c".into())])]);
     }
 
     #[test]
     fn diff_full_redraw_when_no_previous_frame() {
-        let next = vec!["x".to_owned(), "y".to_owned()];
+        let next = vec![vec![Cell::plain("x".into())], vec![Cell::plain("y".into())]];
         assert_eq!(diff(&[], &next).len(), 2);
     }
 }

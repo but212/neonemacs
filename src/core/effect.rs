@@ -1,6 +1,7 @@
 //! What the core asks the shell to do (`Effect`) and what the shell reports back (`Event`).
 //! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15).
 
+use crate::core::buffer::Buffer;
 use crate::core::editor::BufferId;
 use crate::core::file::DiskState;
 use crate::core::keymap::Key;
@@ -38,12 +39,24 @@ pub enum Effect {
         id: BufferId,
         path: PathBuf,
     },
+    RemoveWal {
+        path: PathBuf,
+    },
     RunShell {
         command: String,
     },
     RunLua {
         name: String,
     },
+}
+
+impl Effect {
+    /// Returns a `RemoveWal` effect if `buf` is backed by a disk file.
+    pub fn remove_wal_if_file(buf: &Buffer) -> Option<Self> {
+        buf.file_path().map(|path| Self::RemoveWal {
+            path: path.to_path_buf(),
+        })
+    }
 }
 
 /// Why a file was read.
@@ -97,6 +110,7 @@ pub enum Event {
         id: BufferId,
         bytes: Option<Vec<u8>>,
     },
+    WalRemoved,
     /// Raw stdout and stderr of a shell command, or the reason it did not start.
     ShellDone(Result<String, String>),
     /// Error text when the Lua command failed. The core shows its first line.

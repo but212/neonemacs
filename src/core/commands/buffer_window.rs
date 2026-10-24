@@ -1,10 +1,9 @@
 //! Buffer switching/killing and window layout commands (§4, §5).
 
 use crate::core::commands::util::ask;
-use crate::core::editor::{Buffer, BufferId, Confirm, Dir, Editor, Layout, Window};
+use crate::core::editor::{Buffer, BufferId, Confirm, Dir, Editor, Window};
+use crate::core::effect::Effect;
 use crate::core::effect::Effects;
-use crate::core::file::Backing;
-use crate::core::text::Text;
 
 pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (split(ed, Dir::Below), fx)
@@ -15,26 +14,19 @@ pub(crate) fn split_window_right(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 /// Replaces the selected leaf with a split of two windows that show the same buffer.
-pub(crate) fn split(mut ed: Editor, dir: Dir) -> Editor {
-    let i = ed.selected;
-    ed.layout = ed.layout.replace_leaf(i, |w| Layout::Split {
-        dir,
-        first: Box::new(Layout::Leaf(w.clone())),
-        second: Box::new(Layout::Leaf(w)),
-    });
-    ed
+pub(crate) fn split(ed: Editor, dir: Dir) -> Editor {
+    let win = ed.windows().clone().split(dir);
+    ed.set_windows(win)
 }
 
-pub(crate) fn other_window(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    ed.selected = (ed.selected + 1) % ed.leaf_count();
-    (ed, fx)
+pub(crate) fn other_window(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let win = ed.windows().clone().next_window();
+    (ed.set_windows(win), fx)
 }
 
-pub(crate) fn delete_other_windows(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let w = ed.window().clone();
-    ed.layout = Layout::Leaf(w);
-    ed.selected = 0;
-    (ed, fx)
+pub(crate) fn delete_other_windows(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let win = ed.windows().clone().delete_other_windows();
+    (ed.set_windows(win), fx)
 }
 
 /// Shows buffer `id` in the selected window. The old buffer keeps its point.
@@ -58,51 +50,36 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
 }
 
 /// Kills buffer `id`. A modified buffer asks first.
-pub fn kill_buffer(ed: Editor, id: BufferId) -> Editor {
+pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     if ed.buffer_by_id(id).modified {
-        ask(
-            ed,
-            Confirm::KillModified(id),
-            "Buffer is modified; kill anyway? (y or n)",
+        (
+            ask(
+                ed,
+                Confirm::KillModified(id),
+                "Buffer is modified; kill anyway? (y or n)",
+            ),
+            fx,
         )
     } else {
-        kill_now(ed, id)
+        if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
+            fx.push(eff);
+        }
+        (kill_now(ed, id), fx)
     }
 }
 
 /// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
 /// Killing the last buffer leaves an empty `*scratch*` (A4).
-pub(crate) fn kill_now(mut ed: Editor, id: BufferId) -> Editor {
-    if ed.buffers.len() == 1 {
-        ed = ed.add_buffer("*scratch*", Text::default(), Backing::None).0;
-    }
-    let replacement = ed
-        .buffers
-        .iter()
-        .map(|b| b.id)
-        .find(|&b| b != id)
-        .expect("another buffer exists");
-    let saved = ed.buffer_by_id(replacement).saved_point;
-    ed.buffers.retain(|b| b.id != id);
-    ed.layout = ed.layout.map_windows(&|w| {
-        if w.buffer == id {
-            Window {
-                buffer: replacement,
-                point: saved,
-                top: 0,
-                ..w
-            }
-        } else {
-            w
-        }
-    });
-    ed
+pub(crate) fn kill_now(ed: Editor, id: BufferId) -> Editor {
+    ed.kill_buffer_id(id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::editor::Mode;
+    use crate::core::file::Backing;
+    use crate::core::text::Text;
     use crate::test_support::{editor, keys, point, run_command, typ};
 
     #[test]
@@ -131,8 +108,8 @@ mod tests {
         let ed = switch_to(ed, other);
         assert_eq!(point(&ed), 3);
 
-        let ed = kill_buffer(ed, other);
-        assert_eq!(ed.buffers.len(), 1);
+        let (ed, _) = kill_buffer(ed, other, Vec::new());
+        assert_eq!(ed.buffers().len(), 1);
         assert_eq!(ed.buffer().name, "*scratch*");
     }
 
@@ -140,8 +117,8 @@ mod tests {
     fn killing_last_buffer_makes_scratch() {
         let ed = editor();
         let only = ed.window().buffer;
-        let ed = kill_buffer(ed, only);
-        assert_eq!(ed.buffers.len(), 1);
+        let (ed, _) = kill_buffer(ed, only, Vec::new());
+        assert_eq!(ed.buffers().len(), 1);
         assert_eq!(ed.buffer().name, "*scratch*");
         assert_ne!(ed.buffer().id, only);
     }
@@ -153,12 +130,12 @@ mod tests {
         let ed = typ(ed, "x");
         let ed = switch_to(ed, BufferId(0));
 
-        let ed = kill_buffer(ed, other);
-        assert!(matches!(ed.mode, Mode::Confirm(Confirm::KillModified(_))));
+        let (ed, _) = kill_buffer(ed, other, Vec::new());
+        assert!(matches!(ed.mode(), Mode::Confirm(Confirm::KillModified(_))));
         let ed = keys(ed, "n");
-        assert_eq!(ed.buffers.len(), 2);
-        let ed = kill_buffer(ed, other);
+        assert_eq!(ed.buffers().len(), 2);
+        let (ed, _) = kill_buffer(ed, other, Vec::new());
         let ed = keys(ed, "y");
-        assert_eq!(ed.buffers.len(), 1);
+        assert_eq!(ed.buffers().len(), 1);
     }
 }

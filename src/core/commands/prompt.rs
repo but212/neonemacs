@@ -34,14 +34,12 @@ pub(crate) fn goto_line_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (prompt(ed, "Goto line: ", Purpose::GotoLine), fx)
 }
 
-pub(crate) fn prompt(mut ed: Editor, label: &str, purpose: Purpose) -> Editor {
-    ed.message = label.to_owned();
-    ed.mode = Mode::Prompt(Prompt {
+pub(crate) fn prompt(ed: Editor, label: &str, purpose: Purpose) -> Editor {
+    ed.set_message(label).set_mode(Mode::Prompt(Prompt {
         label: label.to_owned(),
         input: String::new(),
         purpose,
-    });
-    ed
+    }))
 }
 
 /// Every built-in command name with the keys bound to it, for `M-x` completion (§4).
@@ -49,7 +47,7 @@ pub fn completions(ed: &Editor, prefix: &str) -> Vec<(String, String)> {
     BUILTINS
         .iter()
         .filter(|(n, _)| n.starts_with(prefix))
-        .map(|(n, _)| (n.to_string(), ed.keymap.keys_for(n).join(", ")))
+        .map(|(n, _)| (n.to_string(), ed.keymap().keys_for(n).join(", ")))
         .collect()
 }
 
@@ -57,7 +55,7 @@ fn candidates(ed: &Editor, purpose: &Purpose, input: &str) -> Vec<(String, Strin
     match purpose {
         Purpose::ExecuteCommand => completions(ed, input),
         Purpose::SwitchBuffer | Purpose::KillBuffer => ed
-            .buffers
+            .buffers()
             .iter()
             .filter(|b| b.name.starts_with(input))
             .map(|b| (b.name.clone(), String::new()))
@@ -116,22 +114,24 @@ fn common_prefix(names: &[&str]) -> String {
 }
 
 /// Keys inside a prompt: text edits the input, RET submits, C-g cancels, TAB completes.
-pub fn prompt_key(mut ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
-    let Mode::Prompt(mut p) = ed.mode.clone() else {
+pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
+    let Mode::Prompt(mut p) = ed.mode().clone() else {
         return (ed, fx);
     };
     if key == Key::ctrl('g') {
-        ed.mode = Mode::Normal {
-            prefix: Prefix::None,
-        };
-        ed.message = "Quit".to_owned();
+        let ed = ed
+            .set_mode(Mode::Normal {
+                prefix: Prefix::None,
+            })
+            .set_message("Quit");
         return (ed, fx);
     }
     if key == Key::plain(Code::Enter) {
-        ed.mode = Mode::Normal {
-            prefix: Prefix::None,
-        };
-        ed.message.clear();
+        let ed = ed
+            .set_mode(Mode::Normal {
+                prefix: Prefix::None,
+            })
+            .clear_message();
         return submit(ed, p, fx);
     }
     let mut note = None;
@@ -142,8 +142,8 @@ pub fn prompt_key(mut ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     } else if let Some(c) = key.text() {
         p.input.push(c);
     }
-    ed.message = note.unwrap_or_else(|| format!("{}{}", p.label, p.input));
-    ed.mode = Mode::Prompt(p);
+    let msg = note.unwrap_or_else(|| format!("{}{}", p.label, p.input));
+    let ed = ed.set_message(msg).set_mode(Mode::Prompt(p));
     (ed, fx)
 }
 
@@ -154,7 +154,7 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
         Purpose::FindFile => find_file(ed, &input, fx),
         Purpose::WriteFile => write_file(ed, &input, fx),
         Purpose::SwitchBuffer => (switch_to_named(ed, &input), fx),
-        Purpose::KillBuffer => (kill_named(ed, &input), fx),
+        Purpose::KillBuffer => kill_named(ed, &input, fx),
         Purpose::GotoLine => (goto_line(ed, &input), fx),
         Purpose::ShellCommand => {
             let fx = run_shell(&input, fx);
@@ -162,9 +162,7 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
         }
         Purpose::QueryFrom { regex } => {
             if input.is_empty() {
-                let mut ed = ed;
-                ed.message = "Query replace needs a pattern".to_owned();
-                (ed, fx)
+                (ed.set_message("Query replace needs a pattern"), fx)
             } else {
                 let label = format!("Query replace {input} with: ");
                 (
@@ -174,10 +172,11 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
             }
         }
         Purpose::QueryTo { regex, from } => ed.command(fx, |e, fx| {
-            let (mut e, result) = start_query_replace(e, &from, &input, regex);
-            if let Err(msg) = result {
-                e.message = msg;
-            }
+            let (e, result) = start_query_replace(e, &from, &input, regex);
+            let e = match result {
+                Ok(()) => e,
+                Err(msg) => e.set_message(msg),
+            };
             (e, fx)
         }),
     }
@@ -187,7 +186,7 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     if name.is_empty() {
         return ed;
     }
-    let found = ed.buffers.iter().find(|b| b.name == name).map(|b| b.id);
+    let found = ed.buffers().iter().find(|b| b.name == name).map(|b| b.id);
     match found {
         Some(id) => switch_to(ed, id),
         None => {
@@ -197,25 +196,21 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     }
 }
 
-fn kill_named(mut ed: Editor, name: &str) -> Editor {
+fn kill_named(ed: Editor, name: &str, fx: Effects) -> (Editor, Effects) {
     let id = if name.is_empty() {
         Some(ed.window().buffer)
     } else {
-        ed.buffers.iter().find(|b| b.name == name).map(|b| b.id)
+        ed.buffers().iter().find(|b| b.name == name).map(|b| b.id)
     };
     match id {
-        Some(id) => kill_buffer(ed, id),
-        None => {
-            ed.message = format!("No buffer named {name}");
-            ed
-        }
+        Some(id) => kill_buffer(ed, id, fx),
+        None => (ed.set_message(format!("No buffer named {name}")), fx),
     }
 }
 
-fn goto_line(mut ed: Editor, input: &str) -> Editor {
+fn goto_line(ed: Editor, input: &str) -> Editor {
     let Ok(n) = input.trim().parse::<usize>() else {
-        ed.message = format!("Not a line number: {input}");
-        return ed;
+        return ed.set_message(format!("Not a line number: {input}"));
     };
     let pos = ed.buffer().text.nth_line_start(n);
     ed.move_point(pos)
@@ -237,26 +232,17 @@ pub(crate) fn run_shell(command: &str, mut fx: Effects) -> Effects {
 }
 
 /// Shows the output of a shell command. One line goes to the echo area; more goes to `*Shell Command Output*` (A9).
-pub fn shell_done(mut ed: Editor, result: Result<String, String>) -> Editor {
+pub fn shell_done(ed: Editor, result: Result<String, String>) -> Editor {
     let output = match result {
         Ok(output) => output,
-        Err(e) => {
-            ed.message = e;
-            return ed;
-        }
+        Err(e) => return ed.set_message(e),
     };
     let text = output.replace("\r\n", "\n");
     let trimmed = text.trim_end_matches('\n');
     let lines: Vec<&str> = trimmed.lines().collect();
     match lines.as_slice() {
-        [] => {
-            ed.message = "(no output)".to_owned();
-            ed
-        }
-        [only] => {
-            ed.message = (*only).to_owned();
-            ed
-        }
+        [] => ed.set_message("(no output)"),
+        [only] => ed.set_message(*only),
         _ => show_output(ed, trimmed),
     }
 }
@@ -264,7 +250,7 @@ pub fn shell_done(mut ed: Editor, result: Result<String, String>) -> Editor {
 /// Puts `text` in the output buffer and shows it in the other window.
 fn show_output(ed: Editor, text: &str) -> Editor {
     const NAME: &str = "*Shell Command Output*";
-    let found = ed.buffers.iter().find(|b| b.name == NAME).map(|b| b.id);
+    let found = ed.buffers().iter().find(|b| b.name == NAME).map(|b| b.id);
     let (ed, id) = match found {
         Some(id) => (ed, id),
         None => ed.add_buffer(NAME, Text::default(), Backing::None),
@@ -277,23 +263,24 @@ fn show_output(ed: Editor, text: &str) -> Editor {
     if ed.leaf_count() == 1 {
         ed = split(ed, Dir::Below);
     }
-    let orig = ed.selected;
+    let orig = ed.windows().selected();
     let other = if orig + 1 < ed.leaf_count() {
         orig + 1
     } else {
         orig - 1
     };
-    ed.selected = other;
-    let mut ed = switch_to(ed, id);
-    ed.selected = orig;
-    ed
+    let windows = ed.windows().clone().set_selected(other);
+    let ed = switch_to(ed.set_windows(windows), id);
+    let windows = ed.windows().clone().set_selected(orig);
+    ed.set_windows(windows)
 }
 
 /// Ends a Lua command: shows the first line of its error, then closes its undo group like any command.
-pub fn lua_done(mut ed: Editor, result: Result<(), String>) -> Editor {
-    if let Err(e) = result {
-        ed.message = e.lines().next().unwrap_or_default().to_owned();
-    }
+pub fn lua_done(ed: Editor, result: Result<(), String>) -> Editor {
+    let ed = match result {
+        Ok(()) => ed,
+        Err(e) => ed.set_message(e.lines().next().unwrap_or_default()),
+    };
     ed.end_command()
 }
 
@@ -305,14 +292,14 @@ mod tests {
     #[test]
     fn mx_completes_and_cancels() {
         let ed = keys(editor(), "M-x");
-        assert!(matches!(ed.mode, Mode::Prompt(_)));
+        assert!(matches!(ed.mode(), Mode::Prompt(_)));
         let ed = typ(ed, "for");
         let ed = keys(ed, "TAB");
-        assert!(matches!(&ed.mode, Mode::Prompt(p) if p.input == "forward-char"));
+        assert!(matches!(ed.mode(), Mode::Prompt(p) if p.input == "forward-char"));
         let ed = keys(ed, "C-g");
         assert_eq!(
-            ed.mode,
-            Mode::Normal {
+            ed.mode(),
+            &Mode::Normal {
                 prefix: Prefix::None
             }
         );
@@ -329,11 +316,11 @@ mod tests {
     fn shell_command_one_line_echoes_many_lines_open_buffer() {
         let ed = editor();
         let ed = run_command(ed, |e, fx| (e, run_shell("echo hi", fx)));
-        assert_eq!(ed.message, "hi");
+        assert_eq!(ed.message(), "hi");
 
         let ed = run_command(ed, |e, fx| (e, run_shell("echo a&& echo b", fx)));
         let out = ed
-            .buffers
+            .buffers()
             .iter()
             .find(|b| b.name == "*Shell Command Output*")
             .expect("output buffer");

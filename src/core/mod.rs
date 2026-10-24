@@ -1,17 +1,20 @@
 //! Pure editor transitions. Nothing here touches the file system, a process, Lua, or the terminal (I-14).
 
+pub mod buffer;
 pub mod commands;
 pub mod config;
 pub mod editor;
 pub mod effect;
 pub mod file;
 pub mod keymap;
+pub mod mode;
 pub mod render;
 pub mod search;
 pub mod syntax;
 pub mod text;
 pub mod undo;
 pub mod width;
+pub mod window;
 
 use crate::core::editor::Editor;
 use crate::core::effect::{Effects, Event};
@@ -31,6 +34,7 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
             result,
         } => commands::file_read(ed, target, path, result, fx),
         Event::UndoRead { id, bytes } => (commands::undo_read(ed, id, bytes), fx),
+        Event::WalRemoved => (ed, fx),
         Event::ShellDone(result) => (commands::shell_done(ed, result), fx),
         Event::LuaDone(result) => (commands::lua_done(ed, result), fx),
     }
