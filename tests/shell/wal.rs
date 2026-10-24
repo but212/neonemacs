@@ -392,7 +392,10 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
 
     let disk = file::disk_state(&old_path);
     wal::write_wal(&old_path, disk, b"modified content").unwrap();
-    assert!(wal::has_wal(&old_path), "Old WAL must exist before write-file");
+    assert!(
+        wal::has_wal(&old_path),
+        "Old WAL must exist before write-file"
+    );
 
     let ed = Editor::new(Config::default());
     let fx = request_open(&ed, old_path.clone(), None, true, Vec::new());
@@ -412,7 +415,11 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
         ed = handle(ed, None, Event::Key(k));
     }
     for c in "write-file\n".chars() {
-        let code = if c == '\n' { KeyCode::Enter } else { KeyCode::Char(c) };
+        let code = if c == '\n' {
+            KeyCode::Enter
+        } else {
+            KeyCode::Char(c)
+        };
         ed = handle(
             ed,
             None,
@@ -424,7 +431,11 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
         );
     }
     for c in format!("{}\n", new_path.display()).chars() {
-        let code = if c == '\n' { KeyCode::Enter } else { KeyCode::Char(c) };
+        let code = if c == '\n' {
+            KeyCode::Enter
+        } else {
+            KeyCode::Char(c)
+        };
         ed = handle(
             ed,
             None,
@@ -468,7 +479,9 @@ fn wal_concurrent_write_wal_does_not_collide_on_fixed_tmp() {
         .collect();
 
     for h in handles {
-        h.join().unwrap().expect("concurrent write_wal should not collide or fail with sharing violation");
+        h.join()
+            .unwrap()
+            .expect("concurrent write_wal should not collide or fail with sharing violation");
     }
 
     assert!(wal::has_wal(&target));

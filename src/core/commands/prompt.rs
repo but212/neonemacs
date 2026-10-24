@@ -333,7 +333,10 @@ mod tests {
         assert_eq!(common_prefix(&[]), "");
         assert_eq!(common_prefix(&["only"]), "only");
         assert_eq!(common_prefix(&["abc", "xyz"]), "");
-        assert_eq!(common_prefix(&["prefix_a", "prefix_b", "prefix_c"]), "prefix_");
+        assert_eq!(
+            common_prefix(&["prefix_a", "prefix_b", "prefix_c"]),
+            "prefix_"
+        );
         assert_eq!(common_prefix(&["short", "shorthand"]), "short");
         // UTF-8 multibyte characters and emojis
         assert_eq!(common_prefix(&["가나다라", "가나다마"]), "가나다");
@@ -384,7 +387,12 @@ mod tests {
     #[test]
     fn prompt_key_non_prompt_mode_is_noop() {
         let ed = editor();
-        assert_eq!(ed.mode(), &Mode::Normal { prefix: Prefix::None });
+        assert_eq!(
+            ed.mode(),
+            &Mode::Normal {
+                prefix: Prefix::None
+            }
+        );
         let (same_ed, same_fx) = prompt_key(ed.clone(), Key::plain(Code::Char('a')), Vec::new());
         assert_eq!(same_ed.mode(), ed.mode());
         assert!(same_fx.is_empty());

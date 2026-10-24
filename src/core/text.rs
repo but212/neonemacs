@@ -278,7 +278,6 @@ impl Text {
             }
         }
     }
-
 }
 #[cfg(test)]
 mod tests {

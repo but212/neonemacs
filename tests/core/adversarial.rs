@@ -435,7 +435,12 @@ fn prompt_hostile_tab_completion_and_common_prefix() {
 
     // C-g cancels gracefully
     ed = keys(ed, "C-g");
-    assert_eq!(ed.mode(), &Mode::Normal { prefix: Prefix::None });
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
     assert_eq!(ed.message(), "Quit");
 }
 
@@ -533,7 +538,12 @@ fn prompt_query_replace_chained_adversarial() {
     ed = typ(ed, "delta");
     ed = keys(ed, "RET");
     assert_eq!(ed.message(), "No match");
-    assert_eq!(ed.mode(), &Mode::Normal { prefix: Prefix::None });
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
 
     // Move to beginning and perform two-stage prompt query-replace: from -> to -> replace
     ed = keys(ed, "C-a");
@@ -555,7 +565,12 @@ fn prompt_query_replace_chained_adversarial() {
     // '!' replaces all occurrences
     ed = keys(ed, "!");
     assert_eq!(text(&ed), "delta beta delta gamma");
-    assert_eq!(ed.mode(), &Mode::Normal { prefix: Prefix::None });
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
 
     // Hostile regex syntax error in query-replace-regexp
     ed = keys(ed, "M-x");
@@ -567,7 +582,12 @@ fn prompt_query_replace_chained_adversarial() {
     ed = keys(ed, "RET");
     // Invalid regex must be caught gracefully and reported in the echo area without panic
     assert_eq!(ed.message(), "unclosed [");
-    assert_eq!(ed.mode(), &Mode::Normal { prefix: Prefix::None });
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
 }
 
 #[test]
@@ -580,5 +600,10 @@ fn prompt_shell_command_adversarial() {
 
     // Empty RET on shell-command prompt must be a clean no-op
     ed = keys(ed, "RET");
-    assert_eq!(ed.mode(), &Mode::Normal { prefix: Prefix::None });
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
 }
