@@ -49,5 +49,9 @@ bind("M-h", "mark-paragraph")
 bind("M-e", "forward-sentence")
 bind("M-a", "backward-sentence")
 
+-- Inspection & Information
+bind("M-=", "count-words-region")
+bind("C-x =", "what-cursor-position")
+
 -- Shell execution
 bind("M-!", "shell-command")

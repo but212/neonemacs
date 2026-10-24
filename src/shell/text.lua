@@ -971,3 +971,139 @@ command("delete-blank-lines", delete_blank_lines)
 command("upcase-region", upcase_region)
 command("downcase-region", downcase_region)
 command("kill-whole-line", kill_whole_line)
+
+--------------------------------------------------------------------------------
+-- 9. Text Metrics and Cursor Inspection
+--------------------------------------------------------------------------------
+
+local function pluralize(n, singular, plural)
+    return n == 1 and ("1 " .. singular) or string.format("%d %s", n, plural or (singular .. "s"))
+end
+
+local function count_lines_range(s, e)
+    if s >= e then return 0 end
+    local nls = buffer.count_lines(s, e)
+    if buffer.get_text(e - 1, e) ~= "\n" then
+        nls = nls + 1
+    end
+    return nls
+end
+
+local function count_words_and_chars(text)
+    local words = 0
+    for _ in string.gmatch(text, "%S+") do
+        words = words + 1
+    end
+    local chars = utf8.len(text) or #text
+    return words, chars
+end
+
+local function get_dwim_target()
+    local mark = buffer.mark()
+    if mark then
+        local pt = buffer.point()
+        return {
+            name = "Region",
+            s = math.min(pt, mark),
+            e = math.max(pt, mark),
+        }
+    end
+    return {
+        name = "Buffer",
+        s = 0,
+        e = buffer.len(),
+    }
+end
+
+local function count_metrics(s, e)
+    local lines = count_lines_range(s, e)
+    local text = buffer.get_text(s, e)
+    local words, chars = count_words_and_chars(text)
+    return { lines = lines, words = words, chars = chars }
+end
+
+local function format_count_metrics(target_name, m)
+    return string.format(
+        "%s has %s, %s, and %s.",
+        target_name,
+        pluralize(m.lines, "line"),
+        pluralize(m.words, "word"),
+        pluralize(m.chars, "character")
+    )
+end
+
+local function count_words_dwim()
+    local target = get_dwim_target()
+    local metrics = count_metrics(target.s, target.e)
+    message(format_count_metrics(target.name, metrics))
+end
+
+local function char_representation(code)
+    if code == 10 then
+        return "\\n"
+    elseif code == 9 then
+        return "\\t"
+    end
+    local ok, ch = pcall(utf8.char, code)
+    return ok and ch or "?"
+end
+
+local function decode_char_at(pt, total, line_end)
+    if pt == line_end then
+        return 10
+    end
+    local chunk = buffer.get_text(pt, line_end)
+    local ok, cp = pcall(utf8.codepoint, chunk, 1)
+    return ok and cp or string.byte(chunk, 1) or 0
+end
+
+local function inspect_cursor_position(pt)
+    local total = buffer.len()
+    local line_start = buffer.line_start(pt)
+    local line_end = buffer.line_end(pt)
+    local prefix = buffer.get_text(line_start, pt)
+    local col = buffer.width(prefix)
+    local pct = (total == 0) and 100 or math.floor(pt * 100 / total)
+
+    if pt >= total then
+        return { is_eof = true, pt = pt, total = total, pct = pct, col = col }
+    end
+
+    local code = decode_char_at(pt, total, line_end)
+    return {
+        is_eof = false,
+        code = code,
+        disp = char_representation(code),
+        pt = pt,
+        total = total,
+        pct = pct,
+        col = col,
+    }
+end
+
+local function format_cursor_position(info)
+    if info.is_eof then
+        return string.format("point=%d of %d (%d%%) col=%d (EOF)", info.pt, info.total, info.pct, info.col)
+    end
+    return string.format(
+        "Char: %s (%d, 0x%02x) point=%d of %d (%d%%) col=%d",
+        info.disp, info.code, info.code, info.pt, info.total, info.pct, info.col
+    )
+end
+
+local function what_cursor_position()
+    local pt = buffer.point()
+    local info = inspect_cursor_position(pt)
+    message(format_cursor_position(info))
+end
+
+local function what_line()
+    local pt = buffer.point()
+    local line_num = buffer.count_lines(0, pt) + 1
+    message(string.format("Line %d", line_num))
+end
+
+command("count-words-region", count_words_dwim)
+command("count-words", count_words_dwim)
+command("what-cursor-position", what_cursor_position)
+command("what-line", what_line)

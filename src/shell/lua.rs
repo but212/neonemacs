@@ -294,6 +294,13 @@ fn install_buffer_api<'lua, 'scope>(
         })?,
     )?;
     buffer_table.set(
+        "count_lines",
+        scope.create_function(|_, (start, end): (usize, usize)| {
+            let ed = editor_ref(cell);
+            Ok(ed.buffer().text.count_lines(start, end))
+        })?,
+    )?;
+    buffer_table.set(
         "width",
         scope.create_function(|_, s: String| {
             let ed = editor_ref(cell);
@@ -1349,6 +1356,271 @@ mod tests {
         res.unwrap();
         assert_eq!(ed.buffer().text.to_bytes(), b"line 1\n");
         assert_eq!(ed.window().point, 7);
+    }
+
+    #[test]
+    fn test_buffer_count_lines_ffi() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test.txt",
+            crate::core::text::Text::from_bytes(b"line 1\nline 2\nline 3\n"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window { buffer: id, ..w });
+        let (_ed, res) = script(
+            &lua,
+            ed,
+            r#"
+            assert(buffer.count_lines(0, 0) == 0)
+            assert(buffer.count_lines(0, 6) == 0)
+            assert(buffer.count_lines(0, 7) == 1)
+            assert(buffer.count_lines(0, 14) == 2)
+            assert(buffer.count_lines(0, 21) == 3)
+            assert(buffer.count_lines(7, 21) == 2)
+            "#,
+        );
+        res.unwrap();
+    }
+
+    #[test]
+    fn test_count_words_commands() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // 1. Empty buffer
+        let (ed, res) = script(&lua, ed, r#"run("count-words-region")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.message(),
+            "Buffer has 0 lines, 0 words, and 0 characters."
+        );
+
+        // 2. Active region
+        let (ed, id) = ed.add_buffer(
+            "test.txt",
+            crate::core::text::Text::from_bytes(b"hello world\n"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 12,
+            ..w
+        });
+        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(0), ..b });
+        let (ed, res) = script(&lua, ed, r#"run("count-words-region")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.message(),
+            "Region has 1 line, 2 words, and 12 characters."
+        );
+
+        // 3. Buffer DWIM (no mark)
+        let (ed, id2) = ed.add_buffer(
+            "test2.txt",
+            crate::core::text::Text::from_bytes(b"abc\ndef"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id2,
+            point: 0,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("count-words-region")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.message(),
+            "Buffer has 2 lines, 2 words, and 7 characters."
+        );
+
+        // 4. count-words alias
+        let (ed, res) = script(&lua, ed, r#"run("count-words")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.message(),
+            "Buffer has 2 lines, 2 words, and 7 characters."
+        );
+    }
+
+    #[test]
+    fn test_what_cursor_position() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // 1. Mid-buffer ASCII
+        let (ed, id) = ed.add_buffer(
+            "test.txt",
+            crate::core::text::Text::from_bytes(b"hello a world"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 6,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "Char: a (97, 0x61) point=6 of 13 (46%) col=6");
+
+        // 2. Control chars: newline & tab
+        let (ed, id2) = ed.add_buffer(
+            "test2.txt",
+            crate::core::text::Text::from_bytes(b"hi\nthere"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id2,
+            point: 2,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.message(),
+            "Char: \\n (10, 0x0a) point=2 of 8 (25%) col=2"
+        );
+
+        let (ed, id_tab) = ed.add_buffer(
+            "test_tab.txt",
+            crate::core::text::Text::from_bytes(b"hi\tthere"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id_tab,
+            point: 2,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "Char: \\t (9, 0x09) point=2 of 8 (25%) col=2");
+
+        // 3. EOF & empty buffer
+        let (ed, id3) = ed.add_buffer(
+            "test3.txt",
+            crate::core::text::Text::from_bytes(b"abc"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id3,
+            point: 3,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "point=3 of 3 (100%) col=3 (EOF)");
+
+        let (ed, id_empty) = ed.add_buffer(
+            "empty.txt",
+            crate::core::text::Text::from_bytes(b""),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id_empty,
+            point: 0,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "point=0 of 0 (100%) col=0 (EOF)");
+
+        // 4. Multi-byte UTF-8
+        let (ed, id4) = ed.add_buffer(
+            "test4.txt",
+            crate::core::text::Text::from_bytes("가나다".as_bytes()),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id4,
+            point: 0,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.message(),
+            "Char: 가 (44032, 0xac00) point=0 of 9 (0%) col=0"
+        );
+
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id4,
+            point: 3,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-cursor-position")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.message(),
+            "Char: 나 (45208, 0xb098) point=3 of 9 (33%) col=2"
+        );
+    }
+
+    #[test]
+    fn test_what_line() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // 1. Empty buffer
+        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "Line 1");
+
+        // 2. Multi-line buffer
+        let (ed, id) = ed.add_buffer(
+            "test.txt",
+            crate::core::text::Text::from_bytes(b"line 1\nline 2\nline 3\n"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "Line 1");
+
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 7,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "Line 2");
+
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 14,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "Line 3");
+
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 21,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("what-line")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "Line 4");
+    }
+
+    #[test]
+    fn test_inspection_keybindings() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        assert_eq!(
+            ed.keymap().lookup(&parse_keys("M-=").unwrap()),
+            Some("count-words-region")
+        );
+        assert_eq!(
+            ed.keymap().lookup(&parse_keys("C-x =").unwrap()),
+            Some("what-cursor-position")
+        );
+        assert!(ed.commands().contains("what-line"));
+        assert!(ed.commands().contains("count-words"));
     }
 
     #[test]
