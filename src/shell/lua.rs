@@ -1154,6 +1154,204 @@ mod tests {
     }
 
     #[test]
+    fn test_mark_whole_buffer() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // Multi-line non-empty buffer
+        let (ed, id) = ed.add_buffer(
+            "test.txt",
+            crate::core::text::Text::from_bytes(b"hello world\nline 2"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 5,
+            ..w
+        });
+
+        let (ed, res) = script(&lua, ed, r#"run("mark-whole-buffer")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 0);
+        assert_eq!(ed.buffer().mark, Some(18));
+        assert_eq!(ed.message(), "Mark set");
+
+        // Empty buffer
+        let (ed, empty_id) = ed.add_buffer(
+            "empty.txt",
+            crate::core::text::Text::from_bytes(b""),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: empty_id,
+            point: 0,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("mark-whole-buffer")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 0);
+        assert_eq!(ed.buffer().mark, Some(0));
+        assert_eq!(ed.message(), "Mark set");
+    }
+
+    #[test]
+    fn test_delete_blank_lines() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // Case 1: On non-blank line, delete following blank lines
+        let (ed, id1) = ed.add_buffer(
+            "test1.txt",
+            crate::core::text::Text::from_bytes(b"hello\n\n   \nworld"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id1,
+            point: 2,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"hello\nworld");
+        assert_eq!(ed.window().point, 2);
+
+        // Case 2: On blank line in a cluster, compress to 1 blank line
+        let (ed, id2) = ed.add_buffer(
+            "test2.txt",
+            crate::core::text::Text::from_bytes(b"line 1\n\n\n\nline 2"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id2,
+            point: 8,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\n\nline 2");
+
+        // Case 3: On isolated single blank line, delete it completely
+        let (ed, id3) = ed.add_buffer(
+            "test3.txt",
+            crate::core::text::Text::from_bytes(b"line 1\n\nline 2"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id3,
+            point: 7,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\nline 2");
+        assert_eq!(ed.window().point, 7);
+
+        // Case 4: On isolated single blank line at EOF
+        let (ed, id4) = ed.add_buffer(
+            "test4.txt",
+            crate::core::text::Text::from_bytes(b"line 1\n"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id4,
+            point: 7,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("delete-blank-lines")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"line 1");
+    }
+
+    #[test]
+    fn test_case_region() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // Guard: mark not set
+        let (ed, id) = ed.add_buffer(
+            "test.txt",
+            crate::core::text::Text::from_bytes(b"hello WORLD test"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 5,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("upcase-region")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "The mark is not set now");
+        assert_eq!(ed.buffer().text.to_bytes(), b"hello WORLD test");
+
+        // Execution: mark set (mark < point)
+        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(0), ..b });
+        let ed = ed.move_point(11); // covers "hello WORLD"
+        let (ed, res) = script(&lua, ed, r#"run("downcase-region")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"hello world test");
+        assert_eq!(ed.window().point, 11);
+        assert_eq!(ed.buffer().mark, Some(0));
+
+        let (ed, res) = script(&lua, ed, r#"run("upcase-region")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"HELLO WORLD test");
+        assert_eq!(ed.window().point, 11);
+        assert_eq!(ed.buffer().mark, Some(0));
+
+        // Execution: inverse region (point < mark)
+        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(5), ..b });
+        let ed = ed.move_point(0);
+        let (ed, res) = script(&lua, ed, r#"run("downcase-region")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"hello WORLD test");
+        assert_eq!(ed.window().point, 0);
+        assert_eq!(ed.buffer().mark, Some(5));
+    }
+
+    #[test]
+    fn test_kill_whole_line() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // Case 1: Kill middle line with newline
+        let (ed, id) = ed.add_buffer(
+            "test.txt",
+            crate::core::text::Text::from_bytes(b"line 1\nline 2\nline 3"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 9,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("kill-whole-line")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\nline 3");
+        assert_eq!(ed.window().point, 7);
+
+        // Yank to confirm it was stored in kill ring with newline
+        let (ed, res) = script(&lua, ed, r#"run("yank")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\nline 2\nline 3");
+
+        // Case 2: Kill final line at EOF without trailing newline
+        let (ed, id2) = ed.add_buffer(
+            "test2.txt",
+            crate::core::text::Text::from_bytes(b"line 1\nline 2"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id2,
+            point: 9,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("kill-whole-line")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"line 1\n");
+        assert_eq!(ed.window().point, 7);
+    }
+
+    #[test]
     fn config_path_follows_xdg_then_home() {
         assert_eq!(
             config_path(Some(OsStr::new("/x")), Some(Path::new("/h"))),

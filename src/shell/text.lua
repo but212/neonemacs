@@ -805,3 +805,169 @@ end
 
 command("comment-dwim", comment_dwim)
 command("comment-line", comment_dwim)
+
+--------------------------------------------------------------------------------
+-- 8. Buffer & Region Operations
+--------------------------------------------------------------------------------
+
+local function mark_whole_buffer()
+    buffer.set_point(0)
+    buffer.set_mark(buffer.len())
+    message("Mark set")
+end
+
+-- Scans contiguous blank lines forward starting at line pos.
+-- Returns the end offset (with trailing newline if present), or nil if pos is not blank.
+local function scan_blank_lines_forward(from_line_pos, total)
+    local cur_s = from_line_pos
+    local cur_e = buffer.line_end(cur_s)
+    if not is_blank_line(cur_s, cur_e) then return nil end
+
+    local last_end_with_nl = cur_e
+    while cur_s do
+        local scan_e = buffer.line_end(cur_s)
+        if not is_blank_line(cur_s, scan_e) then break end
+        if scan_e < total then
+            last_end_with_nl = scan_e + 1
+        else
+            last_end_with_nl = scan_e
+        end
+        cur_s, _ = next_line(cur_s)
+    end
+    return last_end_with_nl
+end
+
+-- Scans contiguous blank lines backward starting at line pos.
+-- Returns the start offset of the earliest contiguous blank line, or nil if pos is not blank.
+local function scan_blank_lines_backward(from_line_pos)
+    local cur_s = from_line_pos
+    local cur_e = buffer.line_end(cur_s)
+    if not is_blank_line(cur_s, cur_e) then return nil end
+
+    local earliest_s = cur_s
+    local p_s, p_e = prev_line(cur_s)
+    while p_s and is_blank_line(p_s, p_e) do
+        earliest_s = p_s
+        p_s, p_e = prev_line(p_s)
+    end
+    return earliest_s
+end
+
+-- Deletes all contiguous blank lines immediately following a non-blank line.
+local function delete_following_blank_lines(cur_e, total, orig_pt)
+    if cur_e >= total then return end
+    local first_blank_s = cur_e + 1
+    local end_with_nl = scan_blank_lines_forward(first_blank_s, total)
+    if end_with_nl then
+        buffer.delete(first_blank_s, end_with_nl)
+        buffer.set_point(orig_pt)
+    end
+end
+
+-- Deletes an isolated single blank line completely.
+local function delete_single_blank_line(cur_s, cur_e, total)
+    if cur_e < total then
+        buffer.delete(cur_s, cur_e + 1)
+        buffer.set_point(cur_s)
+    elseif cur_s > 0 then
+        buffer.delete(cur_s - 1, total)
+        buffer.set_point(cur_s - 1)
+    else
+        buffer.delete(0, total)
+        buffer.set_point(0)
+    end
+end
+
+-- Compresses a cluster of blank lines down to a single blank line.
+local function compress_blank_cluster(cur_s, cur_e, prev_blank_s, next_blank_end_with_nl)
+    if next_blank_end_with_nl then
+        local following_s = cur_e + 1
+        if following_s < next_blank_end_with_nl then
+            buffer.delete(following_s, next_blank_end_with_nl)
+        end
+    end
+    if prev_blank_s then
+        buffer.delete(prev_blank_s, cur_s)
+        buffer.set_point(prev_blank_s)
+    else
+        buffer.set_point(cur_s)
+    end
+end
+
+local function delete_blank_lines()
+    local pt = buffer.point()
+    local total = buffer.len()
+    if total == 0 then return end
+
+    local cur_s = buffer.line_start(pt)
+    local cur_e = buffer.line_end(pt)
+
+    if not is_blank_line(cur_s, cur_e) then
+        delete_following_blank_lines(cur_e, total, pt)
+    else
+        local p_s, _ = prev_line(cur_s)
+        local prev_blank_s = p_s and scan_blank_lines_backward(p_s) or nil
+
+        local n_s, _ = next_line(cur_s)
+        local next_blank_end_with_nl = n_s and scan_blank_lines_forward(n_s, total) or nil
+
+        if not prev_blank_s and not next_blank_end_with_nl then
+            delete_single_blank_line(cur_s, cur_e, total)
+        else
+            compress_blank_cluster(cur_s, cur_e, prev_blank_s, next_blank_end_with_nl)
+        end
+    end
+end
+
+local function with_active_region(action)
+    local mark = buffer.mark()
+    if not mark then
+        message("The mark is not set now")
+        return false
+    end
+
+    local pt = buffer.point()
+    local s = math.min(pt, mark)
+    local e = math.max(pt, mark)
+    if s >= e then return false end
+
+    action(s, e, pt, mark)
+    return true
+end
+
+local function transform_region(fn)
+    with_active_region(function(s, e, pt, mark)
+        local text = buffer.get_text(s, e)
+        buffer.replace(s, e, fn(text))
+        buffer.set_point(pt)
+        buffer.set_mark(mark)
+    end)
+end
+
+local function upcase_region()
+    transform_region(string.upper)
+end
+
+local function downcase_region()
+    transform_region(string.lower)
+end
+
+local function kill_whole_line()
+    local pt = buffer.point()
+    local total = buffer.len()
+    if total == 0 then return end
+
+    local s = buffer.line_start(pt)
+    local e = buffer.line_end(pt)
+    local end_with_nl = (e < total) and (e + 1) or e
+    if s >= end_with_nl then return end
+
+    buffer.kill(s, end_with_nl)
+    buffer.set_point(s)
+end
+
+command("mark-whole-buffer", mark_whole_buffer)
+command("delete-blank-lines", delete_blank_lines)
+command("upcase-region", upcase_region)
+command("downcase-region", downcase_region)
+command("kill-whole-line", kill_whole_line)
