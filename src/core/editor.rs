@@ -784,8 +784,16 @@ mod tests {
     #[test]
     fn editor_delete_and_kill_range_appends_consecutive() {
         let ed = Editor::new(Config::default());
-        let (ed, id) = ed.add_buffer("test", crate::core::text::Text::from_bytes(b"hello wonderful world"), crate::core::editor::Backing::None);
-        let ed = ed.with_window(|w| Window { buffer: id, point: 0, ..w });
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"hello wonderful world"),
+            crate::core::editor::Backing::None,
+        );
+        let ed = ed.with_window(|w| Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
 
         // Kill "hello "
         let ed = ed.kill_range(0, 6);

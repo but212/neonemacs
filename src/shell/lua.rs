@@ -250,9 +250,7 @@ fn install_buffer_api<'lua, 'scope>(
     )?;
     buffer_table.set(
         "set_point",
-        scope.create_function(|_, pos: usize| {
-            mutate_editor(cell, |ed| Ok(ed.move_point(pos)))
-        })?,
+        scope.create_function(|_, pos: usize| mutate_editor(cell, |ed| Ok(ed.move_point(pos))))?,
     )?;
     buffer_table.set(
         "len",
@@ -578,10 +576,21 @@ mod tests {
     fn api_buffer_inspection_and_mutation() {
         let lua = new_state().unwrap();
         let ed = Editor::new(Config::default());
-        let (ed, id) = ed.add_buffer("test", crate::core::text::Text::from_bytes(b"hello world\nline two"), crate::core::file::Backing::None);
-        let ed = ed.with_window(|w| crate::core::editor::Window { buffer: id, point: 0, ..w });
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"hello world\nline two"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
 
-        let (ed, result) = script(&lua, ed, r#"
+        let (ed, result) = script(
+            &lua,
+            ed,
+            r#"
             assert(buffer.len() == 20)
             assert(buffer.point() == 0)
             assert(buffer.get_text() == "hello world\nline two")
@@ -605,7 +614,8 @@ mod tests {
 
             buffer.kill(0, 3)
             assert(buffer.get_text(0, 5) == "world")
-        "#);
+        "#,
+        );
         result.unwrap();
         assert_eq!(ed.kill_ring().entries(), &[b"hi ".to_vec()]);
     }
