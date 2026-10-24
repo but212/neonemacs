@@ -325,6 +325,18 @@ fn install_buffer_api<'lua, 'scope>(
             })
         })?,
     )?;
+    buffer_table.set(
+        "mark",
+        scope.create_function(|_, ()| Ok(editor_ref(cell).buffer().mark))?,
+    )?;
+    buffer_table.set(
+        "set_mark",
+        scope.create_function(|_, pos: Option<usize>| {
+            mutate_editor(cell, |ed| {
+                Ok(ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: pos, ..b }))
+            })
+        })?,
+    )?;
     g.set("buffer", buffer_table)?;
     Ok(())
 }
@@ -904,6 +916,131 @@ mod tests {
         res.unwrap();
         assert_eq!(ed.buffer().text.to_bytes(), b"world hello!");
         assert_eq!(ed.window().point, 11);
+    }
+
+    #[test]
+    fn buffer_mark_api() {
+        let lua = new_state().unwrap();
+        let ed = Editor::new(Config::default());
+        assert_eq!(ed.buffer().mark, None);
+
+        // set mark to 5
+        let (ed, res) = script(&lua, ed, r#"buffer.set_mark(5)"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().mark, Some(5));
+
+        // query mark from lua
+        let (ed, res) = script(
+            &lua,
+            ed,
+            r#"
+            local m = buffer.mark()
+            assert(m == 5, "mark should be 5")
+            buffer.set_mark(nil)
+        "#,
+        );
+        res.unwrap();
+        assert_eq!(ed.buffer().mark, None);
+    }
+
+    #[test]
+    fn text_kill_word_and_backward() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        let (ed, id) = ed.add_buffer(
+            "test_kill",
+            crate::core::text::Text::from_bytes(b"hello world and neon"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+
+        // kill-word from point 0
+        let (ed, res) = script(&lua, ed, r#"run("kill-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b" world and neon");
+        assert_eq!(ed.window().point, 0);
+
+        // move to end and backward-kill-word
+        let len = ed.buffer().text.len();
+        let ed = ed.move_point(len);
+        let (ed, res) = script(&lua, ed, r#"run("backward-kill-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b" world and ");
+        assert_eq!(ed.window().point, ed.buffer().text.len());
+    }
+
+    #[test]
+    fn text_paragraph_motion_and_mark() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        let text = b"First paragraph line 1.\nFirst paragraph line 2.\n\nSecond paragraph line 1.";
+        let (ed, id) = ed.add_buffer(
+            "test_para",
+            crate::core::text::Text::from_bytes(text),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 5,
+            ..w
+        });
+
+        // forward-paragraph moves to blank line
+        let (ed, res) = script(&lua, ed, r#"run("forward-paragraph")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 48); // start of "\n\n"
+
+        // backward-paragraph moves to beginning of first paragraph
+        let (ed, res) = script(&lua, ed, r#"run("backward-paragraph")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 0);
+
+        // mark-paragraph sets point to 0 and mark to end of paragraph (48)
+        let ed = ed.move_point(10);
+        let (ed, res) = script(&lua, ed, r#"run("mark-paragraph")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 0);
+        assert_eq!(ed.buffer().mark, Some(48));
+    }
+
+    #[test]
+    fn text_sentence_motion_and_kill() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        let text = b"Hello world. Second sentence! Third?";
+        let (ed, id) = ed.add_buffer(
+            "test_sent",
+            crate::core::text::Text::from_bytes(text),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+
+        // forward-sentence moves right after punctuation
+        let (ed, res) = script(&lua, ed, r#"run("forward-sentence")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 12); // "Hello world."
+
+        // backward-sentence moves to start of sentence
+        let (ed, res) = script(&lua, ed, r#"run("backward-sentence")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 0);
+
+        // kill-sentence from point 0 kills "Hello world. "
+        let (ed, res) = script(&lua, ed, r#"run("kill-sentence")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"Second sentence! Third?");
+        assert_eq!(ed.window().point, 0);
     }
 
     #[test]

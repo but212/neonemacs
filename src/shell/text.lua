@@ -1,7 +1,7 @@
--- text.lua: Standard text transformation, movement, and editing commands (§6, ADR 0006, ADR 0007)
+-- text.lua: Standard text transformation, movement, and editing commands (§6, ADR 0006, ADR 0007, ADR 0008)
 
 --------------------------------------------------------------------------------
--- 1. Paragraph Formatting
+-- 1. Core Primitives (Line, Char, Byte Predicates)
 --------------------------------------------------------------------------------
 
 local function is_blank_line(line_start, line_end)
@@ -9,96 +9,56 @@ local function is_blank_line(line_start, line_end)
     return s:match("^%s*$") ~= nil
 end
 
-local function get_paragraph_bounds(p)
-    local l_start = buffer.line_start(p)
-    local l_end = buffer.line_end(p)
-    if is_blank_line(l_start, l_end) then
-        return nil
-    end
-
-    local p_start = l_start
-    while p_start > 0 do
-        local prev_end = p_start - 1
-        local prev_start = buffer.line_start(prev_end)
-        if is_blank_line(prev_start, prev_end) then
-            break
-        end
-        p_start = prev_start
-    end
-
-    local total_len = buffer.len()
-    local p_end = l_end
-    while p_end < total_len do
-        local next_start = p_end + 1
-        local next_end = buffer.line_end(next_start)
-        if is_blank_line(next_start, next_end) then
-            break
-        end
-        p_end = next_end
-    end
-
-    return p_start, p_end
+local function next_line(pos)
+    local total = buffer.len()
+    if pos >= total then return nil, nil end
+    local e = buffer.line_end(pos)
+    if e >= total then return nil, nil end
+    local next_s = e + 1
+    local next_e = buffer.line_end(next_s)
+    return next_s, next_e
 end
 
--- fill-paragraph: formats current paragraph respecting fill-column and first-line indent
-command("fill-paragraph", function()
-    local p = buffer.point()
-    local p_start, p_end = get_paragraph_bounds(p)
-    if not p_start then
-        return
-    end
-
-    local fill = get("fill-column") or 70
-    local text = buffer.get_text(p_start, p_end)
-    local first_line_end = buffer.line_end(p_start)
-    local first_line = buffer.get_text(p_start, first_line_end)
-    local indent = first_line:match("^[ \t]*") or ""
-    local indent_width = buffer.width(indent)
-
-    local words = {}
-    for w in text:gmatch("%S+") do
-        table.insert(words, w)
-    end
-    if #words == 0 then
-        return
-    end
-
-    local out = indent
-    local line_width = indent_width
-    local line_has_word = false
-
-    for _, w in ipairs(words) do
-        local w_width = buffer.width(w)
-        if line_has_word and (line_width + 1 + w_width > fill) then
-            out = out .. "\n" .. indent
-            line_width = indent_width
-            line_has_word = false
-        end
-        if line_has_word then
-            out = out .. " "
-            line_width = line_width + 1
-        end
-        out = out .. w
-        line_width = line_width + w_width
-        line_has_word = true
-    end
-
-    buffer.replace(p_start, p_end, out)
-    buffer.set_point(p_start)
-end)
-
---------------------------------------------------------------------------------
--- 2. Word Boundary Primitives & Motion
---------------------------------------------------------------------------------
+local function prev_line(pos)
+    if pos <= 0 then return nil, nil end
+    local cur_s = buffer.line_start(pos)
+    if cur_s <= 0 then return nil, nil end
+    local prev_e = cur_s - 1
+    local prev_s = buffer.line_start(prev_e)
+    return prev_s, prev_e
+end
 
 local function is_word_byte(b)
     if not b then return false end
-    -- ASCII alphanumeric or underscore, or UTF-8 multibyte (> 127)
     return (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (b == 95) or (b >= 128)
 end
 
--- Scans forward from `from_pos` for the next word.
--- Returns `w_start, w_end` (0-based byte offsets), or `nil, nil` if no word follows.
+local function is_sentence_punct(b)
+    return b == 46 or b == 63 or b == 33 -- . ? !
+end
+
+local function is_sentence_closer(b)
+    return b == 39 or b == 34 or b == 41 or b == 93 or b == 125 -- ' " ) ] }
+end
+
+local function is_sentence_space(b)
+    return b == 32 or b == 9 or b == 10 or b == 13
+end
+
+local function utf8_char_len(byte_val)
+    if not byte_val then return 1 end
+    if byte_val < 128 then return 1
+    elseif byte_val >= 192 and byte_val < 224 then return 2
+    elseif byte_val >= 224 and byte_val < 240 then return 3
+    elseif byte_val >= 240 and byte_val < 248 then return 4
+    else return 1
+    end
+end
+
+--------------------------------------------------------------------------------
+-- 2. Word Operations (Motion, Transformations & Kills)
+--------------------------------------------------------------------------------
+
 local function scan_word_forward(from_pos)
     local len = buffer.len()
     if from_pos >= len then return nil, nil end
@@ -119,8 +79,6 @@ local function scan_word_forward(from_pos)
     return w_start, w_end
 end
 
--- Scans backward from `from_pos` for the previous word.
--- Returns `w_start, w_end` (0-based byte offsets), or `nil, nil` if no word precedes.
 local function scan_word_backward(from_pos)
     if from_pos <= 0 then return nil, nil end
     local text = buffer.get_text(0, from_pos)
@@ -171,10 +129,6 @@ command("end-of-buffer", function()
     buffer.set_point(buffer.len())
 end)
 
---------------------------------------------------------------------------------
--- 3. Word Transformations & Kills
---------------------------------------------------------------------------------
-
 local function transform_word(fn)
     local p = buffer.point()
     local w_end = forward_word_end(p)
@@ -222,7 +176,297 @@ command("backward-kill-word", function()
 end)
 
 --------------------------------------------------------------------------------
--- 4. Whitespace Manipulation & Line Operations
+-- 3. Sentence Operations (Motion & Kills)
+--------------------------------------------------------------------------------
+
+local function scan_sentence_forward(from_pos)
+    local total_len = buffer.len()
+    if from_pos >= total_len then return total_len end
+    local text = buffer.get_text(from_pos, total_len)
+    local text_len = #text
+
+    local i = 1
+    while i <= text_len do
+        local b = string.byte(text, i)
+        if is_sentence_punct(b) then
+            local j = i + 1
+            while j <= text_len and is_sentence_closer(string.byte(text, j)) do
+                j = j + 1
+            end
+            if j > text_len then
+                return from_pos + text_len
+            end
+            local next_b = string.byte(text, j)
+            if is_sentence_space(next_b) then
+                local target = from_pos + j - 1
+                if target > from_pos then
+                    return target
+                end
+            end
+        end
+        i = i + 1
+    end
+    return total_len
+end
+
+local function scan_sentence_backward(from_pos)
+    if from_pos <= 0 then return 0 end
+    local text = buffer.get_text(0, from_pos)
+    local text_len = #text
+
+    local i = text_len
+    while i >= 1 and is_sentence_space(string.byte(text, i)) do
+        i = i - 1
+    end
+    if i == 0 then return 0 end
+
+    while i >= 1 do
+        local b = string.byte(text, i)
+        if is_sentence_punct(b) then
+            local j = i + 1
+            while j <= text_len and is_sentence_closer(string.byte(text, j)) do
+                j = j + 1
+            end
+            if j <= text_len and is_sentence_space(string.byte(text, j)) then
+                local k = j
+                while k <= text_len and is_sentence_space(string.byte(text, k)) do
+                    k = k + 1
+                end
+                if k - 1 < from_pos then
+                    return k - 1
+                end
+            end
+        end
+        i = i - 1
+    end
+    return 0
+end
+
+-- forward-sentence: move point forward to end of sentence
+command("forward-sentence", function()
+    local p = buffer.point()
+    buffer.set_point(scan_sentence_forward(p))
+end)
+
+-- backward-sentence: move point backward to beginning of sentence
+command("backward-sentence", function()
+    local p = buffer.point()
+    buffer.set_point(scan_sentence_backward(p))
+end)
+
+-- kill-sentence: kill from point to end of sentence (including trailing space on same line, preserving newline)
+command("kill-sentence", function()
+    local p = buffer.point()
+    local s_end = scan_sentence_forward(p)
+    if s_end <= p then return end
+
+    local l_end = buffer.line_end(p)
+    local kill_end = s_end
+    if kill_end < l_end then
+        local rest = buffer.get_text(kill_end, l_end)
+        local spaces = rest:match("^[ \t]+")
+        if spaces then
+            kill_end = kill_end + #spaces
+        end
+    end
+    kill_end = math.min(kill_end, l_end)
+    if kill_end > p then
+        buffer.kill(p, kill_end)
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- 4. Paragraph Operations (Formatting, Motion & Marking)
+--------------------------------------------------------------------------------
+
+local function skip_lines_while(s, e, dir_fn, cond_fn)
+    local cur_s, cur_e = s, e
+    while true do
+        local next_s, next_e = dir_fn(cur_s)
+        if not next_s or not cond_fn(next_s, next_e) then
+            return cur_s, cur_e
+        end
+        cur_s, cur_e = next_s, next_e
+    end
+end
+
+local function get_paragraph_bounds(p)
+    local l_start = buffer.line_start(p)
+    local l_end = buffer.line_end(p)
+    if is_blank_line(l_start, l_end) then
+        return nil
+    end
+
+    local p_start, _ = skip_lines_while(l_start, l_end, prev_line, function(s, e)
+        return not is_blank_line(s, e)
+    end)
+
+    local _, p_end = skip_lines_while(l_start, l_end, next_line, function(s, e)
+        return not is_blank_line(s, e)
+    end)
+
+    return p_start, p_end
+end
+
+local function scan_paragraph_forward(p)
+    local total_len = buffer.len()
+    local cur_s = buffer.line_start(p)
+    local cur_e = buffer.line_end(p)
+
+    if not is_blank_line(cur_s, cur_e) then
+        local _, last_text_e = skip_lines_while(cur_s, cur_e, next_line, function(s, e)
+            return not is_blank_line(s, e)
+        end)
+        if last_text_e >= total_len then
+            return total_len
+        end
+        return last_text_e + 1
+    else
+        local first_text_s, first_text_e = nil, nil
+        local cur = cur_e
+        while cur < total_len do
+            local ns, ne = next_line(cur)
+            if not ns then break end
+            if not is_blank_line(ns, ne) then
+                first_text_s, first_text_e = ns, ne
+                break
+            end
+            cur = ne
+        end
+        if not first_text_s then return total_len end
+
+        local _, last_text_e = skip_lines_while(first_text_s, first_text_e, next_line, function(s, e)
+            return not is_blank_line(s, e)
+        end)
+        if last_text_e >= total_len then
+            return total_len
+        end
+        return last_text_e + 1
+    end
+end
+
+local function scan_paragraph_backward(p)
+    if p <= 0 then return 0 end
+    local cur_s = buffer.line_start(p)
+    local cur_e = buffer.line_end(p)
+
+    if not is_blank_line(cur_s, cur_e) then
+        local para_s, _ = skip_lines_while(cur_s, cur_e, prev_line, function(s, e)
+            return not is_blank_line(s, e)
+        end)
+        if p > para_s then
+            return para_s
+        end
+        local prev_text_s, prev_text_e = nil, nil
+        local cur = para_s
+        while cur > 0 do
+            local ps, pe = prev_line(cur)
+            if not ps then break end
+            if not is_blank_line(ps, pe) then
+                prev_text_s, prev_text_e = ps, pe
+                break
+            end
+            cur = ps
+        end
+        if not prev_text_s then return 0 end
+        local prior_para_s, _ = skip_lines_while(prev_text_s, prev_text_e, prev_line, function(s, e)
+            return not is_blank_line(s, e)
+        end)
+        return prior_para_s
+    else
+        local prev_text_s, prev_text_e = nil, nil
+        local cur = cur_s
+        while cur > 0 do
+            local ps, pe = prev_line(cur)
+            if not ps then break end
+            if not is_blank_line(ps, pe) then
+                prev_text_s, prev_text_e = ps, pe
+                break
+            end
+            cur = ps
+        end
+        if not prev_text_s then return 0 end
+        local prior_para_s, _ = skip_lines_while(prev_text_s, prev_text_e, prev_line, function(s, e)
+            return not is_blank_line(s, e)
+        end)
+        return prior_para_s
+    end
+end
+
+-- fill-paragraph: formats current paragraph respecting fill-column and first-line indent
+command("fill-paragraph", function()
+    local p = buffer.point()
+    local p_start, p_end = get_paragraph_bounds(p)
+    if not p_start then
+        return
+    end
+
+    local fill = get("fill-column") or 70
+    local text = buffer.get_text(p_start, p_end)
+    local first_line_end = buffer.line_end(p_start)
+    local first_line = buffer.get_text(p_start, first_line_end)
+    local indent = first_line:match("^[ \t]*") or ""
+    local indent_width = buffer.width(indent)
+
+    local words = {}
+    for w in text:gmatch("%S+") do
+        table.insert(words, w)
+    end
+    if #words == 0 then
+        return
+    end
+
+    local out = indent
+    local line_width = indent_width
+    local line_has_word = false
+
+    for _, w in ipairs(words) do
+        local w_width = buffer.width(w)
+        if line_has_word and (line_width + 1 + w_width > fill) then
+            out = out .. "\n" .. indent
+            line_width = indent_width
+            line_has_word = false
+        end
+        if line_has_word then
+            out = out .. " "
+            line_width = line_width + 1
+        end
+        out = out .. w
+        line_width = line_width + w_width
+        line_has_word = true
+    end
+
+    buffer.replace(p_start, p_end, out)
+    buffer.set_point(p_start)
+end)
+
+-- forward-paragraph: move point forward to end of paragraph (blank line or EOF)
+command("forward-paragraph", function()
+    local p = buffer.point()
+    buffer.set_point(scan_paragraph_forward(p))
+end)
+
+-- backward-paragraph: move point backward to start of paragraph
+command("backward-paragraph", function()
+    local p = buffer.point()
+    buffer.set_point(scan_paragraph_backward(p))
+end)
+
+-- mark-paragraph: set mark at end of paragraph and point at start
+command("mark-paragraph", function()
+    local p = buffer.point()
+    local p_start, p_end = get_paragraph_bounds(p)
+    if not p_start then
+        return
+    end
+    local total_len = buffer.len()
+    local m_end = math.min(total_len, p_end + 1)
+    buffer.set_point(p_start)
+    buffer.set_mark(m_end)
+end)
+
+--------------------------------------------------------------------------------
+-- 5. Whitespace Manipulation & Line Operations
 --------------------------------------------------------------------------------
 
 -- open-line: insert newline at point without advancing point
@@ -240,14 +484,14 @@ local function join_line_handler()
     end
     local prev_end = l_start - 1
     local prev_start = buffer.line_start(prev_end)
-    local prev_line = buffer.get_text(prev_start, prev_end)
+    local prev_line_text = buffer.get_text(prev_start, prev_end)
     local l_end = buffer.line_end(p)
     local curr_line = buffer.get_text(l_start, l_end)
 
     -- Scan backward across trailing spaces on previous line
     local prev_trailing = 0
-    while prev_trailing < #prev_line do
-        local b = string.byte(prev_line, #prev_line - prev_trailing)
+    while prev_trailing < #prev_line_text do
+        local b = string.byte(prev_line_text, #prev_line_text - prev_trailing)
         if b == 32 or b == 9 then
             prev_trailing = prev_trailing + 1
         else
@@ -324,18 +568,8 @@ command("delete-horizontal-space", function()
 end)
 
 --------------------------------------------------------------------------------
--- 5. Transposition (Chars & Words)
+-- 6. Transposition (Chars & Words)
 --------------------------------------------------------------------------------
-
-local function utf8_char_len(byte_val)
-    if not byte_val then return 1 end
-    if byte_val < 128 then return 1
-    elseif byte_val >= 192 and byte_val < 224 then return 2
-    elseif byte_val >= 224 and byte_val < 240 then return 3
-    elseif byte_val >= 240 and byte_val < 248 then return 4
-    else return 1
-    end
-end
 
 local function prev_char_span(line, rel_p)
     if rel_p <= 1 then return nil, nil end
@@ -353,86 +587,96 @@ local function next_char_span(line, rel_p)
     return rel_p, math.min(#line, rel_p + len - 1)
 end
 
--- transpose-chars: swap adjacent characters around point with UTF-8 and EOL safety
+-- transpose-chars: swap adjacent characters around point
 command("transpose-chars", function()
-    local total_len = buffer.len()
-    if total_len < 2 then return end
-
     local p = buffer.point()
+    local len = buffer.len()
+    if len < 2 then return end
+
     local l_start = buffer.line_start(p)
     local l_end = buffer.line_end(p)
+    if l_start >= l_end then return end
+
     local line = buffer.get_text(l_start, l_end)
     local rel_p = p - l_start + 1
 
-    local c1_start, c1_end
-    local c2_start, c2_end
-    local target_point
-
+    local p1_s, p1_e, p2_s, p2_e
     if rel_p > #line then
-        -- At EOL / EOB: swap the two characters preceding point
-        c2_start, c2_end = prev_char_span(line, rel_p)
-        if not c2_start then return end
-        c1_start, c1_end = prev_char_span(line, c2_start)
-        if not c1_start then return end
-        target_point = p
+        -- At end of line: swap the two preceding characters
+        local prev2_s, prev2_e = prev_char_span(line, rel_p)
+        if not prev2_s then return end
+        local prev1_s, prev1_e = prev_char_span(line, prev2_s)
+        if not prev1_s then return end
+        p1_s, p1_e = prev1_s, prev1_e
+        p2_s, p2_e = prev2_s, prev2_e
     else
-        -- Inside line: swap character before point with character at point
-        c1_start, c1_end = prev_char_span(line, rel_p)
-        if not c1_start then return end
-        c2_start, c2_end = next_char_span(line, rel_p)
-        if not c2_start then return end
-        target_point = l_start + c2_end
+        -- Middle of line: swap character before point with character at/after point
+        local prev_s, prev_e = prev_char_span(line, rel_p)
+        if not prev_s then return end
+        local next_s, next_e = next_char_span(line, rel_p)
+        if not next_s then return end
+        p1_s, p1_e = prev_s, prev_e
+        p2_s, p2_e = next_s, next_e
     end
 
-    local abs_start = l_start + c1_start - 1
-    local abs_end = l_start + c2_end
-    local c1 = string.sub(line, c1_start, c1_end)
-    local c2 = string.sub(line, c2_start, c2_end)
+    local c1 = string.sub(line, p1_s, p1_e)
+    local c2 = string.sub(line, p2_s, p2_e)
+    local abs_p1_s = l_start + (p1_s - 1)
+    local abs_p2_e = l_start + p2_e
 
-    buffer.replace(abs_start, abs_end, c2 .. c1)
-    buffer.set_point(target_point)
+    buffer.replace(abs_p1_s, abs_p2_e, c2 .. c1)
+    buffer.set_point(abs_p2_e)
 end)
 
 -- transpose-words: swap adjacent words around point
 command("transpose-words", function()
     local p = buffer.point()
-    local l_start = buffer.line_start(p)
-    local l_end = buffer.line_end(p)
-    local line = buffer.get_text(l_start, l_end)
-    local rel_p = p - l_start + 1
+    local len = buffer.len()
+    if len < 2 then return end
 
-    local is_cur_word = false
-    if rel_p <= #line then
-        is_cur_word = is_word_byte(string.byte(line, rel_p))
-    end
+    local w1_s, w1_e, w2_s, w2_e
+    local fw1_s, fw1_e = scan_word_forward(p)
+    local bw1_s, bw1_e = scan_word_backward(p)
 
-    local w1_start, w1_end
-    local w2_start, w2_end
-
-    if is_cur_word then
-        -- Point is inside a word: that word is word 1
-        local text_before = buffer.get_text(0, p)
-        local i = #text_before
-        while i >= 1 and is_word_byte(string.byte(text_before, i)) do
-            i = i - 1
-        end
-        w1_start = i
-        w1_end = forward_word_end(p)
-        w2_start, w2_end = scan_word_forward(w1_end)
+    if not bw1_s then
+        if not fw1_s then return end
+        local fw2_s, fw2_e = scan_word_forward(fw1_e)
+        if not fw2_s then return end
+        w1_s, w1_e = fw1_s, fw1_e
+        w2_s, w2_e = fw2_s, fw2_e
     else
-        -- Point is outside a word
-        w1_start, w1_end = scan_word_backward(p)
-        w2_start, w2_end = scan_word_forward(p)
+        if p <= bw1_e then
+            local prev_w_s, prev_w_e = scan_word_backward(bw1_s)
+            if prev_w_s then
+                w1_s, w1_e = prev_w_s, prev_w_e
+                w2_s, w2_e = bw1_s, bw1_e
+            else
+                if not fw1_s or fw1_s == bw1_s then
+                    fw1_s, fw1_e = scan_word_forward(bw1_e)
+                end
+                if not fw1_s then return end
+                w1_s, w1_e = bw1_s, bw1_e
+                w2_s, w2_e = fw1_s, fw1_e
+            end
+        else
+            if not fw1_s then
+                local prev_w_s, prev_w_e = scan_word_backward(bw1_s)
+                if not prev_w_s then return end
+                w1_s, w1_e = prev_w_s, prev_w_e
+                w2_s, w2_e = bw1_s, bw1_e
+            else
+                w1_s, w1_e = bw1_s, bw1_e
+                w2_s, w2_e = fw1_s, fw1_e
+            end
+        end
     end
 
-    if not w1_start or not w2_start or w1_start >= w2_start then
-        return
-    end
+    if not w1_s or not w2_s or w1_s >= w2_s then return end
 
-    local w1_text = buffer.get_text(w1_start, w1_end)
-    local sep = buffer.get_text(w1_end, w2_start)
-    local w2_text = buffer.get_text(w2_start, w2_end)
+    local word1 = buffer.get_text(w1_s, w1_e)
+    local sep = buffer.get_text(w1_e, w2_s)
+    local word2 = buffer.get_text(w2_s, w2_e)
 
-    buffer.replace(w1_start, w2_end, w2_text .. sep .. w1_text)
-    buffer.set_point(w2_end)
+    buffer.replace(w1_s, w2_e, word2 .. sep .. word1)
+    buffer.set_point(w1_s + #word2 + #sep + #word1)
 end)
