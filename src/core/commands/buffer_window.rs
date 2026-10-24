@@ -11,7 +11,7 @@ use crate::core::effect::{Effect, Effects};
 // --- Layer 1: Pure domain primitives ---
 
 /// Returns true if killing the buffer requires user confirmation.
-pub fn kill_requires_confirmation(is_modified: bool) -> bool {
+pub const fn kill_requires_confirmation(is_modified: bool) -> bool {
     is_modified
 }
 

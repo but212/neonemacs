@@ -58,7 +58,7 @@ impl SyntaxRegistry {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.languages.is_empty()
     }
 

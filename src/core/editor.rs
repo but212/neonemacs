@@ -180,7 +180,7 @@ impl Editor {
         self
     }
 
-    pub fn syntax_registry(&self) -> &SyntaxRegistry {
+    pub const fn syntax_registry(&self) -> &SyntaxRegistry {
         &self.syntax_registry
     }
 
@@ -189,7 +189,7 @@ impl Editor {
         self
     }
 
-    pub fn commands(&self) -> &CommandRegistry {
+    pub const fn commands(&self) -> &CommandRegistry {
         &self.commands
     }
 
