@@ -24,11 +24,19 @@ bind("M-d", "kill-word")
 bind("M-DEL", "backward-kill-word")
 bind("M-SPC", "just-one-space")
 bind("M-\\", "delete-horizontal-space")
+bind("C-o", "open-line")
+bind("M-^", "delete-indentation")
+bind("C-t", "transpose-chars")
+bind("M-t", "transpose-words")
 
 -- Search & Navigation
 bind("C-r", "isearch-backward")
 bind("M-%", "query-replace")
 bind("M-g", "goto-line")
+bind("M-f", "forward-word")
+bind("M-b", "backward-word")
+bind("M-<", "beginning-of-buffer")
+bind("M->", "end-of-buffer")
 
 -- Shell execution
 bind("M-!", "shell-command")

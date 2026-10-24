@@ -773,6 +773,140 @@ mod tests {
     }
 
     #[test]
+    fn text_word_and_buffer_motion() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"hello world neon"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+
+        // forward-word: 0 -> 5 ("hello"), then 5 -> 11 ("world")
+        let (ed, res) = script(&lua, ed, r#"run("forward-word")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 5);
+
+        let (ed, res) = script(&lua, ed, r#"run("forward-word")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 11);
+
+        // backward-word: 11 -> 6 (start of "world")
+        let (ed, res) = script(&lua, ed, r#"run("backward-word")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 6);
+
+        // end-of-buffer & beginning-of-buffer
+        let (ed, res) = script(&lua, ed, r#"run("end-of-buffer")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 16);
+
+        let (ed, res) = script(&lua, ed, r#"run("beginning-of-buffer")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 0);
+    }
+
+    #[test]
+    fn text_open_line_and_join_line() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"first line\n   second line"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 5, // inside "first"
+            ..w
+        });
+
+        // open-line: inserts \n, point stays at 5
+        let (ed, res) = script(&lua, ed, r#"run("open-line")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 5);
+        assert_eq!(ed.buffer().text.to_bytes(), b"first\n line\n   second line");
+
+        // join-line / delete-indentation on 3rd line
+        let ed = ed.move_point(20); // inside "second line"
+        let (ed, res) = script(&lua, ed, r#"run("join-line")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"first\n line second line");
+
+        // delete-indentation alias on 2nd line
+        let ed = ed.move_point(8);
+        let (ed, res) = script(&lua, ed, r#"run("delete-indentation")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"first line second line");
+    }
+
+    #[test]
+    fn text_transpose_chars_and_words() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+        // transpose-chars in middle
+        let (ed, id) = ed.add_buffer(
+            "test1",
+            crate::core::text::Text::from_bytes(b"abc"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 1, // before 'b'
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("transpose-chars")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"bac");
+        assert_eq!(ed.window().point, 2);
+
+        // transpose-chars at EOL
+        let ed = ed.move_point(3);
+        let (ed, res) = script(&lua, ed, r#"run("transpose-chars")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"bca");
+        assert_eq!(ed.window().point, 3);
+
+        // transpose-chars UTF-8 Korean: "가나다" (3 bytes each)
+        let (ed, id2) = ed.add_buffer(
+            "test2",
+            crate::core::text::Text::from_bytes("가나다".as_bytes()),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id2,
+            point: 3, // before '나'
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("transpose-chars")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), "나가다".as_bytes());
+        assert_eq!(ed.window().point, 6);
+
+        // transpose-words: "hello world" -> "world hello"
+        let (ed, id3) = ed.add_buffer(
+            "test3",
+            crate::core::text::Text::from_bytes(b"hello world!"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id3,
+            point: 5,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("transpose-words")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"world hello!");
+        assert_eq!(ed.window().point, 11);
+    }
+
+    #[test]
     fn config_path_follows_xdg_then_home() {
         assert_eq!(
             config_path(Some(OsStr::new("/x")), Some(Path::new("/h"))),

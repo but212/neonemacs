@@ -90,7 +90,7 @@
 - 삽입이 기본이자 유일한 입력 방식이다. 덮어쓰기 모드는 없다.
 - `C-SPC`로 마크를 찍으면 마크와 커서 사이가 영역이다. `C-w`, `M-w`, `C-y`로 잘라내기, 복사, 붙여넣기를 한다. 잘라낸 텍스트 순환(`yank-pop`)은 `M-x`로 호출한다.
 - **킬 링(KillRing) 불변식**: 잘라낸 텍스트 이력은 독립된 `KillRing` 타입으로 캡슐화되어 관리된다 (I-26). 연속된 `kill-line` 등은 마지막 킬 항목에 이어 붙이고(`append_last`), `yank-pop`은 링을 1칸 순환(`rotate_right`)시킨다. 원시 바이트 목록에 대한 외부 직접 변이는 배제된다.
-- 줄 끝까지 잘라내기(`kill-line`), 문단 재정렬(`fill-paragraph`), 단어 대소문자 변환(`upcase-word`, `downcase-word`, `capitalize-word`), 공백 정리(`just-one-space`, `delete-horizontal-space`), 단어 단위 잘라내기(`kill-word`, `backward-kill-word`)는 전용 단축키 및 `M-x`로 실행한다 (ADR 0005, ADR 0006). 문단 정렬과 텍스트 변환 로직은 내장 스크립트(`text.lua`)로 제공되며, 채움 열은 설정 값(`fill-column`)으로 지정한다.
+- 줄 끝까지 잘라내기(`kill-line`), 문단 재정렬(`fill-paragraph`), 단어 대소문자 변환(`upcase-word`, `downcase-word`, `capitalize-word`), 공백 정리(`just-one-space`, `delete-horizontal-space`), 단어 단위 잘라내기(`kill-word`, `backward-kill-word`), 단어 및 버퍼 이동(`forward-word`, `backward-word`, `beginning-of-buffer`, `end-of-buffer`), 개행 삽입(`open-line`), 줄 합치기(`delete-indentation` / `join-line`), 문자 및 단어 교환(`transpose-chars`, `transpose-words`)은 전용 단축키 및 `M-x`로 실행한다 (ADR 0005, ADR 0006, ADR 0007). 문단 정렬과 텍스트 변환/이동 로직은 내장 스크립트(`text.lua`)로 제공되며, 채움 열은 설정 값(`fill-column`)으로 지정한다.
 - **커서 및 앵커 불변식**: 커서와 마크는 모든 이동과 편집 상태 전이에서 항상 버퍼 범위(0..=길이) 내의 유효한 문자 경계에만 놓인다. 다중 바이트 문자 중간이나 버퍼 범위를 벗어나는 커서 상태는 데이터 구조와 전이 생성자 수준에서 원천적으로 배제된다.
 
 ## 7. 실행 취소 및 크래시 복구
@@ -165,7 +165,7 @@
     - `buffer.insert(pos, text)` / `buffer.delete(start, end)`: 텍스트 삽입 및 삭제
     - `buffer.replace(start, end, text)`: 원자적 텍스트 치환
     - `buffer.kill(start, end)`: 텍스트 삭제 후 킬 링 푸시 (연속 실행 시 이전 킬에 병합, I-09)
-- 기본 구문 강조(`syntax.lua`), 텍스트 변환 명령어(`text.lua`), 표준 확장 키바인딩(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x u`, `M-q`, `M-y`, `C-r`, `M-%`, `M-g`, `M-!`, `M-u`, `M-l`, `M-c`, `M-d`, `M-DEL`, `M-SPC`, `M-\`)는 바이너리 내장 스크립트로 제공되며, `init.lua` 실행 전에 부트스트랩되어 사용자 설정에서 자유롭게 재정의하거나 해제할 수 있다.
+- 기본 구문 강조(`syntax.lua`), 텍스트 변환 및 이동 명령어(`text.lua`), 표준 확장 키바인딩(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x u`, `M-q`, `M-y`, `C-r`, `M-%`, `M-g`, `M-!`, `M-u`, `M-l`, `M-c`, `M-d`, `M-DEL`, `M-SPC`, `M-\`, `C-o`, `M-^`, `C-t`, `M-t`, `M-f`, `M-b`, `M-<`, `M->`)는 바이너리 내장 스크립트로 제공되며, `init.lua` 실행 전에 부트스트랩되어 사용자 설정에서 자유롭게 재정의하거나 해제할 수 있다.
 - 다중 버퍼 임의 접근, 이벤트 훅, 파일 시스템 직접 IO는 공개하지 않는다.
 - 생존 집합 밖의 키는 Lua 설정으로 추가할 수 있다.
 
