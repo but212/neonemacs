@@ -156,7 +156,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
-        let status = fit(&status_text(buf, w.point), area.w, '-');
+        let status = fit(&status_text(buf, w.point, area.w), area.w, '-');
         let status_cells: Vec<Cell> = status.into_iter().map(Cell::plain).collect();
         grid = put(
             grid,
@@ -305,11 +305,22 @@ fn glyph(c: char, w: usize) -> Vec<String> {
     cells
 }
 
-fn status_text(buf: &Buffer, point: usize) -> String {
+/// The status line for a window `width` cells wide. The EOL mode is dropped first when it does not fit.
+fn status_text(buf: &Buffer, point: usize, width: usize) -> String {
     let mark = if buf.modified { "**" } else { "--" };
     let view = if buf.view_only { " (view)" } else { "" };
     let percent = (point * 100).checked_div(buf.text.len()).unwrap_or(100);
-    format!("-{mark}-  {}{view}  {percent}%", buf.name)
+    let head = format!("-{mark}-  {}{view}", buf.name);
+    let full = format!("{head}  {}  {percent}%", buf.eol.label());
+    if text_width(&full) <= width {
+        full
+    } else {
+        format!("{head}  {percent}%")
+    }
+}
+
+fn text_width(s: &str) -> usize {
+    s.chars().map(char_width).sum()
 }
 
 /// Fits `s` into `width` cells, padding with `fill`. Wide characters are not split.
@@ -348,6 +359,7 @@ pub fn diff(prev: &[Vec<Cell>], next: &[Vec<Cell>]) -> Vec<(usize, Vec<Cell>)> {
 mod tests {
     use super::*;
     use crate::core::config::Config;
+    use crate::core::eol::Eol;
 
     fn screen(text: &str, point: usize, cols: usize, rows: usize) -> Frame {
         let ed = Editor::new(Config::default())
@@ -400,8 +412,34 @@ mod tests {
         let ed = scroll(ed, 30, 3);
         let f = frame(&ed, 30, 3);
         let r = f.row_strings();
-        assert!(r[1].starts_with("-**-  f.txt (view)  0%"));
+        assert!(r[1].starts_with("-**-  f.txt (view)  LF  0%"));
         assert!(r[1].ends_with('-'));
+    }
+
+    fn status_editor(eol: Eol) -> Editor {
+        Editor::new(Config::default()).with_current_buffer(|b| Buffer {
+            text: Text::from_bytes(b"abc"),
+            eol,
+            name: "f.txt".to_owned(),
+            ..b
+        })
+    }
+
+    #[test]
+    fn status_line_shows_eol_mode() {
+        let ed = scroll(status_editor(Eol::Crlf), 21, 3);
+        assert_eq!(frame(&ed, 21, 3).row_strings()[1], "----  f.txt  CRLF  0%");
+
+        let ed = scroll(status_editor(Eol::Lf), 19, 3);
+        assert_eq!(frame(&ed, 19, 3).row_strings()[1], "----  f.txt  LF  0%");
+    }
+
+    #[test]
+    fn status_line_drops_eol_before_percent_when_narrow() {
+        // Full text is 21 cells. At 20 the EOL goes and the percent stays.
+        let ed = scroll(status_editor(Eol::Crlf), 20, 3);
+        let r = frame(&ed, 20, 3).row_strings();
+        assert_eq!(r[1], format!("{:-<20}", "----  f.txt  0%"));
     }
 
     #[test]

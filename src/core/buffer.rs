@@ -3,13 +3,13 @@
 
 use std::path::Path;
 
+use crate::core::eol::Eol;
 use crate::core::file::Backing;
 use crate::core::text::Text;
 use crate::core::undo::UndoLog;
 use crate::core::window::snap_point as snap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
 pub struct BufferId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,7 @@ pub struct Buffer {
     pub mark: Option<usize>,
     /// Point when this buffer was last left by its window (anchor, I-01).
     pub saved_point: usize,
+    pub eol: Eol,
 }
 
 impl Buffer {
@@ -38,6 +39,7 @@ impl Buffer {
             view_only: false,
             mark: None,
             saved_point: 0,
+            eol: Eol::default(),
         }
     }
 

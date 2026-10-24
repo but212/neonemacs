@@ -5,6 +5,7 @@ pub mod commands;
 pub mod config;
 pub mod editor;
 pub mod effect;
+pub mod eol;
 pub mod file;
 pub mod keymap;
 pub mod mode;

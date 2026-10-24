@@ -125,7 +125,7 @@ pub(crate) fn write_buffer(ed: &Editor, id: BufferId, mut fx: Effects) -> Effect
     fx.push(Effect::WriteFile {
         id,
         path: path.clone(),
-        bytes: buf.text.to_bytes(),
+        bytes: buf.eol.encode(&buf.text.to_bytes()),
     });
     fx
 }
@@ -255,6 +255,23 @@ fn revert_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
+/// Switches the buffer between LF and CRLF. Only the save encoding changes, so the switch
+/// is not in the undo log.
+pub(crate) fn toggle_eol(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let id = ed.window().buffer;
+    let buf = ed.buffer_by_id(id);
+    if buf.view_only {
+        return (ed.set_message("Buffer is read-only"), fx);
+    }
+    let eol = buf.eol.toggled();
+    let ed = ed.with_buffer(id, |b| Buffer {
+        eol,
+        modified: true,
+        ..b
+    });
+    (ed.set_message(format!("Line endings: {}", eol.label())), fx)
+}
+
 /// Applies the result of a file read: a new buffer for `Open`, a reload for `Revert` (C-11, C-12).
 pub fn file_read(
     ed: Editor,
@@ -271,6 +288,10 @@ pub fn file_read(
                 |n| n.to_string_lossy().into_owned(),
             );
             let (mut ed, id) = ed.add_buffer(&name, loaded.text, loaded.backing);
+            ed = ed.with_buffer(id, |b| Buffer {
+                eol: loaded.eol,
+                ..b
+            });
             if let Some(n) = line {
                 let pos = ed.buffer_by_id(id).text.nth_line_start(n);
                 ed = ed.with_buffer(id, |b| Buffer {
@@ -294,6 +315,7 @@ pub fn file_read(
             let ed = ed.with_buffer(id, |b| Buffer {
                 text: loaded.text,
                 backing: loaded.backing,
+                eol: loaded.eol,
                 modified: false,
                 undo: UndoLog::new(limit),
                 ..b
@@ -332,5 +354,181 @@ pub fn undo_read(ed: Editor, id: BufferId, bytes: Option<Vec<u8>>) -> Editor {
     match UndoLog::decode(&bytes, disk, ed.config().undo_limit) {
         Some(log) => ed.with_buffer(id, |b| Buffer { undo: log, ..b }),
         None => ed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::effect::{RawFile, Read};
+    use crate::core::eol::Eol;
+    use crate::core::text::Text;
+    use crate::test_support::editor;
+
+    /// Replaces the selected buffer with an unmodified file-backed buffer holding `bytes`.
+    fn file_buffer(ed: Editor, bytes: &[u8], eol: Eol) -> Editor {
+        ed.with_current_buffer(|b| Buffer {
+            text: Text::from_bytes(bytes),
+            backing: Backing::File {
+                path: PathBuf::from("f.txt"),
+                disk: DiskState::Unknown,
+                extent: LoadExtent::Whole,
+            },
+            eol,
+            modified: false,
+            ..b
+        })
+    }
+
+    /// The bytes that saving buffer `id` would write.
+    fn saved_bytes(ed: &Editor, id: BufferId) -> Vec<u8> {
+        let fx = write_buffer(ed, id, Vec::new());
+        let Effect::WriteFile { bytes, .. } = &fx[0] else {
+            panic!("expected WriteFile");
+        };
+        bytes.clone()
+    }
+
+    #[test]
+    fn toggle_to_crlf_saves_crlf_bytes() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
+        let id = ed.window().buffer;
+        let (ed, _) = toggle_eol(ed, Vec::new());
+        assert_eq!(ed.buffer().eol, Eol::Crlf);
+        assert!(ed.buffer().modified);
+        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
+    }
+
+    #[test]
+    fn toggle_back_to_lf_saves_lf_bytes() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Crlf);
+        let id = ed.window().buffer;
+        let (ed, _) = toggle_eol(ed, Vec::new());
+        assert_eq!(ed.buffer().eol, Eol::Lf);
+        assert_eq!(saved_bytes(&ed, id), b"a\nb\n");
+    }
+
+    #[test]
+    fn toggle_twice_saves_original_bytes() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
+        let id = ed.window().buffer;
+        let (ed, _) = toggle_eol(ed, Vec::new());
+        let (ed, _) = toggle_eol(ed, Vec::new());
+        assert_eq!(saved_bytes(&ed, id), b"a\nb\n");
+    }
+
+    #[test]
+    fn toggle_leaves_text_and_undo_alone() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
+        let undo_before = ed.buffer().undo.clone();
+        let (ed, _) = toggle_eol(ed, Vec::new());
+        assert_eq!(ed.buffer().text.to_bytes(), b"a\nb\n");
+        assert_eq!(ed.buffer().undo, undo_before);
+    }
+
+    #[test]
+    fn opened_mixed_file_normalizes_and_saves_majority_crlf() {
+        let read = Read::Found(RawFile {
+            len: 7,
+            disk: DiskState::Unknown,
+            bytes: b"a\r\nb\r\nc\n".to_vec(),
+        });
+        let target = ReadTarget::Open {
+            line: None,
+            show: false,
+        };
+        let (ed, _) = file_read(
+            editor(),
+            target,
+            PathBuf::from("f.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        let id = ed.buffers().iter().last().unwrap().id;
+        assert_eq!(ed.buffer_by_id(id).eol, Eol::Crlf);
+        assert_eq!(ed.buffer_by_id(id).text.to_bytes(), b"a\nb\nc\n");
+        assert!(!ed.buffer_by_id(id).modified);
+        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\nc\r\n");
+    }
+
+    #[test]
+    fn opened_mixed_file_normalizes_and_saves_majority_lf_or_tie() {
+        let read = Read::Found(RawFile {
+            len: 5,
+            disk: DiskState::Unknown,
+            bytes: b"a\r\nb\n".to_vec(),
+        });
+        let target = ReadTarget::Open {
+            line: None,
+            show: false,
+        };
+        let (ed, _) = file_read(
+            editor(),
+            target,
+            PathBuf::from("f.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        let id = ed.buffers().iter().last().unwrap().id;
+        assert_eq!(ed.buffer_by_id(id).eol, Eol::Lf);
+        assert_eq!(ed.buffer_by_id(id).text.to_bytes(), b"a\nb\n");
+        assert!(!ed.buffer_by_id(id).modified);
+        assert_eq!(saved_bytes(&ed, id), b"a\nb\n");
+    }
+
+    #[test]
+    fn read_only_buffer_refuses_toggle() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf).with_current_buffer(|b| Buffer {
+            view_only: true,
+            ..b
+        });
+        let (ed, _) = toggle_eol(ed, Vec::new());
+        assert_eq!(ed.buffer().eol, Eol::Lf);
+        assert!(!ed.buffer().modified);
+        assert_eq!(ed.message(), "Buffer is read-only");
+    }
+
+    #[test]
+    fn opened_crlf_file_saves_crlf_bytes() {
+        let read = Read::Found(RawFile {
+            len: 6,
+            disk: DiskState::Unknown,
+            bytes: b"a\r\nb\r\n".to_vec(),
+        });
+        let target = ReadTarget::Open {
+            line: None,
+            show: false,
+        };
+        let (ed, _) = file_read(
+            editor(),
+            target,
+            PathBuf::from("f.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        let id = ed.buffers().iter().last().unwrap().id;
+        assert_eq!(ed.buffer_by_id(id).eol, Eol::Crlf);
+        assert_eq!(ed.buffer_by_id(id).text.to_bytes(), b"a\nb\n");
+        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
+    }
+
+    #[test]
+    fn revert_picks_up_line_endings_from_disk() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
+        let id = ed.window().buffer;
+        let read = Read::Found(RawFile {
+            len: 6,
+            disk: DiskState::Unknown,
+            bytes: b"a\r\nb\r\n".to_vec(),
+        });
+        let (ed, _) = file_read(
+            ed,
+            ReadTarget::Revert(id),
+            PathBuf::from("f.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        assert_eq!(ed.buffer().eol, Eol::Crlf);
+        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
     }
 }

@@ -7,7 +7,9 @@ use crate::core::commands::edit::{
     delete_backward_char, delete_char, fill_paragraph, kill_line, kill_region, kill_ring_save,
     view_mode, yank, yank_pop,
 };
-use crate::core::commands::file::{revert_buffer, save_buffer_cmd, save_buffers_kill_emacs};
+use crate::core::commands::file::{
+    revert_buffer, save_buffer_cmd, save_buffers_kill_emacs, toggle_eol,
+};
 use crate::core::commands::motion::{
     backward_char, exchange_point_and_mark, forward_char, move_beginning_of_line, move_end_of_line,
     next_line, previous_line, set_mark_command,
@@ -73,6 +75,7 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
     ("split-window-below", split_window_below as Builtin),
     ("split-window-right", split_window_right as Builtin),
     ("switch-to-buffer", switch_to_buffer_cmd as Builtin),
+    ("toggle-eol", toggle_eol as Builtin),
     ("undo", Editor::undo as Builtin),
     ("view-mode", view_mode as Builtin),
     ("write-file", write_file_cmd as Builtin),
