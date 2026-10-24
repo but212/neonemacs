@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::core::file::Backing;
 use crate::core::text::Text;
 use crate::core::undo::UndoLog;
+use crate::core::window::snap_point as snap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -38,6 +39,21 @@ impl Buffer {
             mark: None,
             saved_point: 0,
         }
+    }
+
+    /// Returns the file path if this buffer is backed by a disk file.
+    pub fn file_path(&self) -> Option<&Path> {
+        match &self.backing {
+            Backing::File { path, .. } => Some(path),
+            Backing::None => None,
+        }
+    }
+
+    /// Snaps `saved_point` and `mark` to valid UTF-8 unit boundaries within the current text (I-01, I-25).
+    pub fn snap_anchors(mut self) -> Self {
+        self.saved_point = snap(&self.text, self.saved_point);
+        self.mark = self.mark.map(|m| snap(&self.text, m));
+        self
     }
 }
 
@@ -144,10 +160,13 @@ impl BufferPool {
     pub fn restore_content(self, path: &Path, bytes: &[u8]) -> Self {
         let found = self.find_by_path(path).map(|b| b.id);
         if let Some(id) = found {
-            self.with_buffer(id, |mut buf| {
-                buf.text = Text::from_bytes(bytes);
-                buf.modified = true;
-                buf
+            self.with_buffer(id, |buf| {
+                Buffer {
+                    text: Text::from_bytes(bytes),
+                    modified: true,
+                    ..buf
+                }
+                .snap_anchors()
             })
         } else {
             self

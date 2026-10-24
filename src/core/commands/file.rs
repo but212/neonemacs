@@ -84,8 +84,22 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
             let fx = write_buffer(&ed, id, fx);
             (ed, fx)
         }
-        Confirm::QuitUnsaved => (ed.set_quit(true), fx),
-        Confirm::KillModified(id) => (kill_now(ed, id), fx),
+        Confirm::QuitUnsaved => {
+            let mut fx = fx;
+            for buf in ed.buffers() {
+                if let Some(eff) = Effect::remove_wal_if_file(buf) {
+                    fx.push(eff);
+                }
+            }
+            (ed.set_quit(true), fx)
+        }
+        Confirm::KillModified(id) => {
+            let mut fx = fx;
+            if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
+                fx.push(eff);
+            }
+            (kill_now(ed, id), fx)
+        }
         Confirm::RevertModified(id) => revert_now(ed, id, fx),
     }
 }

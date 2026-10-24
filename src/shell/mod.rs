@@ -178,6 +178,10 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             id,
             bytes: fs::read(undo::undo_path(&path)).ok(),
         },
+        Effect::RemoveWal { path } => {
+            wal::remove_wal(&path);
+            Event::WalRemoved
+        }
         Effect::RunShell { command } => Event::ShellDone(run_shell(&command)),
         Effect::RunLua { name } => Event::LuaDone(run_lua(lua, &name)),
     }

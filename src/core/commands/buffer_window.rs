@@ -2,6 +2,7 @@
 
 use crate::core::commands::util::ask;
 use crate::core::editor::{Buffer, BufferId, Confirm, Dir, Editor, Window};
+use crate::core::effect::Effect;
 use crate::core::effect::Effects;
 
 pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -49,15 +50,21 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
 }
 
 /// Kills buffer `id`. A modified buffer asks first.
-pub fn kill_buffer(ed: Editor, id: BufferId) -> Editor {
+pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     if ed.buffer_by_id(id).modified {
-        ask(
-            ed,
-            Confirm::KillModified(id),
-            "Buffer is modified; kill anyway? (y or n)",
+        (
+            ask(
+                ed,
+                Confirm::KillModified(id),
+                "Buffer is modified; kill anyway? (y or n)",
+            ),
+            fx,
         )
     } else {
-        kill_now(ed, id)
+        if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
+            fx.push(eff);
+        }
+        (kill_now(ed, id), fx)
     }
 }
 
@@ -101,7 +108,7 @@ mod tests {
         let ed = switch_to(ed, other);
         assert_eq!(point(&ed), 3);
 
-        let ed = kill_buffer(ed, other);
+        let (ed, _) = kill_buffer(ed, other, Vec::new());
         assert_eq!(ed.buffers().len(), 1);
         assert_eq!(ed.buffer().name, "*scratch*");
     }
@@ -110,7 +117,7 @@ mod tests {
     fn killing_last_buffer_makes_scratch() {
         let ed = editor();
         let only = ed.window().buffer;
-        let ed = kill_buffer(ed, only);
+        let (ed, _) = kill_buffer(ed, only, Vec::new());
         assert_eq!(ed.buffers().len(), 1);
         assert_eq!(ed.buffer().name, "*scratch*");
         assert_ne!(ed.buffer().id, only);
@@ -123,11 +130,11 @@ mod tests {
         let ed = typ(ed, "x");
         let ed = switch_to(ed, BufferId(0));
 
-        let ed = kill_buffer(ed, other);
+        let (ed, _) = kill_buffer(ed, other, Vec::new());
         assert!(matches!(ed.mode(), Mode::Confirm(Confirm::KillModified(_))));
         let ed = keys(ed, "n");
         assert_eq!(ed.buffers().len(), 2);
-        let ed = kill_buffer(ed, other);
+        let (ed, _) = kill_buffer(ed, other, Vec::new());
         let ed = keys(ed, "y");
         assert_eq!(ed.buffers().len(), 1);
     }

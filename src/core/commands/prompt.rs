@@ -154,7 +154,7 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
         Purpose::FindFile => find_file(ed, &input, fx),
         Purpose::WriteFile => write_file(ed, &input, fx),
         Purpose::SwitchBuffer => (switch_to_named(ed, &input), fx),
-        Purpose::KillBuffer => (kill_named(ed, &input), fx),
+        Purpose::KillBuffer => kill_named(ed, &input, fx),
         Purpose::GotoLine => (goto_line(ed, &input), fx),
         Purpose::ShellCommand => {
             let fx = run_shell(&input, fx);
@@ -196,15 +196,15 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     }
 }
 
-fn kill_named(ed: Editor, name: &str) -> Editor {
+fn kill_named(ed: Editor, name: &str, fx: Effects) -> (Editor, Effects) {
     let id = if name.is_empty() {
         Some(ed.window().buffer)
     } else {
         ed.buffers().iter().find(|b| b.name == name).map(|b| b.id)
     };
     match id {
-        Some(id) => kill_buffer(ed, id),
-        None => ed.set_message(format!("No buffer named {name}")),
+        Some(id) => kill_buffer(ed, id, fx),
+        None => (ed.set_message(format!("No buffer named {name}")), fx),
     }
 }
 

@@ -1,48 +1,11 @@
 //! Adversarial stress and invariant tests for core commands (§3, §4, §6, §8, §9).
 //! Tests edge cases, hostile key sequences, mode transitions, and boundary conditions.
 
+use crate::common::{editor, keys, point, text, typ};
 use neonemacs::core::commands::find;
 use neonemacs::core::commands::table::BUILTINS;
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Editor, Mode, Prefix, Window};
-use neonemacs::core::effect::Event;
-use neonemacs::core::keymap::{Code, Key, parse_keys};
-use neonemacs::shell::handle;
-
-fn editor() -> Editor {
-    Editor::new(Config::default())
-}
-
-fn keys(mut ed: Editor, s: &str) -> Editor {
-    for k in parse_keys(s).unwrap() {
-        ed = handle(ed, None, Event::Key(k));
-    }
-    ed
-}
-
-fn typ(mut ed: Editor, s: &str) -> Editor {
-    for c in s.chars() {
-        let code = if c == '\n' {
-            Code::Enter
-        } else {
-            Code::Char(c)
-        };
-        ed = handle(ed, None, Event::Key(Key::plain(code)));
-    }
-    ed
-}
-
-fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text.to_bytes()).into_owned()
-}
-
-fn point(ed: &Editor) -> usize {
-    ed.window().point
-}
-
-// =========================================================================
-// Category 1: Extreme Text & Cursor Boundary Tests
-// =========================================================================
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {
@@ -135,10 +98,6 @@ fn extreme_whitespace_and_empty_paragraphs() {
     let (ed3, _) = fill_paragraph(ed3, Vec::new());
     assert_eq!(text(&ed3), "supercalifragilistic");
 }
-
-// =========================================================================
-// Category 2: Adversarial Mode Transitions & Hostile Key Sequences
-// =========================================================================
 
 #[test]
 fn prompt_hostile_backspaces_and_cancellation() {
@@ -257,10 +216,6 @@ fn query_replace_empty_and_illegal_keys() {
         }
     );
 }
-
-// =========================================================================
-// Category 3: Undo & Kill Ring Lifecycle Invariants
-// =========================================================================
 
 #[test]
 fn kill_ring_empty_and_illegal_operations() {

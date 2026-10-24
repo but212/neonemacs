@@ -481,7 +481,7 @@ mod tests {
         assert!(!wal::has_wal(&file_b));
         assert!(!session.needs_wal_flush);
         assert_eq!(
-            wal::read_wal(&file_a, crate::core::file::DiskState::Unknown).unwrap(),
+            wal::read_wal(&file_a, crate::shell::file::disk_state(&file_a)).unwrap(),
             b"i!?nit_a"
         );
 

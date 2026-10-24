@@ -39,26 +39,45 @@ pub fn encode_wal(disk: DiskState, bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Decoded and validated metadata from a WAL header (I-23).
+struct WalHeader {
+    disk: DiskState,
+}
+
+impl WalHeader {
+    fn parse(raw: &[u8]) -> Option<Self> {
+        if raw.len() < HEADER_LEN || &raw[0..8] != WAL_MAGIC {
+            return None;
+        }
+        let tag = raw[8];
+        let secs = u64::from_le_bytes(raw[9..17].try_into().ok()?);
+        let nanos = u32::from_le_bytes(raw[17..21].try_into().ok()?);
+        if nanos >= 1_000_000_000 {
+            return None;
+        }
+        let size = u64::from_le_bytes(raw[21..29].try_into().ok()?);
+
+        let disk = match tag {
+            1 => DiskState::Known {
+                mtime: UNIX_EPOCH.checked_add(Duration::new(secs, nanos))?,
+                size,
+            },
+            0 => DiskState::Unknown,
+            _ => return None,
+        };
+        Some(Self { disk })
+    }
+
+    fn matches(&self, current: DiskState) -> bool {
+        self.disk == current
+    }
+}
+
 /// Validates header against current disk state and returns payload if matching.
 pub fn decode_wal(raw: &[u8], disk: DiskState) -> Option<Vec<u8>> {
-    if raw.len() < HEADER_LEN || &raw[0..8] != WAL_MAGIC {
+    let header = WalHeader::parse(raw)?;
+    if !header.matches(disk) {
         return None;
-    }
-    let tag = raw[8];
-    let secs = u64::from_le_bytes(raw[9..17].try_into().ok()?);
-    let nanos = u32::from_le_bytes(raw[17..21].try_into().ok()?);
-    let size = u64::from_le_bytes(raw[21..29].try_into().ok()?);
-
-    if let DiskState::Known {
-        mtime,
-        size: cur_size,
-    } = disk
-        && tag == 1
-    {
-        let stamp = Duration::new(secs, nanos);
-        if mtime.duration_since(UNIX_EPOCH).ok()? != stamp || cur_size != size {
-            return None; // Mismatch with external disk modifications!
-        }
     }
     Some(raw[HEADER_LEN..].to_vec())
 }

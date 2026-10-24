@@ -291,11 +291,22 @@ impl Editor {
             self.message = "Buffer is read-only".to_owned();
             return (self, None);
         }
-        let mut buf = self.buffer_by_id(id).clone();
-        buf.text = edited(buf.text, &edit);
-        buf.modified = true;
 
-        let anchor = |a| snap(&buf.text, remap(&edit, a));
+        let mut dropped_res = None;
+        self.buffers = self.buffers.with_buffer(id, |mut buf| {
+            buf.text = edited(buf.text, &edit);
+            buf.modified = true;
+            let anchor = |a| snap(&buf.text, remap(&edit, a));
+            buf.mark = buf.mark.map(anchor);
+            buf.saved_point = anchor(buf.saved_point);
+            let (undo, dropped) = buf.undo.record(edit.clone());
+            buf.undo = undo;
+            dropped_res = Some(dropped);
+            buf
+        });
+
+        let text = &self.buffers.get_by_id(id).text;
+        let anchor = |a| snap(text, remap(&edit, a));
         self.windows = self.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
@@ -307,12 +318,8 @@ impl Editor {
                 w
             }
         });
-        buf.mark = buf.mark.map(anchor);
-        buf.saved_point = anchor(buf.saved_point);
-        let (undo, dropped) = buf.undo.record(edit);
-        buf.undo = undo;
-        self.buffers = self.buffers.with_buffer(id, |_| buf);
-        (self, Some(dropped))
+
+        (self, dropped_res)
     }
 
     /// Moves point to `pos`, snapped to a unit boundary (I-01).
