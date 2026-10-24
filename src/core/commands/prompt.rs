@@ -277,15 +277,15 @@ fn show_output(ed: Editor, text: &str) -> Editor {
     if ed.leaf_count() == 1 {
         ed = split(ed, Dir::Below);
     }
-    let orig = ed.selected;
+    let orig = ed.windows.selected();
     let other = if orig + 1 < ed.leaf_count() {
         orig + 1
     } else {
         orig - 1
     };
-    ed.selected = other;
+    ed.windows = ed.windows.set_selected(other);
     let mut ed = switch_to(ed, id);
-    ed.selected = orig;
+    ed.windows = ed.windows.set_selected(orig);
     ed
 }
 

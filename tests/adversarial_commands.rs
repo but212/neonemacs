@@ -93,6 +93,20 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
 }
 
 #[test]
+fn snap_and_insert_clamping_prevents_gap_buffer_panic() {
+    let ed = typ(editor(), "abc");
+    let ed = ed.move_point(9999);
+    assert_eq!(point(&ed), 3);
+    let ed = ed.self_insert('x');
+    assert_eq!(text(&ed), "abcx");
+
+    // Hostile window with OOB point: self_insert must clamp and never panic
+    let oob_ed = typ(editor(), "abc").with_window(|w| Window { point: 9999, ..w });
+    let oob_ed = oob_ed.self_insert('!');
+    assert_eq!(text(&oob_ed), "abc!");
+}
+
+#[test]
 fn extreme_whitespace_and_empty_paragraphs() {
     let fill_paragraph = find("fill-paragraph").unwrap();
 

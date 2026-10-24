@@ -25,7 +25,7 @@ impl Text {
         Self::from_vec(bytes.to_vec())
     }
 
-    pub fn from_vec(buf: Vec<u8>) -> Self {
+    pub const fn from_vec(buf: Vec<u8>) -> Self {
         let n = buf.len();
         Self {
             buf,
@@ -62,6 +62,7 @@ impl Text {
     }
 
     pub fn insert(self, pos: usize, bytes: &[u8]) -> Self {
+        let pos = pos.min(self.len());
         let mut t = self.move_gap(pos).reserve_gap(bytes.len());
         t.buf[t.gap_start..t.gap_start + bytes.len()].copy_from_slice(bytes);
         t.gap_start += bytes.len();
@@ -70,8 +71,11 @@ impl Text {
 
     /// Removes `range`. Read the bytes first with `bytes` if they are needed.
     pub fn delete(self, range: std::ops::Range<usize>) -> Self {
-        let mut t = self.move_gap(range.start);
-        t.gap_end += range.len();
+        let len = self.len();
+        let start = range.start.min(len);
+        let end = range.end.min(len).max(start);
+        let mut t = self.move_gap(start);
+        t.gap_end += end - start;
         t
     }
 

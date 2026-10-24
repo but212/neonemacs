@@ -55,7 +55,19 @@ fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Edi
         let has_wal = wal::has_wal(&f.path);
         let fx = request_open(&ed, f.path.clone(), f.line, false, Vec::new());
         ed = perform_all(ed, lua, fx);
-        if has_wal && let Ok(wal_bytes) = wal::read_wal(&f.path) {
+        let cur_disk = ed
+            .buffers
+            .iter()
+            .find(|b| match &b.backing {
+                neonemacs::core::file::Backing::File { path, .. } => path == &f.path,
+                neonemacs::core::file::Backing::None => false,
+            })
+            .and_then(|b| match b.backing {
+                neonemacs::core::file::Backing::File { disk, .. } => Some(disk),
+                neonemacs::core::file::Backing::None => None,
+            })
+            .unwrap_or(neonemacs::core::file::DiskState::Unknown);
+        if has_wal && let Ok(wal_bytes) = wal::read_wal(&f.path, cur_disk) {
             ed = ed.restore_buffer_content(&f.path, &wal_bytes);
             let name = f
                 .path

@@ -1,10 +1,8 @@
 //! Buffer switching/killing and window layout commands (§4, §5).
 
 use crate::core::commands::util::ask;
-use crate::core::editor::{Buffer, BufferId, Confirm, Dir, Editor, Layout, Window};
+use crate::core::editor::{Buffer, BufferId, Confirm, Dir, Editor, Window};
 use crate::core::effect::Effects;
-use crate::core::file::Backing;
-use crate::core::text::Text;
 
 pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (split(ed, Dir::Below), fx)
@@ -16,24 +14,17 @@ pub(crate) fn split_window_right(ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 /// Replaces the selected leaf with a split of two windows that show the same buffer.
 pub(crate) fn split(mut ed: Editor, dir: Dir) -> Editor {
-    let i = ed.selected;
-    ed.layout = ed.layout.replace_leaf(i, |w| Layout::Split {
-        dir,
-        first: Box::new(Layout::Leaf(w.clone())),
-        second: Box::new(Layout::Leaf(w)),
-    });
+    ed.windows = ed.windows.split(dir);
     ed
 }
 
 pub(crate) fn other_window(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    ed.selected = (ed.selected + 1) % ed.leaf_count();
+    ed.windows = ed.windows.next_window();
     (ed, fx)
 }
 
 pub(crate) fn delete_other_windows(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let w = ed.window().clone();
-    ed.layout = Layout::Leaf(w);
-    ed.selected = 0;
+    ed.windows = ed.windows.delete_other_windows();
     (ed, fx)
 }
 
@@ -73,29 +64,10 @@ pub fn kill_buffer(ed: Editor, id: BufferId) -> Editor {
 /// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
 /// Killing the last buffer leaves an empty `*scratch*` (A4).
 pub(crate) fn kill_now(mut ed: Editor, id: BufferId) -> Editor {
-    if ed.buffers.len() == 1 {
-        ed = ed.add_buffer("*scratch*", Text::default(), Backing::None).0;
-    }
-    let replacement = ed
-        .buffers
-        .iter()
-        .map(|b| b.id)
-        .find(|&b| b != id)
-        .expect("another buffer exists");
+    let (buffers, replacement) = ed.buffers.kill(id, ed.config.undo_limit);
+    ed.buffers = buffers;
     let saved = ed.buffer_by_id(replacement).saved_point;
-    ed.buffers.retain(|b| b.id != id);
-    ed.layout = ed.layout.map_windows(&|w| {
-        if w.buffer == id {
-            Window {
-                buffer: replacement,
-                point: saved,
-                top: 0,
-                ..w
-            }
-        } else {
-            w
-        }
-    });
+    ed.windows = ed.windows.retarget(id, replacement, saved);
     ed
 }
 
@@ -103,6 +75,8 @@ pub(crate) fn kill_now(mut ed: Editor, id: BufferId) -> Editor {
 mod tests {
     use super::*;
     use crate::core::editor::Mode;
+    use crate::core::file::Backing;
+    use crate::core::text::Text;
     use crate::test_support::{editor, keys, point, run_command, typ};
 
     #[test]

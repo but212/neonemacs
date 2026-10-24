@@ -55,26 +55,23 @@ fn styled_render_preserves_column_and_cursor_positions() {
 
     // Rows must be exactly formatted text without ANSI codes embedded
     assert_eq!(frame.rows.len(), rows);
-    assert!(frame.rows[0].starts_with("fn main() {"));
-    assert!(frame.rows[1].starts_with("    let x = 42;"));
+    let row_texts = frame.row_strings();
+    assert!(row_texts[0].starts_with("fn main() {"));
+    assert!(row_texts[1].starts_with("    let x = 42;"));
 
-    // Style grid must be populated
-    assert_eq!(frame.styles.len(), rows);
-    let line0_styles = &frame.styles[0];
-    assert_eq!(line0_styles[0], TokenKind::Keyword); // "f"
-    assert_eq!(line0_styles[1], TokenKind::Keyword); // "n"
-    assert_eq!(line0_styles[2], TokenKind::Normal); // " "
-    assert_eq!(line0_styles[3], TokenKind::Normal); // "m"
+    // Style in Cell grid must be populated with 1:1 cell alignment
+    assert_eq!(frame.rows[0][0].style, TokenKind::Keyword); // "f"
+    assert_eq!(frame.rows[0][1].style, TokenKind::Keyword); // "n"
+    assert_eq!(frame.rows[0][2].style, TokenKind::Normal); // " "
+    assert_eq!(frame.rows[0][3].style, TokenKind::Normal); // "m"
 
-    let line1_styles = &frame.styles[1];
     // "    let"
-    assert_eq!(line1_styles[4], TokenKind::Keyword); // "l"
-    assert_eq!(line1_styles[5], TokenKind::Keyword); // "e"
-    assert_eq!(line1_styles[6], TokenKind::Keyword); // "t"
-    // 42 -> Number
-    let pos_42 = frame.rows[1].find("42").unwrap();
-    assert_eq!(line1_styles[pos_42], TokenKind::Number);
-    assert_eq!(line1_styles[pos_42 + 1], TokenKind::Number);
+    assert_eq!(frame.rows[1][4].style, TokenKind::Keyword); // "l"
+    assert_eq!(frame.rows[1][5].style, TokenKind::Keyword); // "e"
+    assert_eq!(frame.rows[1][6].style, TokenKind::Keyword); // "t"
+    let pos_42 = row_texts[1].find("42").unwrap();
+    assert_eq!(frame.rows[1][pos_42].style, TokenKind::Number);
+    assert_eq!(frame.rows[1][pos_42 + 1].style, TokenKind::Number);
 
     // Cursor position remains unaffected (I-22)
     assert_eq!(frame.cursor, (0, 0));

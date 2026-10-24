@@ -6,7 +6,6 @@ use crate::core::file::Backing;
 use crate::core::render;
 use crate::core::step;
 use crate::core::syntax::TokenKind;
-use crate::core::width::char_width;
 use crate::shell::terminal::from_terminal;
 use crate::shell::wal;
 use crate::shell::{ShellOutcome, ShellTask, handle_interactive, perform_all};
@@ -64,8 +63,7 @@ pub struct ShellSession {
     active_shell: Option<ActiveShell>,
     last_edit_time: Instant,
     needs_wal_flush: bool,
-    prev_rows: Vec<String>,
-    prev_styles: Vec<Vec<TokenKind>>,
+    prev_rows: Vec<Vec<crate::core::render::Cell>>,
     size: (usize, usize),
 }
 
@@ -78,7 +76,6 @@ impl ShellSession {
             last_edit_time: Instant::now(),
             needs_wal_flush: false,
             prev_rows: Vec::new(),
-            prev_styles: Vec::new(),
             size: (0, 0),
         }
     }
@@ -150,7 +147,9 @@ impl ShellSession {
                     self.active_shell = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.ed.message = active.format_status();
+                    if self.ed.message.is_empty() || self.ed.message.starts_with("[Running") || self.ed.message == "Quit" {
+                        self.ed.message = active.format_status();
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     let ed = std::mem::take(&mut self.ed);
@@ -172,9 +171,9 @@ impl ShellSession {
         {
             for buf in &self.ed.buffers {
                 if buf.modified
-                    && let Backing::File { path, .. } = &buf.backing
+                    && let Backing::File { path, disk, .. } = &buf.backing
                 {
-                    let _ = wal::write_wal(path, &buf.text.to_bytes());
+                    let _ = wal::write_wal(path, *disk, &buf.text.to_bytes());
                 }
             }
             self.needs_wal_flush = false;
@@ -196,7 +195,6 @@ impl ShellSession {
     ) -> io::Result<()> {
         if (cols, rows) != self.size {
             self.prev_rows.clear();
-            self.prev_styles.clear();
             self.size = (cols, rows);
         }
 
@@ -205,13 +203,11 @@ impl ShellSession {
         let frame = render::frame(&ed, cols, rows);
         self.ed = ed;
 
-        for (row, line) in frame.rows.iter().enumerate() {
-            let row_styles = frame.styles.get(row).map(|s| s.as_slice());
-            let text_changed = self.prev_rows.get(row) != Some(line);
-            let style_changed = self.prev_styles.get(row).map(|s| s.as_slice()) != row_styles;
-            if text_changed || style_changed {
+        for (row, cells) in frame.rows.iter().enumerate() {
+            let row_changed = self.prev_rows.get(row) != Some(cells);
+            if row_changed {
                 queue!(out, cursor::MoveTo(0, row as u16))?;
-                print_styled_row(out, line, row_styles)?;
+                print_styled_row(out, cells)?;
             }
         }
         queue!(
@@ -221,7 +217,6 @@ impl ShellSession {
         )?;
         out.flush()?;
         self.prev_rows = frame.rows;
-        self.prev_styles = frame.styles;
         Ok(())
     }
 
@@ -247,33 +242,18 @@ impl ShellSession {
 
 fn print_styled_row(
     out: &mut impl Write,
-    line: &str,
-    styles: Option<&[TokenKind]>,
+    cells: &[crate::core::render::Cell],
 ) -> io::Result<()> {
-    let Some(styles) = styles else {
-        return queue!(out, Print(line));
-    };
     let mut current = TokenKind::Normal;
     let mut span = String::new();
-    let mut style_iter = styles.iter();
 
-    for c in line.chars() {
-        let w = char_width(c);
-        let kind = if w == 0 {
-            current
-        } else {
-            let first = style_iter.next().copied().unwrap_or(TokenKind::Normal);
-            for _ in 1..w {
-                let _ = style_iter.next();
-            }
-            first
-        };
-        if kind != current {
+    for cell in cells {
+        if cell.style != current {
             if !span.is_empty() {
                 queue!(out, Print(&span))?;
                 span.clear();
             }
-            current = kind;
+            current = cell.style;
             match current {
                 TokenKind::Keyword => queue!(out, SetForegroundColor(Color::Cyan))?,
                 TokenKind::String => queue!(out, SetForegroundColor(Color::Green))?,
@@ -282,7 +262,7 @@ fn print_styled_row(
                 TokenKind::Normal => queue!(out, ResetColor)?,
             }
         }
-        span.push(c);
+        span.push_str(&cell.glyph);
     }
     if !span.is_empty() {
         queue!(out, Print(&span))?;
@@ -498,7 +478,7 @@ mod tests {
         assert!(wal::has_wal(&file_a));
         assert!(!wal::has_wal(&file_b));
         assert!(!session.needs_wal_flush);
-        assert_eq!(wal::read_wal(&file_a).unwrap(), b"i!?nit_a");
+        assert_eq!(wal::read_wal(&file_a, crate::core::file::DiskState::Unknown).unwrap(), b"i!?nit_a");
 
         // 3. Edit again, then save (C-x C-s) before 1s elapses -> disarms WAL flush & removes .wal
         let t_edit3 = t0 + Duration::from_secs(3);
@@ -526,20 +506,19 @@ mod tests {
         // Line: `"가" let`
         // Cell widths: `"`(1, String), `가`(2, String), `"`(1, String), ` `(1, Normal), `l`(1, Keyword), `e`(1, Keyword), `t`(1, Keyword)
         // Notice `styles` has 8 entries (2 cells for `가`), while `line` has 7 chars!
-        let line = "\"가\" let";
-        let styles = [
-            TokenKind::String,
-            TokenKind::String,
-            TokenKind::String,
-            TokenKind::String,
-            TokenKind::Normal,
-            TokenKind::Keyword,
-            TokenKind::Keyword,
-            TokenKind::Keyword,
+        let cells = [
+            crate::core::render::Cell { glyph: "\"".into(), style: TokenKind::String },
+            crate::core::render::Cell { glyph: "가".into(), style: TokenKind::String },
+            crate::core::render::Cell { glyph: "".into(), style: TokenKind::String },
+            crate::core::render::Cell { glyph: "\"".into(), style: TokenKind::String },
+            crate::core::render::Cell { glyph: " ".into(), style: TokenKind::Normal },
+            crate::core::render::Cell { glyph: "l".into(), style: TokenKind::Keyword },
+            crate::core::render::Cell { glyph: "e".into(), style: TokenKind::Keyword },
+            crate::core::render::Cell { glyph: "t".into(), style: TokenKind::Keyword },
         ];
 
         let mut out = Vec::new();
-        print_styled_row(&mut out, line, Some(&styles)).unwrap();
+        print_styled_row(&mut out, &cells).unwrap();
 
         let mut expected = Vec::new();
         queue!(
@@ -557,10 +536,13 @@ mod tests {
 
         // Combining mark (`e` + U+0301 acute accent) inside a Keyword followed by Number `1`:
         // `e\u{0301}` occupies 1 cell in `styles` (`Keyword`), `' '` occupies 1 cell (`Normal`), `'1'` occupies 1 cell (`Number`).
-        let comb_line = "e\u{0301} 1";
-        let comb_styles = [TokenKind::Keyword, TokenKind::Normal, TokenKind::Number];
+        let comb_cells = [
+            crate::core::render::Cell { glyph: "e\u{0301}".into(), style: TokenKind::Keyword },
+            crate::core::render::Cell { glyph: " ".into(), style: TokenKind::Normal },
+            crate::core::render::Cell { glyph: "1".into(), style: TokenKind::Number },
+        ];
         let mut comb_out = Vec::new();
-        print_styled_row(&mut comb_out, comb_line, Some(&comb_styles)).unwrap();
+        print_styled_row(&mut comb_out, &comb_cells).unwrap();
 
         let mut comb_expected = Vec::new();
         queue!(

@@ -11,20 +11,6 @@ pub(crate) const fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n')
 }
 
-/// Returns the window's point clamped within the buffer text length.
-pub(crate) fn safe_point(ed: &Editor) -> usize {
-    ed.window().point.min(ed.buffer().text.len())
-}
-
-/// Normalizes the editor point to a valid boundary within buffer bounds.
-pub(crate) fn sanitize_point(ed: Editor) -> Editor {
-    let len = ed.buffer().text.len();
-    if ed.window().point > len {
-        ed.move_point(len)
-    } else {
-        ed
-    }
-}
 
 /// Display column of `pos` from the start of its line.
 pub fn column(text: &Text, pos: usize, tab: usize) -> usize {

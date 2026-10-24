@@ -290,7 +290,7 @@ pub fn file_read(
                 ..b
             });
             let text = ed.buffer_by_id(id).text.clone();
-            ed.layout = ed.layout.map_windows(&|w| {
+            ed.windows = ed.windows.map_windows(&|w| {
                 if w.buffer == id {
                     Window {
                         point: snap(&text, w.point.min(text.len())),

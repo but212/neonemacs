@@ -137,7 +137,7 @@ pub fn run_source(ed: Editor, lua: &Lua, source: &str) -> (Editor, mlua::Result<
     (into_editor(cell), result)
 }
 
-fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
+const fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
     cell.into_inner().expect("editor is in the cell (I-21)")
 }
 
@@ -166,6 +166,9 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             path,
             max_size,
         } => {
+            if matches!(target, crate::core::effect::ReadTarget::Revert(_)) {
+                wal::remove_wal(&path);
+            }
             let result = file::read_raw(&path, max_size).map_err(|e| e.to_string());
             Event::FileRead {
                 target,
