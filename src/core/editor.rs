@@ -8,6 +8,7 @@ use crate::core::config::Config;
 use crate::core::effect::{Effect, Effects};
 use crate::core::file::Backing;
 use crate::core::keymap::{Code, Key, Keymap};
+use crate::core::syntax::SyntaxRegistry;
 use crate::core::text::Text;
 use crate::core::undo::Edit;
 use crate::core::window::WindowManager;
@@ -88,6 +89,7 @@ pub struct Editor {
     prev: LastCommand,
     message: String,
     config: Config,
+    syntax_registry: SyntaxRegistry,
     quit: bool,
 }
 
@@ -121,6 +123,7 @@ impl Editor {
             prev: LastCommand::Other,
             message: String::new(),
             config,
+            syntax_registry: SyntaxRegistry::new(),
             quit: false,
         }
     }
@@ -172,6 +175,15 @@ impl Editor {
 
     pub const fn set_config(mut self, config: Config) -> Self {
         self.config = config;
+        self
+    }
+
+    pub fn syntax_registry(&self) -> &SyntaxRegistry {
+        &self.syntax_registry
+    }
+
+    pub fn with_syntax_registry(mut self, registry: SyntaxRegistry) -> Self {
+        self.syntax_registry = registry;
         self
     }
 

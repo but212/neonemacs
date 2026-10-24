@@ -3,7 +3,7 @@
 
 use crate::core::commands::column;
 use crate::core::editor::{Buffer, Dir, Editor, Layout, Window};
-use crate::core::syntax::{TokenKind, detect_lang, highlight_line};
+use crate::core::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::core::text::{Text, Unit};
 use crate::core::width::{char_width, unit_width};
 
@@ -151,8 +151,8 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
 
     for (i, (w, area)) in leaves.into_iter().zip(areas(ed, cols, rows)).enumerate() {
         let buf = ed.buffer_by_id(w.buffer);
-        let lang = detect_lang(&buf.name);
-        let (body, (row, col)) = window_cells(&buf.text, w, area, tab, lang);
+        let syntax = ed.syntax_registry().find_by_filename(&buf.name);
+        let (body, (row, col)) = window_cells(syntax, &buf.text, w, area, tab);
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
@@ -191,11 +191,11 @@ fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -
 
 /// Cells of the text area of one window, and the cursor as `(row, col)` inside it.
 fn window_cells(
+    syntax: Option<&SyntaxDef>,
     text: &Text,
     w: &Window,
     area: Rect,
     tab: usize,
-    lang: Option<&str>,
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
     let p = w.point.min(text.len());
@@ -212,7 +212,7 @@ fn window_cells(
             let col = column(text, p, tab).saturating_sub(w.left_col);
             cursor = (r, col);
         }
-        body.push(line_cells(text, s, e, w.left_col, area.w, tab, lang));
+        body.push(line_cells(syntax, text, s, e, w.left_col, area.w, tab));
         s = e + 1;
     }
     (body, cursor)
@@ -221,13 +221,13 @@ fn window_cells(
 /// Cells of one line from `left` across `width` columns. A line cut at the
 /// right edge shows `$` in the last column (A5).
 fn line_cells(
+    syntax: Option<&SyntaxDef>,
     text: &Text,
     start: usize,
     end: usize,
     left: usize,
     width: usize,
     tab: usize,
-    lang: Option<&str>,
 ) -> Vec<Cell> {
     let mut cells = vec![Cell::space(); width];
     let right = left + width;
@@ -237,7 +237,7 @@ fn line_cells(
 
     let line_bytes = text.bytes(start..end);
     let line_str = String::from_utf8_lossy(&line_bytes);
-    let token_kinds = highlight_line(lang, &line_str);
+    let token_kinds = highlight_line(syntax, &line_str);
     let mut char_idx = 0;
 
     while p < end {

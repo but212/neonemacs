@@ -149,11 +149,13 @@
 ## 12. 확장과 설정 (Lua)
 
 - 설정과 확장은 Lua로 한다. 파일은 `~/.config/neonemacs/init.lua`이며, `XDG_CONFIG_HOME`이 있으면 `$XDG_CONFIG_HOME/neonemacs/init.lua`다. 세 플랫폼 모두 같은 규칙이다.
-- **공개 API는 최소로 한다.** 공개한 API는 호환성 약속이다. 노출하는 것은 다섯 함수뿐이다.
+- **공개 API는 최소로 한다.** 공개한 API는 호환성 약속이다 (ADR 0001, ADR 0004).
   - `bind(keys, command)`: 키 바인딩 추가와 변경
   - `command(name, function)`: 명령 등록
   - `run(name)`: 명령 실행
   - `get(name)` / `set(name, value)`: 설정 값 읽기와 쓰기
+  - `syntax.register(name, spec)`: 구문 강조 규칙 등록 (확장자 목록, 주석 기호, 키워드 목록 선언적 테이블 등록)
+- 기본 구문 강조(Rust, C, Python, JS, Lua, Go, Shell, Markdown)는 바이너리 내장 스크립트(`syntax.lua`)로 제공되며, `init.lua` 실행 전에 먼저 평가되어 사용자 설정에서 재정의할 수 있다.
 - 버퍼 텍스트, 이벤트 훅, 버퍼·창·파일 시스템은 공개하지 않는다.
 - 생존 집합 밖의 키는 Lua 설정으로 추가할 수 있다.
 

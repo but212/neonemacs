@@ -6,35 +6,39 @@ use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Buffer, Editor, Window};
 use neonemacs::core::file::Backing;
 use neonemacs::core::render;
-use neonemacs::core::syntax::{TokenKind, detect_lang, highlight_line};
+use neonemacs::core::syntax::{TokenKind, highlight_line};
 use neonemacs::core::text::Text;
 use neonemacs::shell::lua;
 use neonemacs::shell::session::ShellSession;
 
 #[test]
 fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let reg = ed.syntax_registry();
+
     // Rust
-    assert_eq!(detect_lang("lib.rs"), Some("rust"));
-    let rust_tokens = highlight_line(Some("rust"), "let x = 10; // assign");
+    assert_eq!(reg.detect_lang("lib.rs"), Some("rust"));
+    let rust_tokens = highlight_line(reg.find("rust"), "let x = 10; // assign");
     assert_eq!(rust_tokens[0], TokenKind::Keyword); // "let"
     assert_eq!(rust_tokens[8], TokenKind::Number); // "10"
     assert_eq!(rust_tokens[13], TokenKind::Comment); // "// assign"
 
     // Python
-    assert_eq!(detect_lang("script.py"), Some("python"));
-    let py_tokens = highlight_line(Some("python"), "def foo(): # comment");
+    assert_eq!(reg.detect_lang("script.py"), Some("python"));
+    let py_tokens = highlight_line(reg.find("python"), "def foo(): # comment");
     assert_eq!(py_tokens[0], TokenKind::Keyword); // "def"
     assert_eq!(py_tokens[11], TokenKind::Comment); // "# comment"
 
     // C
-    assert_eq!(detect_lang("main.c"), Some("c"));
-    let c_tokens = highlight_line(Some("c"), "int a = 0;");
+    assert_eq!(reg.detect_lang("main.c"), Some("c"));
+    let c_tokens = highlight_line(reg.find("c"), "int a = 0;");
     assert_eq!(c_tokens[0], TokenKind::Keyword); // "int"
     assert_eq!(c_tokens[8], TokenKind::Number); // "0"
 
     // Lua
-    assert_eq!(detect_lang("init.lua"), Some("lua"));
-    let lua_tokens = highlight_line(Some("lua"), "local v = 'str' -- comment");
+    assert_eq!(reg.detect_lang("init.lua"), Some("lua"));
+    let lua_tokens = highlight_line(reg.find("lua"), "local v = 'str' -- comment");
     assert_eq!(lua_tokens[0], TokenKind::Keyword); // "local"
     assert_eq!(lua_tokens[10], TokenKind::String); // 'str'
     assert_eq!(lua_tokens[16], TokenKind::Comment); // -- comment
@@ -42,12 +46,14 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
 
 #[test]
 fn styled_render_preserves_column_and_cursor_positions() {
-    let ed = Editor::new(Config::default()).with_current_buffer(|b| Buffer {
-        name: "test.rs".to_owned(),
-        text: Text::from_bytes(b"fn main() {\n    let x = 42;\n}\n"),
-        backing: Backing::None,
-        ..b
-    });
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua)
+        .with_current_buffer(|b| Buffer {
+            name: "test.rs".to_owned(),
+            text: Text::from_bytes(b"fn main() {\n    let x = 42;\n}\n"),
+            backing: Backing::None,
+            ..b
+        });
 
     let (cols, rows) = (40, 10);
     let ed = render::scroll(ed, cols, rows);

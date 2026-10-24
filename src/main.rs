@@ -179,6 +179,7 @@ impl Drop for TerminalGuard {
 fn run(files: &[FileArg]) -> io::Result<()> {
     let lua = lua::new_state().map_err(|e| io::Error::other(e.to_string()))?;
     let ed = Editor::new(Config::default());
+    let ed = lua::bootstrap(ed, &lua);
     let ed = load_init(ed, &lua);
     let ed = open_files(ed, Some(&lua), files);
     let _guard = TerminalGuard::enter()?;

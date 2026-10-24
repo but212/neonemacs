@@ -69,6 +69,11 @@ pub struct ShellSession {
 
 impl ShellSession {
     pub fn new(ed: Editor, lua: Lua) -> Self {
+        let ed = if ed.syntax_registry().is_empty() {
+            crate::shell::lua::bootstrap(ed, &lua)
+        } else {
+            ed
+        };
         Self {
             ed,
             lua,

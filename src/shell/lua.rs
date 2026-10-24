@@ -7,6 +7,7 @@ use crate::core::config::Value;
 use crate::core::editor::Editor;
 use crate::core::effect::Event;
 use crate::core::keymap::KeyError;
+use crate::core::syntax::SyntaxDef;
 use crate::shell::{perform_in, step_in};
 use mlua::{Function, Lua, Table, Value as LuaValue};
 use std::cell::{Cell, Ref, RefCell, RefMut};
@@ -15,6 +16,23 @@ use std::path::{Path, PathBuf};
 
 /// Global table holding the commands defined with `command`.
 const COMMANDS: &str = "neonemacs_commands";
+
+/// The default syntax definitions bundled into the binary (§5, §12).
+pub const BUNDLED_SYNTAX: &str = include_str!("syntax.lua");
+
+/// Bootstraps built-in Lua scripts (such as syntax definitions) into `ed`.
+pub fn bootstrap(ed: Editor, lua: &Lua) -> Editor {
+    let (ed, result) = crate::shell::run_source(ed, lua, BUNDLED_SYNTAX);
+    if let Err(e) = result {
+        panic!("fatal: bundled syntax.lua failed to load: {e}");
+    }
+    ed
+}
+
+/// Backwards-compatible alias for `bootstrap`.
+pub fn load_bundled_syntax(ed: Editor, lua: &Lua) -> Editor {
+    bootstrap(ed, lua)
+}
 
 /// Most nested `run` calls allowed. A command that runs itself stops with an error here, before the native stack runs out.
 const MAX_RUN_DEPTH: usize = 50;
@@ -124,8 +142,57 @@ pub fn with_api<R>(
                 Ok(())
             })?,
         )?;
+        let syntax_table = lua.create_table()?;
+        syntax_table.set(
+            "register",
+            scope.create_function(|_, (name, spec): (String, Table)| {
+                let def = parse_syntax_def(name, spec)?;
+                let mut ed = editor_mut(cell);
+                let new_registry = ed.syntax_registry().clone().register(def);
+                *ed = ed.clone().with_syntax_registry(new_registry);
+                Ok(())
+            })?,
+        )?;
+        g.set("syntax", syntax_table)?;
         body(lua)
     })
+}
+
+fn parse_syntax_def(name: String, spec: Table) -> mlua::Result<SyntaxDef> {
+    if name.trim().is_empty() {
+        return Err(mlua::Error::RuntimeError(
+            "syntax name must not be empty".to_string(),
+        ));
+    }
+    let ext_table: Table = spec.get("extensions").map_err(|_| {
+        mlua::Error::RuntimeError("syntax spec must have 'extensions' table".to_string())
+    })?;
+    let mut extensions = Vec::new();
+    for ext in ext_table.sequence_values::<String>() {
+        let ext = ext.map_err(|_| {
+            mlua::Error::RuntimeError("extensions must be an array of strings".to_string())
+        })?;
+        extensions.push(ext);
+    }
+    if extensions.is_empty() {
+        return Err(mlua::Error::RuntimeError(
+            "extensions array must not be empty".to_string(),
+        ));
+    }
+
+    let line_comment: Option<String> = spec.get("line_comment").ok();
+
+    let mut keywords = Vec::new();
+    if let Ok(kw_table) = spec.get::<Table>("keywords") {
+        for kw in kw_table.sequence_values::<String>() {
+            let kw = kw.map_err(|_| {
+                mlua::Error::RuntimeError("keywords must be an array of strings".to_string())
+            })?;
+            keywords.push(kw);
+        }
+    }
+
+    Ok(SyntaxDef::new(name, extensions, line_comment, keywords))
 }
 
 /// Calls the Lua command `name`, which must have been defined with `command`.
@@ -272,6 +339,46 @@ mod tests {
         let (_, result) = script(&lua, ed, r#"set("fill-column", "x")"#);
         assert!(result.is_err());
     }
+    #[test]
+    fn api_syntax_register_and_validation() {
+        let lua = new_state().unwrap();
+        let ed = Editor::new(Config::default());
+        let (ed, result) = script(
+            &lua,
+            ed,
+            r##"syntax.register("mylang", {
+                extensions = { "xyz" },
+                line_comment = "#",
+                keywords = { "fn", "var" }
+            })"##,
+        );
+        result.unwrap();
+        assert_eq!(ed.syntax_registry().detect_lang("file.xyz"), Some("mylang"));
+        assert!(ed.syntax_registry().is_keyword("mylang", "fn"));
+        assert_eq!(ed.syntax_registry().line_comment("mylang"), Some("#"));
+
+        // Validation failures
+        let (_, result) = script(&lua, ed.clone(), r#"syntax.register("", {})"#);
+        assert!(result.is_err());
+        let (_, result) = script(&lua, ed.clone(), r#"syntax.register("bad", { extensions = 123 })"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bundled_syntax_loaded_by_default() {
+        let lua = new_state().unwrap();
+        let ed = load_bundled_syntax(Editor::new(Config::default()), &lua);
+        let reg = ed.syntax_registry();
+        assert_eq!(reg.detect_lang("main.rs"), Some("rust"));
+        assert_eq!(reg.detect_lang("script.py"), Some("python"));
+        assert_eq!(reg.detect_lang("index.js"), Some("javascript"));
+        assert_eq!(reg.detect_lang("config.lua"), Some("lua"));
+        assert_eq!(reg.detect_lang("app.go"), Some("go"));
+        assert_eq!(reg.detect_lang("build.sh"), Some("shell"));
+        assert_eq!(reg.detect_lang("README.md"), Some("markdown"));
+        assert_eq!(reg.detect_lang("main.c"), Some("c"));
+    }
+
     #[test]
     fn config_path_follows_xdg_then_home() {
         assert_eq!(

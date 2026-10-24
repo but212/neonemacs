@@ -11,181 +11,139 @@ pub enum TokenKind {
     Number,
 }
 
-/// Detects language from buffer name or file path extension.
-pub fn detect_lang(name: &str) -> Option<&'static str> {
-    let ext = name.rsplit('.').next().unwrap_or("");
-    match ext {
-        "rs" => Some("rust"),
-        "c" | "h" | "cpp" | "hpp" | "cc" => Some("c"),
-        "py" => Some("python"),
-        "js" | "ts" | "jsx" | "tsx" => Some("javascript"),
-        "lua" => Some("lua"),
-        "go" => Some("go"),
-        "sh" | "bash" => Some("shell"),
-        "md" | "markdown" => Some("markdown"),
-        _ => None,
+/// Definition of syntax highlighting rules for a language.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SyntaxDef {
+    pub name: String,
+    pub extensions: Vec<String>,
+    pub line_comment: Option<String>,
+    pub keywords: Vec<String>,
+}
+
+impl SyntaxDef {
+    pub fn new(
+        name: String,
+        extensions: Vec<String>,
+        line_comment: Option<String>,
+        mut keywords: Vec<String>,
+    ) -> Self {
+        keywords.sort_unstable();
+        keywords.dedup();
+        Self {
+            name,
+            extensions,
+            line_comment,
+            keywords,
+        }
+    }
+
+    /// Checks if a word is a keyword using binary search in $O(\log K)$.
+    pub fn is_keyword(&self, word: &str) -> bool {
+        self.keywords
+            .binary_search_by(|k| k.as_str().cmp(word))
+            .is_ok()
     }
 }
 
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
-    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-    "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-    "unsafe", "use", "where", "while",
-];
+/// Registry storing syntax definitions for languages (I-27).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SyntaxRegistry {
+    languages: Vec<SyntaxDef>,
+}
 
-const C_KEYWORDS: &[&str] = &[
-    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-    "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return", "short",
-    "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-    "volatile", "while",
-];
+impl SyntaxRegistry {
+    pub const fn new() -> Self {
+        Self {
+            languages: Vec::new(),
+        }
+    }
 
-const PYTHON_KEYWORDS: &[&str] = &[
-    "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
-    "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is",
-    "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "try", "while",
-    "with", "yield",
-];
+    pub fn is_empty(&self) -> bool {
+        self.languages.is_empty()
+    }
 
-const JS_KEYWORDS: &[&str] = &[
-    "async",
-    "await",
-    "break",
-    "case",
-    "catch",
-    "class",
-    "const",
-    "continue",
-    "debugger",
-    "default",
-    "delete",
-    "do",
-    "else",
-    "export",
-    "extends",
-    "false",
-    "finally",
-    "for",
-    "function",
-    "if",
-    "import",
-    "in",
-    "instanceof",
-    "let",
-    "new",
-    "null",
-    "return",
-    "super",
-    "switch",
-    "this",
-    "throw",
-    "true",
-    "try",
-    "typeof",
-    "var",
-    "void",
-    "while",
-    "with",
-    "yield",
-];
+    pub fn register(mut self, mut def: SyntaxDef) -> Self {
+        def.keywords.sort_unstable();
+        def.keywords.dedup();
+        if let Some(pos) = self.languages.iter().position(|l| l.name == def.name) {
+            self.languages[pos] = def;
+        } else {
+            self.languages.push(def);
+        }
+        self
+    }
 
-const LUA_KEYWORDS: &[&str] = &[
-    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
-    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
-];
+    /// Detects language from buffer name or file path extension.
+    pub fn detect_lang<'a>(&'a self, name: &str) -> Option<&'a str> {
+        self.find_by_filename(name).map(|d| d.name.as_str())
+    }
 
-const GO_KEYWORDS: &[&str] = &[
-    "break",
-    "case",
-    "chan",
-    "const",
-    "continue",
-    "default",
-    "defer",
-    "else",
-    "fallthrough",
-    "for",
-    "func",
-    "go",
-    "goto",
-    "if",
-    "import",
-    "interface",
-    "map",
-    "package",
-    "range",
-    "return",
-    "select",
-    "struct",
-    "switch",
-    "type",
-    "var",
-];
+    /// Finds the syntax definition matching the file or buffer name.
+    pub fn find_by_filename<'a>(&'a self, name: &str) -> Option<&'a SyntaxDef> {
+        let ext = name.rsplit('.').next().unwrap_or("");
+        if ext.is_empty() {
+            return None;
+        }
+        self.languages
+            .iter()
+            .find(|l| l.extensions.iter().any(|e| e == ext))
+    }
 
-fn is_keyword(lang: &str, word: &str) -> bool {
-    let list = match lang {
-        "rust" => RUST_KEYWORDS,
-        "c" => C_KEYWORDS,
-        "python" => PYTHON_KEYWORDS,
-        "javascript" => JS_KEYWORDS,
-        "lua" => LUA_KEYWORDS,
-        "go" => GO_KEYWORDS,
-        _ => return false,
-    };
-    list.contains(&word)
+    pub fn find<'a>(&'a self, lang: &str) -> Option<&'a SyntaxDef> {
+        self.languages.iter().find(|l| l.name == lang)
+    }
+
+    pub fn is_keyword(&self, lang: &str, word: &str) -> bool {
+        self.find(lang).is_some_and(|d| d.is_keyword(word))
+    }
+
+    pub fn line_comment<'a>(&'a self, lang: &str) -> Option<&'a str> {
+        self.find(lang).and_then(|d| d.line_comment.as_deref())
+    }
+}
+
+/// Helper function to detect language using registry.
+pub fn detect_lang<'a>(registry: &'a SyntaxRegistry, name: &str) -> Option<&'a str> {
+    registry.detect_lang(name)
 }
 
 /// Tokenizes a single line of text into per-character `TokenKind` array.
 /// Returns a `Vec<TokenKind>` whose length matches `line.chars().count()`.
-pub fn highlight_line(lang: Option<&str>, line: &str) -> Vec<TokenKind> {
+pub fn highlight_line(syntax: Option<&SyntaxDef>, line: &str) -> Vec<TokenKind> {
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
     if n == 0 {
         return Vec::new();
     }
-    let Some(lang) = lang else {
+    let Some(syntax) = syntax else {
         return vec![TokenKind::Normal; n];
     };
 
-    if lang == "markdown" {
+    if syntax.name == "markdown" {
         return highlight_markdown(&chars);
     }
 
     let mut out = vec![TokenKind::Normal; n];
     let mut i = 0;
 
+    let comment_prefix = syntax.line_comment.as_deref();
+    let comment_chars: Option<Vec<char>> = comment_prefix.map(|p| p.chars().collect());
+
     while i < n {
         let c = chars[i];
 
         // Line comment check
-        if (lang == "rust" || lang == "c" || lang == "javascript" || lang == "go")
-            && c == '/'
-            && i + 1 < n
-            && chars[i + 1] == '/'
-        {
-            for slot in out.iter_mut().skip(i) {
-                *slot = TokenKind::Comment;
+        if let Some(ref prefix) = comment_chars {
+            if !prefix.is_empty() && chars[i..].starts_with(prefix) {
+                for slot in out.iter_mut().skip(i) {
+                    *slot = TokenKind::Comment;
+                }
+                break;
             }
-            break;
-        }
-
-        if (lang == "python" || lang == "shell") && c == '#' {
-            for slot in out.iter_mut().skip(i) {
-                *slot = TokenKind::Comment;
-            }
-            break;
-        }
-
-        if lang == "lua" && c == '-' && i + 1 < n && chars[i + 1] == '-' {
-            for slot in out.iter_mut().skip(i) {
-                *slot = TokenKind::Comment;
-            }
-            break;
         }
 
         // String literals: "..." or '...' or `...`
-        if c == '"' || c == '\'' || (c == '`' && (lang == "javascript" || lang == "go")) {
+        if c == '"' || c == '\'' || c == '`' {
             let quote = c;
             out[i] = TokenKind::String;
             let mut j = i + 1;
@@ -225,7 +183,7 @@ pub fn highlight_line(lang: Option<&str>, line: &str) -> Vec<TokenKind> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            if is_keyword(lang, &word) {
+            if syntax.is_keyword(&word) {
                 for slot in &mut out[start..i] {
                     *slot = TokenKind::Keyword;
                 }
@@ -264,35 +222,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detect_languages() {
-        assert_eq!(detect_lang("main.rs"), Some("rust"));
-        assert_eq!(detect_lang("test.py"), Some("python"));
-        assert_eq!(detect_lang("script.lua"), Some("lua"));
-        assert_eq!(detect_lang("file.txt"), None);
+    fn registry_detect_lang() {
+        let reg = SyntaxRegistry::new().register(SyntaxDef::new(
+            "rust".to_string(),
+            vec!["rs".to_string()],
+            Some("//".to_string()),
+            vec!["fn".to_string(), "let".to_string()],
+        ));
+        assert_eq!(reg.detect_lang("main.rs"), Some("rust"));
+        assert_eq!(reg.detect_lang("src/lib.rs"), Some("rust"));
+        assert_eq!(reg.detect_lang("test.py"), None);
+        assert!(reg.find_by_filename("main.rs").is_some());
     }
 
     #[test]
-    fn tokenize_rust_line() {
-        let line = "pub fn add(x: i32) -> i32 { // comment";
-        let tokens = highlight_line(Some("rust"), line);
-        assert_eq!(tokens.len(), line.chars().count());
-        // "pub" -> Keyword
-        assert_eq!(tokens[0], TokenKind::Keyword);
-        assert_eq!(tokens[2], TokenKind::Keyword);
-        assert_eq!(tokens[3], TokenKind::Normal); // space
-        // "fn" -> Keyword
-        assert_eq!(tokens[4], TokenKind::Keyword);
-        assert_eq!(tokens[5], TokenKind::Keyword);
-        // comment at the end
-        let comment_start = line.find("//").unwrap();
-        assert_eq!(tokens[comment_start], TokenKind::Comment);
-        assert_eq!(tokens[tokens.len() - 1], TokenKind::Comment);
+    fn registry_highlight_custom_lang() {
+        let def = SyntaxDef::new(
+            "custom".to_string(),
+            vec!["xyz".to_string()],
+            Some("#".to_string()),
+            vec!["hello".to_string(), "world".to_string()],
+        );
+        let reg = SyntaxRegistry::new().register(def);
+        let syntax = reg.find("custom");
+        let line = "hello 123; # comment";
+        let tokens = highlight_line(syntax, line);
+        assert_eq!(tokens[0], TokenKind::Keyword); // "hello"
+        assert_eq!(tokens[6], TokenKind::Number);  // "123"
+        assert_eq!(tokens[11], TokenKind::Comment); // "# comment"
+    }
+
+    #[test]
+    fn syntax_def_keyword_binary_search_and_dedup() {
+        let def = SyntaxDef::new(
+            "test".to_string(),
+            vec!["t".to_string()],
+            None,
+            vec![
+                "zebra".to_string(),
+                "apple".to_string(),
+                "apple".to_string(),
+                "middle".to_string(),
+            ],
+        );
+        assert_eq!(def.keywords, vec!["apple", "middle", "zebra"]);
+        assert!(def.is_keyword("apple"));
+        assert!(def.is_keyword("middle"));
+        assert!(def.is_keyword("zebra"));
+        assert!(!def.is_keyword("banana"));
     }
 
     #[test]
     fn tokenize_string_and_number() {
+        let def = SyntaxDef::new("rust".to_string(), vec!["rs".to_string()], Some("//".to_string()), vec![]);
         let line = "let s = \"hello 123\"; let n = 42;";
-        let tokens = highlight_line(Some("rust"), line);
+        let tokens = highlight_line(Some(&def), line);
         let str_start = line.find('"').unwrap();
         let str_end = line.rfind('"').unwrap();
         assert_eq!(tokens[str_start], TokenKind::String);
