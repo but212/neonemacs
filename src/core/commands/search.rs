@@ -23,42 +23,43 @@ pub(crate) fn isearch_backward_regexp(ed: Editor, fx: Effects) -> (Editor, Effec
     (start_isearch(ed, false, true), fx)
 }
 
-fn start_isearch(mut ed: Editor, forward: bool, regex: bool) -> Editor {
+fn start_isearch(ed: Editor, forward: bool, regex: bool) -> Editor {
     let origin = ed.window().point;
-    ed.mode = Mode::Isearch(Isearch {
+    ed.set_mode(Mode::Isearch(Isearch {
         forward,
         regex,
         text: String::new(),
         origin,
         anchor: origin,
         failed: false,
-    });
-    ed.message = "I-search: ".to_owned();
-    ed
+    }))
+    .set_message("I-search: ")
 }
 
 /// Keys during an incremental search. `C-s` and `C-r` move to the next match
 /// in each direction. Any other non-text key ends the search, then runs normally.
-pub fn isearch_key(mut ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
-    let Mode::Isearch(mut s) = ed.mode.clone() else {
+pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
+    let Mode::Isearch(mut s) = ed.mode().clone() else {
         return (ed, fx);
     };
     if key == Key::ctrl('g') {
-        ed.mode = Mode::Normal {
-            prefix: Prefix::None,
-        };
-        let mut ed = ed.move_point(s.origin);
-        ed.message = "Quit".to_owned();
+        let ed = ed
+            .set_mode(Mode::Normal {
+                prefix: Prefix::None,
+            })
+            .move_point(s.origin)
+            .set_message("Quit");
         return (ed, fx);
     }
     if key == Key::plain(Code::Enter) {
-        ed.mode = Mode::Normal {
-            prefix: Prefix::None,
-        };
-        ed.message.clear();
+        let ed = ed
+            .set_mode(Mode::Normal {
+                prefix: Prefix::None,
+            })
+            .clear_message();
         return (ed, fx);
     }
-    let (mut ed, s) = if key == Key::ctrl('s') || key == Key::ctrl('r') {
+    let (ed, s) = if key == Key::ctrl('s') || key == Key::ctrl('r') {
         s.forward = key == Key::ctrl('s');
         let from = ed.window().point;
         isearch_step(ed, s, from, true)
@@ -72,22 +73,20 @@ pub fn isearch_key(mut ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
         let anchor = s.anchor;
         isearch_step(ed, s, anchor, false)
     } else {
-        ed.mode = Mode::Normal {
+        let ed = ed.set_mode(Mode::Normal {
             prefix: Prefix::None,
-        };
+        });
         return ed.handle_normal_key(Prefix::None, key, fx);
     };
-    ed.mode = Mode::Isearch(s);
-    (ed, fx)
+    (ed.set_mode(Mode::Isearch(s)), fx)
 }
 
 /// Searches from `from` in the direction of `s` and moves point to the match.
 /// With `wrap`, a miss restarts at the other end of the buffer.
-fn isearch_step(mut ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor, Isearch) {
+fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor, Isearch) {
     if s.text.is_empty() {
         s.failed = false;
-        ed.message = "I-search: ".to_owned();
-        return (ed, s);
+        return (ed.set_message("I-search: "), s);
     }
     let pattern = if s.regex {
         Pattern::regex(&s.text)
@@ -98,11 +97,10 @@ fn isearch_step(mut ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Edi
         Ok(p) => p,
         Err(e) => {
             s.failed = true;
-            ed.message = format!("Invalid regexp: {e}");
-            return (ed, s);
+            return (ed.set_message(format!("Invalid regexp: {e}")), s);
         }
     };
-    let fold = ed.config.case_fold_search;
+    let fold = ed.config().case_fold_search;
     let mut wrapped = false;
     let mut found = find_in_direction(&ed, &pattern, s.forward, from, fold);
     if found.is_none() && wrap {
@@ -111,13 +109,15 @@ fn isearch_step(mut ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Edi
         wrapped = found.is_some();
     }
     s.failed = found.is_none();
-    if let Some((start, end)) = found {
+    let ed = if let Some((start, end)) = found {
         s.anchor = start;
-        ed = ed.move_point(if s.forward { end } else { start });
-    }
+        ed.move_point(if s.forward { end } else { start })
+    } else {
+        ed
+    };
     let failing = if s.failed { "Failing " } else { "" };
     let wrap_note = if wrapped { "Wrapped " } else { "" };
-    ed.message = format!("{wrap_note}{failing}I-search: {}", s.text);
+    let ed = ed.set_message(format!("{wrap_note}{failing}I-search: {}", s.text));
     (ed, s)
 }
 
@@ -138,7 +138,7 @@ fn find_in_direction(
 
 /// Starts a query-replace session from point. Errors on a bad regexp or an empty pattern.
 pub fn start_query_replace(
-    mut ed: Editor,
+    ed: Editor,
     pattern: &str,
     replacement: &str,
     regex: bool,
@@ -158,18 +158,18 @@ pub fn start_query_replace(
         pattern,
         replacement: replacement.to_owned(),
         regex,
-        fold: ed.config.case_fold_search,
+        fold: ed.config().case_fold_search,
         current: None,
         count: 0,
     };
     let from = ed.window().point;
     q.current = next_match(&ed, &q, from);
     if q.current.is_none() {
-        ed.message = "No match".to_owned();
-        return (ed, Ok(()));
+        return (ed.set_message("No match"), Ok(()));
     }
-    ed.mode = Mode::QueryReplace(q);
-    ed.message = "Query replacing (y, n, !, q)".to_owned();
+    let ed = ed
+        .set_mode(Mode::QueryReplace(q))
+        .set_message("Query replacing (y, n, !, q)");
     (ed, Ok(()))
 }
 
@@ -183,7 +183,7 @@ fn next_match(ed: &Editor, q: &QueryReplace, from: usize) -> Option<(usize, usiz
 /// Answers for query-replace: `y`/SPC replace, `n`/DEL skip, `!` replace the rest,
 /// `q`/RET/`C-g` stop (A8). The whole session is one undo group.
 pub fn query_key(ed: Editor, key: Key) -> Editor {
-    let Mode::QueryReplace(mut q) = ed.mode.clone() else {
+    let Mode::QueryReplace(mut q) = ed.mode().clone() else {
         return ed;
     };
     let Some((start, end)) = q.current else {
@@ -274,23 +274,21 @@ fn resume(ed: &Editor, after: usize, matched_empty: bool) -> usize {
     }
 }
 
-fn step(mut ed: Editor, mut q: QueryReplace, from: usize) -> Editor {
+fn step(ed: Editor, mut q: QueryReplace, from: usize) -> Editor {
     q.current = next_match(&ed, &q, from);
     if q.current.is_none() {
         finish(ed, &q)
     } else {
-        ed.mode = Mode::QueryReplace(q);
-        ed
+        ed.set_mode(Mode::QueryReplace(q))
     }
 }
 
-fn finish(mut ed: Editor, q: &QueryReplace) -> Editor {
-    ed.mode = Mode::Normal {
+fn finish(ed: Editor, q: &QueryReplace) -> Editor {
+    ed.set_mode(Mode::Normal {
         prefix: Prefix::None,
-    };
-    let mut ed = ed.boundary();
-    ed.message = format!("Replaced {} occurrence(s)", q.count);
-    ed
+    })
+    .boundary()
+    .set_message(format!("Replaced {} occurrence(s)", q.count))
 }
 
 pub(crate) fn query_replace_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -337,8 +335,8 @@ mod tests {
         let ed = keys(ed, "C-g");
         assert_eq!(point(&ed), 0);
         assert_eq!(
-            ed.mode,
-            Mode::Normal {
+            ed.mode(),
+            &Mode::Normal {
                 prefix: Prefix::None
             }
         );
@@ -352,7 +350,7 @@ mod tests {
         assert_eq!(point(&ed), 3);
         let ed = keys(ed, "C-s");
         assert_eq!(point(&ed), 3);
-        assert!(ed.message.contains("Wrapped"));
+        assert!(ed.message().contains("Wrapped"));
     }
 
     #[test]
@@ -375,8 +373,8 @@ mod tests {
         let ed = keys(ed, "y");
         assert_eq!(text(&ed), "qux bar foo baz qux");
         assert_eq!(
-            ed.mode,
-            Mode::Normal {
+            ed.mode(),
+            &Mode::Normal {
                 prefix: Prefix::None
             }
         );
@@ -393,8 +391,8 @@ mod tests {
         let ed = keys(ed, "y q");
         assert_eq!(text(&ed), "qux bar foo");
         assert_eq!(
-            ed.mode,
-            Mode::Normal {
+            ed.mode(),
+            &Mode::Normal {
                 prefix: Prefix::None
             }
         );

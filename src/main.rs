@@ -49,14 +49,14 @@ fn parse_args(args: &[String]) -> Result<Vec<FileArg>, String> {
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
 /// Restores content from WAL via pure core transition if an unsaved WAL session is detected (I-23).
 fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Editor {
-    let first_new = ed.buffers.len();
+    let first_new = ed.buffers().len();
     let mut recovered_any = Vec::new();
     for f in files {
         let has_wal = wal::has_wal(&f.path);
         let fx = request_open(&ed, f.path.clone(), f.line, false, Vec::new());
         ed = perform_all(ed, lua, fx);
         let cur_disk = ed
-            .buffers
+            .buffers()
             .iter()
             .find(|b| match &b.backing {
                 neonemacs::core::file::Backing::File { path, .. } => path == &f.path,
@@ -79,9 +79,9 @@ fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Edi
         }
     }
     if !recovered_any.is_empty() {
-        ed.message = format!("[Recovered {} from WAL]", recovered_any.join(", "));
+        ed = ed.set_message(format!("[Recovered {} from WAL]", recovered_any.join(", ")));
     }
-    match ed.buffers.get(first_new).map(|b| b.id) {
+    match ed.buffers().get(first_new).map(|b| b.id) {
         Some(id) => switch_to(ed, id),
         None => ed,
     }
@@ -97,12 +97,13 @@ fn load_init(ed: Editor, lua: &mlua::Lua) -> Editor {
     let Ok(source) = fs::read_to_string(&path) else {
         return ed;
     };
-    let (mut ed, result) = run_source(ed, lua, &source);
+    let (ed, result) = run_source(ed, lua, &source);
     if let Err(e) = result {
-        ed.message = format!(
+        let msg = format!(
             "init.lua: {}",
             e.to_string().lines().next().unwrap_or_default()
         );
+        return ed.set_message(msg);
     }
     ed
 }
@@ -210,7 +211,7 @@ mod tests {
 
         let ed = open_files(Editor::new(Config::default()), None, &files);
         assert_eq!(ed.buffer().name, "a.txt");
-        let other = ed.buffers.iter().find(|x| x.name == "b.txt").unwrap();
+        let other = ed.buffers().iter().find(|x| x.name == "b.txt").unwrap();
         assert_eq!(other.saved_point, 4);
     }
 }

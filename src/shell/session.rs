@@ -81,12 +81,12 @@ impl ShellSession {
     }
 
     pub const fn is_quit(&self) -> bool {
-        self.ed.quit
+        self.ed.quit()
     }
 
     fn has_modified_file_buffer(&self) -> bool {
         self.ed
-            .buffers
+            .buffers()
             .iter()
             .any(|b| b.modified && matches!(b.backing, Backing::File { .. }))
     }
@@ -136,7 +136,7 @@ impl ShellSession {
     pub fn tick_at(&mut self, now: Instant) {
         // 1. Check background shell task (only in Normal mode so active Prompt/Isearch/QueryReplace
         // echo state is never clobbered mid-input; completed output stays buffered in the channel).
-        if matches!(self.ed.mode, Mode::Normal { .. })
+        if matches!(self.ed.mode(), Mode::Normal { .. })
             && let Some(active) = &mut self.active_shell
         {
             match active.task.receiver.try_recv() {
@@ -147,8 +147,10 @@ impl ShellSession {
                     self.active_shell = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    if self.ed.message.is_empty() || self.ed.message.starts_with("[Running") || self.ed.message == "Quit" {
-                        self.ed.message = active.format_status();
+                    let msg = self.ed.message();
+                    if msg.is_empty() || msg.starts_with("[Running") || msg == "Quit" {
+                        let status = active.format_status();
+                        self.ed = std::mem::take(&mut self.ed).set_message(status);
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -169,7 +171,7 @@ impl ShellSession {
         if self.needs_wal_flush
             && now.saturating_duration_since(self.last_edit_time) >= Duration::from_secs(1)
         {
-            for buf in &self.ed.buffers {
+            for buf in self.ed.buffers() {
                 if buf.modified
                     && let Backing::File { path, disk, .. } = &buf.backing
                 {
@@ -240,10 +242,7 @@ impl ShellSession {
     }
 }
 
-fn print_styled_row(
-    out: &mut impl Write,
-    cells: &[crate::core::render::Cell],
-) -> io::Result<()> {
+fn print_styled_row(out: &mut impl Write, cells: &[crate::core::render::Cell]) -> io::Result<()> {
     let mut current = TokenKind::Normal;
     let mut span = String::new();
 
@@ -359,24 +358,24 @@ mod tests {
         // 1. usize::MAX wrapping does not panic
         let t0 = Instant::now();
         session.tick_at(t0);
-        assert_eq!(session.ed.message, "[Running... |]");
+        assert_eq!(session.ed.message(), "[Running... |]");
 
         // 2. Entering M-x prompt while shell is running must NOT be overwritten by tick()
         session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
-        assert!(matches!(session.ed.mode, Mode::Prompt(_)));
+        assert!(matches!(session.ed.mode(), Mode::Prompt(_)));
         session.handle_event_at(press(KeyCode::Char('g'), KeyModifiers::NONE), t0);
-        assert_eq!(session.ed.message, "M-x g");
+        assert_eq!(session.ed.message(), "M-x g");
 
         // Tick multiple times while user is typing in prompt: prompt message stays intact
         session.tick_at(t0 + Duration::from_millis(50));
         session.tick_at(t0 + Duration::from_millis(100));
-        assert_eq!(session.ed.message, "M-x g");
+        assert_eq!(session.ed.message(), "M-x g");
 
         // 3. Cancel prompt with C-g -> back to Mode::Normal -> next tick resumes spinner
         session.handle_event_at(press(KeyCode::Char('g'), KeyModifiers::CONTROL), t0);
-        assert!(matches!(session.ed.mode, Mode::Normal { .. }));
+        assert!(matches!(session.ed.mode(), Mode::Normal { .. }));
         session.tick_at(t0 + Duration::from_millis(150));
-        assert!(session.ed.message.starts_with("[Running... "));
+        assert!(session.ed.message().starts_with("[Running... "));
 
         drop(tx);
     }
@@ -386,14 +385,17 @@ mod tests {
         let mut session = make_session();
         let (tx, rx) = mpsc::channel::<Result<String, String>>();
         session.active_shell = Some(ActiveShell::new(ShellTask { receiver: rx }));
-        session.ed.message = "[Running... |]".to_owned();
+        session.ed = session.ed.set_message("[Running... |]");
 
         // Simulate worker thread panic / abrupt channel drop without sending
         drop(tx);
 
         session.tick_at(Instant::now());
         assert!(session.active_shell.is_none());
-        assert_eq!(session.ed.message, "Shell command terminated unexpectedly");
+        assert_eq!(
+            session.ed.message(),
+            "Shell command terminated unexpectedly"
+        );
     }
 
     #[test]
@@ -415,7 +417,7 @@ mod tests {
         session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
 
         assert_eq!(
-            session.ed.message,
+            session.ed.message(),
             "[Running...] A shell command is already running"
         );
 
@@ -424,7 +426,7 @@ mod tests {
         assert!(
             session
                 .ed
-                .message
+                .message()
                 .ends_with("] A shell command is already running")
         );
 
@@ -435,7 +437,7 @@ mod tests {
         assert!(
             session
                 .ed
-                .buffers
+                .buffers()
                 .iter()
                 .any(|b| b.name == "*Shell Command Output*" && b.text.to_bytes() == b"line1\nline2")
         );
@@ -478,7 +480,10 @@ mod tests {
         assert!(wal::has_wal(&file_a));
         assert!(!wal::has_wal(&file_b));
         assert!(!session.needs_wal_flush);
-        assert_eq!(wal::read_wal(&file_a, crate::core::file::DiskState::Unknown).unwrap(), b"i!?nit_a");
+        assert_eq!(
+            wal::read_wal(&file_a, crate::core::file::DiskState::Unknown).unwrap(),
+            b"i!?nit_a"
+        );
 
         // 3. Edit again, then save (C-x C-s) before 1s elapses -> disarms WAL flush & removes .wal
         let t_edit3 = t0 + Duration::from_secs(3);
@@ -507,14 +512,38 @@ mod tests {
         // Cell widths: `"`(1, String), `가`(2, String), `"`(1, String), ` `(1, Normal), `l`(1, Keyword), `e`(1, Keyword), `t`(1, Keyword)
         // Notice `styles` has 8 entries (2 cells for `가`), while `line` has 7 chars!
         let cells = [
-            crate::core::render::Cell { glyph: "\"".into(), style: TokenKind::String },
-            crate::core::render::Cell { glyph: "가".into(), style: TokenKind::String },
-            crate::core::render::Cell { glyph: "".into(), style: TokenKind::String },
-            crate::core::render::Cell { glyph: "\"".into(), style: TokenKind::String },
-            crate::core::render::Cell { glyph: " ".into(), style: TokenKind::Normal },
-            crate::core::render::Cell { glyph: "l".into(), style: TokenKind::Keyword },
-            crate::core::render::Cell { glyph: "e".into(), style: TokenKind::Keyword },
-            crate::core::render::Cell { glyph: "t".into(), style: TokenKind::Keyword },
+            crate::core::render::Cell {
+                glyph: "\"".into(),
+                style: TokenKind::String,
+            },
+            crate::core::render::Cell {
+                glyph: "가".into(),
+                style: TokenKind::String,
+            },
+            crate::core::render::Cell {
+                glyph: "".into(),
+                style: TokenKind::String,
+            },
+            crate::core::render::Cell {
+                glyph: "\"".into(),
+                style: TokenKind::String,
+            },
+            crate::core::render::Cell {
+                glyph: " ".into(),
+                style: TokenKind::Normal,
+            },
+            crate::core::render::Cell {
+                glyph: "l".into(),
+                style: TokenKind::Keyword,
+            },
+            crate::core::render::Cell {
+                glyph: "e".into(),
+                style: TokenKind::Keyword,
+            },
+            crate::core::render::Cell {
+                glyph: "t".into(),
+                style: TokenKind::Keyword,
+            },
         ];
 
         let mut out = Vec::new();
@@ -537,9 +566,18 @@ mod tests {
         // Combining mark (`e` + U+0301 acute accent) inside a Keyword followed by Number `1`:
         // `e\u{0301}` occupies 1 cell in `styles` (`Keyword`), `' '` occupies 1 cell (`Normal`), `'1'` occupies 1 cell (`Number`).
         let comb_cells = [
-            crate::core::render::Cell { glyph: "e\u{0301}".into(), style: TokenKind::Keyword },
-            crate::core::render::Cell { glyph: " ".into(), style: TokenKind::Normal },
-            crate::core::render::Cell { glyph: "1".into(), style: TokenKind::Number },
+            crate::core::render::Cell {
+                glyph: "e\u{0301}".into(),
+                style: TokenKind::Keyword,
+            },
+            crate::core::render::Cell {
+                glyph: " ".into(),
+                style: TokenKind::Normal,
+            },
+            crate::core::render::Cell {
+                glyph: "1".into(),
+                style: TokenKind::Number,
+            },
         ];
         let mut comb_out = Vec::new();
         print_styled_row(&mut comb_out, &comb_cells).unwrap();

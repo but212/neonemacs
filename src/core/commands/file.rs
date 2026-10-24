@@ -13,8 +13,8 @@ pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     save_buffer(ed, id, fx)
 }
 
-pub(crate) fn save_buffers_kill_emacs(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    if ed.buffers.iter().any(|b| b.modified) {
+pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    if ed.buffers().iter().any(|b| b.modified) {
         let ed = ask(
             ed,
             Confirm::QuitUnsaved,
@@ -22,8 +22,7 @@ pub(crate) fn save_buffers_kill_emacs(mut ed: Editor, fx: Effects) -> (Editor, E
         );
         (ed, fx)
     } else {
-        ed.quit = true;
-        (ed, fx)
+        (ed.set_quit(true), fx)
     }
 }
 
@@ -36,10 +35,9 @@ fn file_state(ed: &Editor, id: BufferId) -> Option<(PathBuf, DiskState, LoadExte
 
 /// Saves `id`. The checks run in I-04 order: truncated file, then external change.
 /// A file-backed buffer asks the shell for its disk state first (`StatDisk`).
-pub fn save_buffer(mut ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
+pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     let Some((path, _, extent)) = file_state(&ed, id) else {
-        ed.message = "No file is visiting this buffer".to_owned();
-        return (ed, fx);
+        return (ed.set_message("No file is visiting this buffer"), fx);
     };
     if extent == LoadExtent::Truncated {
         let ed = ask(
@@ -73,7 +71,7 @@ pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> 
 }
 
 /// Runs the action that a yes answer to `question` allows.
-pub fn confirmed(mut ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects) {
+pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects) {
     match question {
         Confirm::SaveTruncated(id) => {
             let ed = ed.with_buffer(id, |b| Buffer {
@@ -86,10 +84,7 @@ pub fn confirmed(mut ed: Editor, question: Confirm, fx: Effects) -> (Editor, Eff
             let fx = write_buffer(&ed, id, fx);
             (ed, fx)
         }
-        Confirm::QuitUnsaved => {
-            ed.quit = true;
-            (ed, fx)
-        }
+        Confirm::QuitUnsaved => (ed.set_quit(true), fx),
         Confirm::KillModified(id) => (kill_now(ed, id), fx),
         Confirm::RevertModified(id) => revert_now(ed, id, fx),
     }
@@ -158,12 +153,11 @@ pub fn written(
         }
         Err(e) => format!("Save failed: {e}"),
     };
-    ed.message = message;
-    (ed, fx)
+    (ed.set_message(message), fx)
 }
 
 /// Shows the result of the undo write that follows a successful save.
-pub fn undo_written(mut ed: Editor, id: BufferId, result: Result<(), String>) -> Editor {
+pub fn undo_written(ed: Editor, id: BufferId, result: Result<(), String>) -> Editor {
     let Backing::File { path, .. } = &ed.buffer_by_id(id).backing else {
         return ed;
     };
@@ -171,8 +165,7 @@ pub fn undo_written(mut ed: Editor, id: BufferId, result: Result<(), String>) ->
         Ok(()) => format!("Wrote {}", path.display()),
         Err(e) => format!("Wrote {}, undo not saved: {e}", path.display()),
     };
-    ed.message = message;
-    ed
+    ed.set_message(message)
 }
 
 /// Opens the file `input` in a new buffer, or shows it if it is already open.
@@ -182,7 +175,7 @@ pub(crate) fn find_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effect
     }
     let path = PathBuf::from(input);
     let existing = ed
-        .buffers
+        .buffers()
         .iter()
         .find(|b| matches!(&b.backing, Backing::File { path: p, .. } if *p == path))
         .map(|b| b.id);
@@ -233,22 +226,21 @@ pub(crate) fn revert_buffer(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 /// Asks the shell to read the file again. The result comes back as `FileRead` (C-12).
-fn revert_now(mut ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
+fn revert_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     let Some((path, _, _)) = file_state(&ed, id) else {
-        ed.message = "Buffer has no file to revert to".to_owned();
-        return (ed, fx);
+        return (ed.set_message("Buffer has no file to revert to"), fx);
     };
     fx.push(Effect::ReadFile {
         target: ReadTarget::Revert(id),
         path,
-        max_size: ed.config.max_file_size,
+        max_size: ed.config().max_file_size,
     });
     (ed, fx)
 }
 
 /// Applies the result of a file read: a new buffer for `Open`, a reload for `Revert` (C-11, C-12).
 pub fn file_read(
-    mut ed: Editor,
+    ed: Editor,
     target: ReadTarget,
     path: PathBuf,
     result: Result<effect::Read, String>,
@@ -256,7 +248,7 @@ pub fn file_read(
 ) -> (Editor, Effects) {
     match (target, result) {
         (ReadTarget::Open { line, show }, Ok(read)) => {
-            let loaded = loaded_from(&path, read, ed.config.max_file_size);
+            let loaded = loaded_from(&path, read, ed.config().max_file_size);
             let name = path.file_name().map_or_else(
                 || path.display().to_string(),
                 |n| n.to_string_lossy().into_owned(),
@@ -276,13 +268,13 @@ pub fn file_read(
             (ed, fx)
         }
         (ReadTarget::Open { .. }, Err(e)) => {
-            ed.message = format!("Cannot open {}: {e}", path.display());
+            let ed = ed.set_message(format!("Cannot open {}: {e}", path.display()));
             (ed, fx)
         }
         (ReadTarget::Revert(id), Ok(read)) => {
-            let loaded = loaded_from(&path, read, ed.config.max_file_size);
-            let limit = ed.config.undo_limit;
-            let mut ed = ed.with_buffer(id, |b| Buffer {
+            let loaded = loaded_from(&path, read, ed.config().max_file_size);
+            let limit = ed.config().undo_limit;
+            let ed = ed.with_buffer(id, |b| Buffer {
                 text: loaded.text,
                 backing: loaded.backing,
                 modified: false,
@@ -290,7 +282,7 @@ pub fn file_read(
                 ..b
             });
             let text = ed.buffer_by_id(id).text.clone();
-            ed.windows = ed.windows.map_windows(&|w| {
+            let windows = ed.windows().clone().map_windows(&|w: Window| {
                 if w.buffer == id {
                     Window {
                         point: snap(&text, w.point.min(text.len())),
@@ -301,11 +293,11 @@ pub fn file_read(
                     w
                 }
             });
-            ed.message = "Reverted".to_owned();
+            let ed = ed.set_windows(windows).set_message("Reverted");
             (ed, fx)
         }
         (ReadTarget::Revert(_), Err(e)) => {
-            ed.message = format!("Revert failed: {e}");
+            let ed = ed.set_message(format!("Revert failed: {e}"));
             (ed, fx)
         }
     }
@@ -320,7 +312,7 @@ pub fn undo_read(ed: Editor, id: BufferId, bytes: Option<Vec<u8>>) -> Editor {
         Backing::File { disk, .. } => *disk,
         Backing::None => DiskState::Unknown,
     };
-    match UndoLog::decode(&bytes, disk, ed.config.undo_limit) {
+    match UndoLog::decode(&bytes, disk, ed.config().undo_limit) {
         Some(log) => ed.with_buffer(id, |b| Buffer { undo: log, ..b }),
         None => ed,
     }

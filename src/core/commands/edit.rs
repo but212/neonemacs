@@ -1,9 +1,7 @@
 //! Text modification, kill ring, and formatting commands (§6).
 
 use crate::core::commands::motion::region;
-use crate::core::commands::util::{
-    delete_range, insert_at, is_space, paragraph_at, span_width,
-};
+use crate::core::commands::util::{delete_range, insert_at, is_space, paragraph_at, span_width};
 use crate::core::editor::{Buffer, Editor, LastCommand};
 use crate::core::effect::Effects;
 use crate::core::undo::Edit;
@@ -26,10 +24,9 @@ pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (delete_range(ed, p, end).0, fx)
 }
 
-pub(crate) fn kill_region(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
+pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let Some((start, end)) = region(&ed) else {
-        ed.message = "The mark is not set now".to_owned();
-        return (ed, fx);
+        return (ed.set_message("The mark is not set now"), fx);
     };
     if start >= end {
         return (ed, fx);
@@ -39,13 +36,12 @@ pub(crate) fn kill_region(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
     (push_kill(ed, bytes), fx)
 }
 
-pub(crate) fn kill_ring_save(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
+pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let Some((start, end)) = region(&ed) else {
-        ed.message = "The mark is not set now".to_owned();
-        return (ed, fx);
+        return (ed.set_message("The mark is not set now"), fx);
     };
     let bytes = ed.buffer().text.bytes(start..end);
-    ed.kill_ring.push(bytes);
+    let ed = ed.with_kill_ring(|kr| kr.push(bytes));
     (ed, fx)
 }
 
@@ -67,54 +63,55 @@ pub(crate) fn kill_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 /// Adds killed bytes to the kill ring. Consecutive kills append to one entry (I-09).
-fn push_kill(mut ed: Editor, bytes: Vec<u8>) -> Editor {
-    match ed.kill_ring.last_mut() {
-        Some(top) if ed.prev == LastCommand::Kill => top.extend(bytes),
-        _ => ed.kill_ring.push(bytes),
-    }
-    ed.last = LastCommand::Kill;
-    ed
+fn push_kill(ed: Editor, bytes: Vec<u8>) -> Editor {
+    let ed = if ed.prev() == LastCommand::Kill {
+        ed.with_kill_ring(|kr| kr.append_last(&bytes))
+    } else {
+        ed.with_kill_ring(|kr| kr.push(bytes))
+    };
+    ed.set_last(LastCommand::Kill)
 }
 
-pub(crate) fn yank(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let Some(bytes) = ed.kill_ring.last().cloned() else {
-        ed.message = "Kill ring is empty".to_owned();
-        return (ed, fx);
+pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let Some(bytes) = ed.kill_ring().last().map(<[u8]>::to_vec) else {
+        return (ed.set_message("Kill ring is empty"), fx);
     };
     let p = ed.window().point;
-    let mut ed = insert_at(ed, p, &bytes);
-    ed.last = LastCommand::Yank {
+    let ed = insert_at(ed, p, &bytes);
+    let ed = ed.set_last(LastCommand::Yank {
         start: p,
         end: p + bytes.len(),
-    };
+    });
     (ed, fx)
 }
 
 /// Replaces the last yank with the previous kill-ring entry. Valid only right after `yank`.
-pub(crate) fn yank_pop(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let LastCommand::Yank { start, end } = ed.prev else {
-        ed.message = "Previous command was not a yank".to_owned();
-        return (ed, fx);
+pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let LastCommand::Yank { start, end } = ed.prev() else {
+        return (ed.set_message("Previous command was not a yank"), fx);
     };
-    let (mut ed, _) = delete_range(ed, start, end);
-    ed.kill_ring.rotate_right(1);
-    let bytes = ed.kill_ring.last().cloned().unwrap_or_default();
-    let mut ed = insert_at(ed, start, &bytes);
-    ed.last = LastCommand::Yank {
+    let (ed, _) = delete_range(ed, start, end);
+    let ed = ed.with_kill_ring(|kr| kr.rotate_right(1));
+    let bytes = ed
+        .kill_ring()
+        .last()
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
+    let ed = insert_at(ed, start, &bytes);
+    let ed = ed.set_last(LastCommand::Yank {
         start,
         end: start + bytes.len(),
-    };
+    });
     (ed, fx)
 }
 
-pub(crate) fn fill_paragraph(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
+pub(crate) fn fill_paragraph(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let fill = usize::from(ed.config.fill_column);
-    let tab = usize::from(ed.config.tab_width);
+    let fill = usize::from(ed.config().fill_column);
+    let tab = usize::from(ed.config().tab_width);
     let text = &ed.buffer().text;
     let Some((start, end)) = paragraph_at(text, p) else {
-        ed.message = "No paragraph at point".to_owned();
-        return (ed, fx);
+        return (ed.set_message("No paragraph at point"), fx);
     };
     // The first line's indent is repeated on every line (A10).
     let mut indent_end = start;
@@ -172,15 +169,16 @@ pub(crate) fn fill_paragraph(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let on = !ed.buffer().view_only;
-    let mut ed = ed.with_current_buffer(|b| Buffer { view_only: on, ..b });
-    ed.message = if on { "View mode on" } else { "View mode off" }.to_owned();
+    let ed = ed.with_current_buffer(|b| Buffer { view_only: on, ..b });
+    let ed = ed.set_message(if on { "View mode on" } else { "View mode off" });
     (ed, fx)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::editor::Window;
+    use crate::core::config::Config;
+    use crate::core::editor::{KillRing, Window};
     use crate::test_support::{editor, keys, point, run_command, text, typ};
 
     #[test]
@@ -219,13 +217,13 @@ mod tests {
         let ed = run_command(ed, kill_line);
         let ed = run_command(ed, kill_line);
         assert_eq!(text(&ed), "two");
-        assert_eq!(ed.kill_ring, vec![b"one\n".to_vec()]);
+        assert_eq!(ed.kill_ring().entries(), &[b"one\n".to_vec()]);
     }
 
     #[test]
     fn kill_ring_yank_pop_cycles() {
-        let mut ed = editor();
-        ed.kill_ring = vec![b"A".to_vec(), b"B".to_vec()];
+        let ed =
+            editor().with_kill_ring(|_| KillRing::from_entries(vec![b"A".to_vec(), b"B".to_vec()]));
         let ed = keys(ed, "C-y");
         assert_eq!(text(&ed), "B");
         let ed = run_command(ed, yank_pop);
@@ -236,8 +234,10 @@ mod tests {
 
     #[test]
     fn fill_paragraph_breaks_at_spaces_by_width() {
-        let mut ed = editor();
-        ed.config.fill_column = 20;
+        let ed = editor().set_config(Config {
+            fill_column: 20,
+            ..*editor().config()
+        });
         let ed = typ(ed, "가나다 라마바 사아자 차카타 파하");
         let ed = run_command(ed, fill_paragraph);
         assert_eq!(text(&ed), "가나다 라마바 사아자\n차카타 파하");
@@ -245,14 +245,18 @@ mod tests {
 
     #[test]
     fn fill_paragraph_keeps_indent_and_stops_at_blank_lines() {
-        let mut ed = editor();
-        ed.config.fill_column = 10;
+        let ed = editor().set_config(Config {
+            fill_column: 10,
+            ..*editor().config()
+        });
         let ed = typ(ed, "  hello world foo");
         let ed = run_command(ed, fill_paragraph);
         assert_eq!(text(&ed), "  hello\n  world\n  foo");
 
-        let mut ed = editor();
-        ed.config.fill_column = 8;
+        let ed = editor().set_config(Config {
+            fill_column: 8,
+            ..*editor().config()
+        });
         let ed = typ(ed, "aa bb cc dd ee ff\n\ndd ee");
         let ed = ed.with_window(|w| Window { point: 0, ..w });
         let ed = run_command(ed, fill_paragraph);

@@ -7,12 +7,10 @@ use crate::core::commands::edit::{
     delete_backward_char, delete_char, fill_paragraph, kill_line, kill_region, kill_ring_save,
     view_mode, yank, yank_pop,
 };
-use crate::core::commands::file::{
-    revert_buffer, save_buffer_cmd, save_buffers_kill_emacs,
-};
+use crate::core::commands::file::{revert_buffer, save_buffer_cmd, save_buffers_kill_emacs};
 use crate::core::commands::motion::{
-    backward_char, exchange_point_and_mark, forward_char, move_beginning_of_line,
-    move_end_of_line, next_line, previous_line, set_mark_command,
+    backward_char, exchange_point_and_mark, forward_char, move_beginning_of_line, move_end_of_line,
+    next_line, previous_line, set_mark_command,
 };
 use crate::core::commands::prompt::{
     execute_extended_command, find_file_cmd, goto_line_cmd, kill_buffer_cmd, shell_command_cmd,

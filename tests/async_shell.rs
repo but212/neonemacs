@@ -72,7 +72,7 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
         ShellOutcome::Spawned(t) => t,
         _ => panic!("Expected ShellOutcome::Spawned"),
     };
-    assert_eq!(final_ed.message, "[Running...]");
+    assert_eq!(final_ed.message(), "[Running...]");
 
     let result = task
         .receiver
@@ -127,7 +127,7 @@ fn handle_interactive_rejects_concurrent_shell_command_when_busy() {
     // Must NOT spawn a new task, must return BusyRejected, and format message
     assert!(matches!(outcome, ShellOutcome::BusyRejected));
     assert_eq!(
-        rejected_ed.message,
+        rejected_ed.message(),
         "[Running...] A shell command is already running"
     );
 }
@@ -176,16 +176,16 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
         session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
     session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
-    assert_eq!(session.ed.message, "[Running...]");
+    assert_eq!(session.ed.message(), "[Running...]");
 
     // Move to beginning of buffer (`C-a`) and start I-search (`C-s`) while shell is running;
     // tick must not overwrite I-search echo even if the background command completes mid-search.
     session.handle_event_at(press(KeyCode::Char('a'), KeyModifiers::CONTROL), t0);
     session.handle_event_at(press(KeyCode::Char('s'), KeyModifiers::CONTROL), t0);
     session.handle_event_at(press(KeyCode::Char('w'), KeyModifiers::NONE), t0);
-    assert_eq!(session.ed.message, "I-search: w");
+    assert_eq!(session.ed.message(), "I-search: w");
     session.tick_at(t0 + Duration::from_millis(50));
-    assert_eq!(session.ed.message, "I-search: w");
+    assert_eq!(session.ed.message(), "I-search: w");
 
     // Exit I-search with Enter -> back to Normal mode
     session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
@@ -194,12 +194,12 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         session.tick_at(Instant::now());
-        if session.ed.message == "session_async_ok" {
+        if session.ed.message() == "session_async_ok" {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(session.ed.message, "session_async_ok");
+    assert_eq!(session.ed.message(), "session_async_ok");
 }
 
 #[test]
@@ -228,13 +228,17 @@ fn shell_running_does_not_clobber_status_messages() {
         session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
     session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
-    assert_eq!(session.ed.message, "[Running...]");
+    assert_eq!(session.ed.message(), "[Running...]");
 
     // User executes C-SPC (Mark set) while shell is running
     session.handle_event_at(press(KeyCode::Char(' '), KeyModifiers::CONTROL), t0);
-    assert_eq!(session.ed.message, "Mark set");
+    assert_eq!(session.ed.message(), "Mark set");
 
     // 50ms tick occurs: must NOT overwrite "Mark set" with spinner
     session.tick_at(t0 + Duration::from_millis(50));
-    assert_eq!(session.ed.message, "Mark set", "Status message must not be wiped by shell spinner");
+    assert_eq!(
+        session.ed.message(),
+        "Mark set",
+        "Status message must not be wiped by shell spinner"
+    );
 }

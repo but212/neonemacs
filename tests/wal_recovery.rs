@@ -78,7 +78,10 @@ fn wal_recovers_empty_zero_byte_file() {
     let disk = file::disk_state(&file_path);
     // Persist 0-byte (all text deleted) to WAL
     wal::write_wal(&file_path, disk, b"").unwrap();
-    assert!(wal::has_wal(&file_path), "0-byte WAL must be recognized via NEONWAL1 header");
+    assert!(
+        wal::has_wal(&file_path),
+        "0-byte WAL must be recognized via NEONWAL1 header"
+    );
 
     let wal_bytes = wal::read_wal(&file_path, disk).unwrap();
     assert_eq!(wal_bytes, b"");
@@ -120,10 +123,14 @@ fn revert_buffer_cleans_up_wal() {
     let ed = perform_all(ed, None, fx);
 
     // Revert buffer (M-x revert-buffer RET)
-    let (ed, fx_revert) = neonemacs::core::commands::table::find("revert-buffer").unwrap()(ed, Vec::new());
+    let (ed, fx_revert) =
+        neonemacs::core::commands::table::find("revert-buffer").unwrap()(ed, Vec::new());
     let _ = perform_all(ed, None, fx_revert);
 
-    assert!(!wal::has_wal(&file_path), "revert-buffer must delete WAL file (I-25)");
+    assert!(
+        !wal::has_wal(&file_path),
+        "revert-buffer must delete WAL file (I-25)"
+    );
 }
 
 #[test]

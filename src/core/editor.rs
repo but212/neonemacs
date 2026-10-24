@@ -16,22 +16,79 @@ pub use crate::core::buffer::{Buffer, BufferId, BufferPool as _BufferPool};
 pub use crate::core::mode::{
     Confirm, Isearch, LastCommand, Mode, Prefix, Prompt, Purpose, QueryReplace,
 };
-pub use crate::core::window::{snap_point as snap, Dir, Layout, Window, WindowManager as _WindowManager};
+pub use crate::core::window::{
+    Dir, Layout, Window, WindowManager as _WindowManager, snap_point as snap,
+};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KillRing {
+    entries: Vec<Vec<u8>>,
+}
+
+impl KillRing {
+    pub const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    pub const fn from_entries(entries: Vec<Vec<u8>>) -> Self {
+        Self { entries }
+    }
+
+    pub fn entries(&self) -> &[Vec<u8>] {
+        &self.entries
+    }
+
+    pub fn push(mut self, bytes: Vec<u8>) -> Self {
+        self.entries.push(bytes);
+        self
+    }
+
+    pub fn append_last(mut self, bytes: &[u8]) -> Self {
+        if let Some(last) = self.entries.last_mut() {
+            last.extend_from_slice(bytes);
+        } else {
+            self.entries.push(bytes.to_vec());
+        }
+        self
+    }
+
+    pub fn rotate_right(mut self, n: usize) -> Self {
+        if !self.entries.is_empty() {
+            let len = self.entries.len();
+            self.entries.rotate_right(n % len);
+        }
+        self
+    }
+
+    pub fn last(&self) -> Option<&[u8]> {
+        self.entries.last().map(|v| v.as_slice())
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Editor {
-    pub buffers: BufferPool,
-    pub windows: WindowManager,
-    pub kill_ring: Vec<Vec<u8>>,
-    pub mode: Mode,
-    pub keymap: Keymap,
+    buffers: BufferPool,
+    windows: WindowManager,
+    kill_ring: KillRing,
+    mode: Mode,
+    keymap: Keymap,
     /// Kind of the command that just ran. The running command sets it.
-    pub last: LastCommand,
+    last: LastCommand,
     /// Kind of the command before the running one. Chaining commands read it.
-    pub prev: LastCommand,
-    pub message: String,
-    pub config: Config,
-    pub quit: bool,
+    prev: LastCommand,
+    message: String,
+    config: Config,
+    quit: bool,
 }
 
 /// Typed characters that share one undo group.
@@ -55,7 +112,7 @@ impl Editor {
         Self {
             buffers,
             windows: WindowManager::new(initial_window),
-            kill_ring: Vec::new(),
+            kill_ring: KillRing::new(),
             mode: Mode::Normal {
                 prefix: Prefix::None,
             },
@@ -68,8 +125,113 @@ impl Editor {
         }
     }
 
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn set_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    pub fn clear_message(mut self) -> Self {
+        self.message.clear();
+        self
+    }
+
+    pub const fn mode(&self) -> &Mode {
+        &self.mode
+    }
+
+    pub fn set_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub const fn buffers(&self) -> &BufferPool {
+        &self.buffers
+    }
+
+    pub fn set_buffers(mut self, buffers: BufferPool) -> Self {
+        self.buffers = buffers;
+        self
+    }
+
+    pub const fn windows(&self) -> &WindowManager {
+        &self.windows
+    }
+
+    pub fn set_windows(mut self, windows: WindowManager) -> Self {
+        self.windows = windows;
+        self
+    }
+
+    pub const fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub const fn set_config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub const fn quit(&self) -> bool {
+        self.quit
+    }
+
+    pub const fn set_quit(mut self, quit: bool) -> Self {
+        self.quit = quit;
+        self
+    }
+
+    pub const fn kill_ring(&self) -> &KillRing {
+        &self.kill_ring
+    }
+
+    pub fn with_kill_ring(mut self, f: impl FnOnce(KillRing) -> KillRing) -> Self {
+        self.kill_ring = f(self.kill_ring);
+        self
+    }
+
+    pub const fn last(&self) -> LastCommand {
+        self.last
+    }
+
+    pub const fn set_last(mut self, last: LastCommand) -> Self {
+        self.last = last;
+        self
+    }
+
+    pub const fn prev(&self) -> LastCommand {
+        self.prev
+    }
+
+    pub const fn set_prev(mut self, prev: LastCommand) -> Self {
+        self.prev = prev;
+        self
+    }
+
+    pub const fn keymap(&self) -> &Keymap {
+        &self.keymap
+    }
+
+    pub fn set_keymap(mut self, keymap: Keymap) -> Self {
+        self.keymap = keymap;
+        self
+    }
+
     pub fn window(&self) -> &Window {
         self.windows.current()
+    }
+
+    /// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
+    /// Killing the last buffer leaves an empty `*scratch*` (A4).
+    pub fn kill_buffer_id(mut self, id: BufferId) -> Self {
+        let (buffers, replacement) = self.buffers.kill(id, self.config.undo_limit);
+        self.buffers = buffers;
+        let saved = self.buffer_by_id(replacement).saved_point;
+        self.windows = self.windows.retarget(id, replacement, saved);
+        self
     }
 
     /// Replaces the selected window with `f` applied to it (I-19).
@@ -114,7 +276,9 @@ impl Editor {
 
     /// Adds a buffer and returns its id. Ids are never reused.
     pub fn add_buffer(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
-        let (buffers, id) = self.buffers.add(name, text, backing, self.config.undo_limit);
+        let (buffers, id) = self
+            .buffers
+            .add(name, text, backing, self.config.undo_limit);
         self.buffers = buffers;
         (self, id)
     }
@@ -497,12 +661,54 @@ mod tests {
 
     #[test]
     fn with_buffer_updates_only_target() {
-        let (ed, b2) = editor_with("first").add_buffer("b2", Text::from_bytes(b"second"), Backing::None);
+        let (ed, b2) =
+            editor_with("first").add_buffer("b2", Text::from_bytes(b"second"), Backing::None);
         let ed = ed.with_buffer(b2, |b| Buffer {
             modified: true,
             ..b
         });
         assert!(!ed.buffer_by_id(BufferId(0)).modified);
         assert!(ed.buffer_by_id(b2).modified);
+    }
+
+    #[test]
+    fn kill_ring_operations() {
+        let kr = KillRing::new();
+        assert!(kr.is_empty());
+        assert_eq!(kr.len(), 0);
+        assert_eq!(kr.last(), None);
+
+        let kr = kr.push(b"hello".to_vec());
+        assert_eq!(kr.len(), 1);
+        assert_eq!(kr.last(), Some(&b"hello"[..]));
+
+        let kr = kr.append_last(b" world");
+        assert_eq!(kr.len(), 1);
+        assert_eq!(kr.last(), Some(&b"hello world"[..]));
+
+        let kr = kr.push(b"second".to_vec());
+        assert_eq!(kr.len(), 2);
+        assert_eq!(kr.last(), Some(&b"second"[..]));
+
+        let kr = kr.rotate_right(1);
+        assert_eq!(kr.last(), Some(&b"hello world"[..]));
+    }
+
+    #[test]
+    fn editor_encapsulation_and_transitions() {
+        let ed = Editor::new(Config::default());
+        assert_eq!(ed.message(), "");
+        assert!(!ed.quit());
+
+        let ed = ed.set_message("status");
+        assert_eq!(ed.message(), "status");
+        let ed = ed.clear_message();
+        assert_eq!(ed.message(), "");
+
+        let ed = ed.set_quit(true);
+        assert!(ed.quit());
+
+        let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec()));
+        assert_eq!(ed.kill_ring().last(), Some(&b"sample"[..]));
     }
 }

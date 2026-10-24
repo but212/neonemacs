@@ -118,7 +118,13 @@ impl BufferPool {
     }
 
     /// Adds a buffer with an automatically assigned unique id. Ids are never reused.
-    pub fn add(mut self, name: &str, text: Text, backing: Backing, undo_limit: usize) -> (Self, BufferId) {
+    pub fn add(
+        mut self,
+        name: &str,
+        text: Text,
+        backing: Backing,
+        undo_limit: usize,
+    ) -> (Self, BufferId) {
         let id = BufferId(self.next_id);
         self.next_id += 1;
         self.buffers

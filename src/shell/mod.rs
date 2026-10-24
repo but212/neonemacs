@@ -68,16 +68,14 @@ pub fn handle_interactive(
             sync_effects.push(effect);
         }
     }
-    let mut ed = perform_all(ed, lua, sync_effects);
-    match &outcome {
-        ShellOutcome::Spawned(_) => {
-            ed.message = "[Running...]".to_owned();
-        }
+    let ed = perform_all(ed, lua, sync_effects);
+    let ed = match &outcome {
+        ShellOutcome::Spawned(_) => ed.set_message("[Running...]"),
         ShellOutcome::BusyRejected => {
-            ed.message = "[Running...] A shell command is already running".to_owned();
+            ed.set_message("[Running...] A shell command is already running")
         }
-        ShellOutcome::None => {}
-    }
+        ShellOutcome::None => ed,
+    };
     (ed, outcome)
 }
 
@@ -101,11 +99,11 @@ pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
             Ok(())
         }
     };
-    let mut ed = into_editor(cell);
-    if let Err(e) = bound {
-        ed.message = e.to_string();
+    let ed = into_editor(cell);
+    match bound {
+        Ok(()) => ed,
+        Err(e) => ed.set_message(e.to_string()),
     }
-    ed
 }
 
 /// Applies `event` to the editor in `cell`, then puts the new editor back. The cell is empty

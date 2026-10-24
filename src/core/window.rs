@@ -134,7 +134,10 @@ impl WindowManager {
     }
 
     pub fn from_layout(layout: Layout, selected: usize) -> Self {
-        assert!(selected < layout.leaf_count(), "window index out of range (I-19)");
+        assert!(
+            selected < layout.leaf_count(),
+            "window index out of range (I-19)"
+        );
         Self { layout, selected }
     }
 
@@ -159,7 +162,10 @@ impl WindowManager {
     }
 
     pub fn set_selected(mut self, index: usize) -> Self {
-        assert!(index < self.layout.leaf_count(), "window index out of range (I-19)");
+        assert!(
+            index < self.layout.leaf_count(),
+            "window index out of range (I-19)"
+        );
         self.selected = index;
         self
     }

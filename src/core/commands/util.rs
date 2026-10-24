@@ -11,7 +11,6 @@ pub(crate) const fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n')
 }
 
-
 /// Display column of `pos` from the start of its line.
 pub fn column(text: &Text, pos: usize, tab: usize) -> usize {
     let mut col = 0;
@@ -87,10 +86,8 @@ pub(crate) fn paragraph_at(text: &Text, p: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-pub(crate) fn ask(mut ed: Editor, question: Confirm, text: &str) -> Editor {
-    ed.mode = Mode::Confirm(question);
-    ed.message = text.to_owned();
-    ed
+pub(crate) fn ask(ed: Editor, question: Confirm, text: &str) -> Editor {
+    ed.set_mode(Mode::Confirm(question)).set_message(text)
 }
 
 /// Deletes `start..end`. Returns the editor and the removed bytes.
@@ -134,7 +131,7 @@ pub fn request_open(
     fx.push(Effect::ReadFile {
         target: ReadTarget::Open { line, show },
         path,
-        max_size: ed.config.max_file_size,
+        max_size: ed.config().max_file_size,
     });
     fx
 }

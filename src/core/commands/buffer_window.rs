@@ -13,19 +13,19 @@ pub(crate) fn split_window_right(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 /// Replaces the selected leaf with a split of two windows that show the same buffer.
-pub(crate) fn split(mut ed: Editor, dir: Dir) -> Editor {
-    ed.windows = ed.windows.split(dir);
-    ed
+pub(crate) fn split(ed: Editor, dir: Dir) -> Editor {
+    let win = ed.windows().clone().split(dir);
+    ed.set_windows(win)
 }
 
-pub(crate) fn other_window(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    ed.windows = ed.windows.next_window();
-    (ed, fx)
+pub(crate) fn other_window(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let win = ed.windows().clone().next_window();
+    (ed.set_windows(win), fx)
 }
 
-pub(crate) fn delete_other_windows(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
-    ed.windows = ed.windows.delete_other_windows();
-    (ed, fx)
+pub(crate) fn delete_other_windows(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let win = ed.windows().clone().delete_other_windows();
+    (ed.set_windows(win), fx)
 }
 
 /// Shows buffer `id` in the selected window. The old buffer keeps its point.
@@ -63,12 +63,8 @@ pub fn kill_buffer(ed: Editor, id: BufferId) -> Editor {
 
 /// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
 /// Killing the last buffer leaves an empty `*scratch*` (A4).
-pub(crate) fn kill_now(mut ed: Editor, id: BufferId) -> Editor {
-    let (buffers, replacement) = ed.buffers.kill(id, ed.config.undo_limit);
-    ed.buffers = buffers;
-    let saved = ed.buffer_by_id(replacement).saved_point;
-    ed.windows = ed.windows.retarget(id, replacement, saved);
-    ed
+pub(crate) fn kill_now(ed: Editor, id: BufferId) -> Editor {
+    ed.kill_buffer_id(id)
 }
 
 #[cfg(test)]
@@ -106,7 +102,7 @@ mod tests {
         assert_eq!(point(&ed), 3);
 
         let ed = kill_buffer(ed, other);
-        assert_eq!(ed.buffers.len(), 1);
+        assert_eq!(ed.buffers().len(), 1);
         assert_eq!(ed.buffer().name, "*scratch*");
     }
 
@@ -115,7 +111,7 @@ mod tests {
         let ed = editor();
         let only = ed.window().buffer;
         let ed = kill_buffer(ed, only);
-        assert_eq!(ed.buffers.len(), 1);
+        assert_eq!(ed.buffers().len(), 1);
         assert_eq!(ed.buffer().name, "*scratch*");
         assert_ne!(ed.buffer().id, only);
     }
@@ -128,11 +124,11 @@ mod tests {
         let ed = switch_to(ed, BufferId(0));
 
         let ed = kill_buffer(ed, other);
-        assert!(matches!(ed.mode, Mode::Confirm(Confirm::KillModified(_))));
+        assert!(matches!(ed.mode(), Mode::Confirm(Confirm::KillModified(_))));
         let ed = keys(ed, "n");
-        assert_eq!(ed.buffers.len(), 2);
+        assert_eq!(ed.buffers().len(), 2);
         let ed = kill_buffer(ed, other);
         let ed = keys(ed, "y");
-        assert_eq!(ed.buffers.len(), 1);
+        assert_eq!(ed.buffers().len(), 1);
     }
 }

@@ -113,18 +113,24 @@ fn extreme_whitespace_and_empty_paragraphs() {
     // Only newlines and spaces
     let ed = typ(editor(), "   \n\n\t\t\n   \n\n");
     let (ed, _) = fill_paragraph(ed, Vec::new());
-    assert_eq!(ed.message, "No paragraph at point");
+    assert_eq!(ed.message(), "No paragraph at point");
 
     // Single character with huge fill column
-    let mut ed2 = editor();
-    ed2.config.fill_column = 1000;
+    let config = Config {
+        fill_column: 1000,
+        ..Default::default()
+    };
+    let mut ed2 = Editor::new(config);
     ed2 = typ(ed2, "x");
     let (ed2, _) = fill_paragraph(ed2, Vec::new());
     assert_eq!(text(&ed2), "x");
 
     // Paragraph with fill_column smaller than word length
-    let mut ed3 = editor();
-    ed3.config.fill_column = 2;
+    let config3 = Config {
+        fill_column: 2,
+        ..Default::default()
+    };
+    let mut ed3 = Editor::new(config3);
     ed3 = typ(ed3, "supercalifragilistic");
     let (ed3, _) = fill_paragraph(ed3, Vec::new());
     assert_eq!(text(&ed3), "supercalifragilistic");
@@ -139,13 +145,13 @@ fn prompt_hostile_backspaces_and_cancellation() {
     let mut ed = editor();
     // Enter M-x prompt
     ed = keys(ed, "M-x");
-    assert!(matches!(ed.mode, Mode::Prompt(_)));
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
 
     // Spam backspaces on empty prompt - must not underflow or panic
     for _ in 0..10 {
         ed = keys(ed, "DEL");
     }
-    if let Mode::Prompt(p) = &ed.mode {
+    if let Mode::Prompt(p) = ed.mode() {
         assert_eq!(p.input, "");
     } else {
         panic!("Prompt mode lost after DEL");
@@ -155,20 +161,20 @@ fn prompt_hostile_backspaces_and_cancellation() {
     ed = typ(ed, "nonexistent-command-12345");
     ed = keys(ed, "C-g");
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
-    assert_eq!(ed.message, "Quit");
+    assert_eq!(ed.message(), "Quit");
 
     // Empty RET on goto-line should fail gracefully
     let ed = keys(editor(), "M-x");
     let ed = typ(ed, "goto-line");
     let ed = keys(ed, "RET");
-    assert!(matches!(ed.mode, Mode::Prompt(_)));
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
     let ed = keys(ed, "RET");
-    assert_eq!(ed.message, "Not a line number: ");
+    assert_eq!(ed.message(), "Not a line number: ");
 
     // Garbage non-number string on goto-line
     let ed = keys(editor(), "M-x");
@@ -176,7 +182,7 @@ fn prompt_hostile_backspaces_and_cancellation() {
     let ed = keys(ed, "RET");
     let ed = typ(ed, "not_a_number");
     let ed = keys(ed, "RET");
-    assert_eq!(ed.message, "Not a line number: not_a_number");
+    assert_eq!(ed.message(), "Not a line number: not_a_number");
 }
 
 #[test]
@@ -187,21 +193,21 @@ fn isearch_invalid_regex_and_rapid_reversals() {
     ed = keys(ed, "M-x");
     ed = typ(ed, "isearch-forward-regexp");
     ed = keys(ed, "RET");
-    assert!(matches!(ed.mode, Mode::Isearch(_)));
+    assert!(matches!(ed.mode(), Mode::Isearch(_)));
 
     // Type invalid regex: open bracket "["
     ed = typ(ed, "[");
-    assert!(ed.message.contains("Invalid regexp"));
+    assert!(ed.message().contains("Invalid regexp"));
 
     // Continue typing broken regex, then backspace it away
     ed = typ(ed, "*+?(");
-    assert!(ed.message.contains("Invalid regexp"));
+    assert!(ed.message().contains("Invalid regexp"));
     ed = keys(ed, "DEL DEL DEL DEL DEL");
-    assert_eq!(ed.message, "I-search: ");
+    assert_eq!(ed.message(), "I-search: ");
 
     // Forward and backward flip without pattern
     ed = keys(ed, "C-s C-r C-s C-r");
-    assert!(matches!(ed.mode, Mode::Isearch(_)));
+    assert!(matches!(ed.mode(), Mode::Isearch(_)));
 
     // Cancel restores origin
     let start_p = point(&ed);
@@ -210,8 +216,8 @@ fn isearch_invalid_regex_and_rapid_reversals() {
     ed = keys(ed, "C-g");
     assert_eq!(point(&ed), start_p);
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -226,10 +232,10 @@ fn query_replace_empty_and_illegal_keys() {
     ed = typ(ed, "query-replace");
     ed = keys(ed, "RET");
     ed = keys(ed, "RET"); // Empty pattern
-    assert_eq!(ed.message, "Query replace needs a pattern");
+    assert_eq!(ed.message(), "Query replace needs a pattern");
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -243,10 +249,10 @@ fn query_replace_empty_and_illegal_keys() {
     let ed2 = keys(ed2, "RET");
     let ed2 = typ(ed2, "replacement");
     let ed2 = keys(ed2, "RET");
-    assert_eq!(ed2.message, "No match");
+    assert_eq!(ed2.message(), "No match");
     assert_eq!(
-        ed2.mode,
-        Mode::Normal {
+        ed2.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -265,26 +271,26 @@ fn kill_ring_empty_and_illegal_operations() {
 
     // 1. Yank on empty kill ring
     let (ed1, _) = yank(editor(), Vec::new());
-    assert_eq!(ed1.message, "Kill ring is empty");
+    assert_eq!(ed1.message(), "Kill ring is empty");
 
     // 2. Yank-pop when last command was not yank
     let (ed2, _) = yank_pop(editor(), Vec::new());
-    assert_eq!(ed2.message, "Previous command was not a yank");
+    assert_eq!(ed2.message(), "Previous command was not a yank");
 
     // 3. Kill-region without mark
     let (ed3, _) = kill_region(editor(), Vec::new());
-    assert_eq!(ed3.message, "The mark is not set now");
+    assert_eq!(ed3.message(), "The mark is not set now");
 
     // 4. Kill-ring-save without mark
     let (ed4, _) = kill_ring_save(editor(), Vec::new());
-    assert_eq!(ed4.message, "The mark is not set now");
+    assert_eq!(ed4.message(), "The mark is not set now");
 
     // 5. Normal kill-ring-save (M-w) with mark sets kill ring but keeps text
     let mut ed5 = typ(editor(), "hello world");
     ed5 = keys(ed5, "C-a C-SPC C-f C-f C-f C-f C-f"); // mark "hello"
     let (ed5, _) = kill_ring_save(ed5, Vec::new());
     assert_eq!(text(&ed5), "hello world");
-    assert_eq!(ed5.kill_ring, vec![b"hello".to_vec()]);
+    assert_eq!(ed5.kill_ring().entries(), &[b"hello".to_vec()]);
 }
 
 #[test]
@@ -323,17 +329,17 @@ fn view_mode_toggle_and_protection() {
     // Toggle view-mode ON
     let (mut ed, _) = view_mode(ed, Vec::new());
     assert!(ed.buffer().view_only);
-    assert_eq!(ed.message, "View mode on");
+    assert_eq!(ed.message(), "View mode on");
 
     // Attempting edits while view-mode is on must be blocked
     ed = typ(ed, "a");
     assert_eq!(text(&ed), "immutable text");
-    assert_eq!(ed.message, "Buffer is read-only");
+    assert_eq!(ed.message(), "Buffer is read-only");
 
     // Toggle view-mode OFF
     let (mut ed, _) = view_mode(ed, Vec::new());
     assert!(!ed.buffer().view_only);
-    assert_eq!(ed.message, "View mode off");
+    assert_eq!(ed.message(), "View mode off");
 
     // Now edits should succeed
     ed = typ(ed, "!");
@@ -347,28 +353,28 @@ fn buffer_prompt_hostile_names_and_lifecycle() {
 
     // 1. switch-to-buffer with empty name is no-op
     let (ed, _) = switch_to_buffer(editor(), Vec::new());
-    assert!(matches!(ed.mode, Mode::Prompt(_)));
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
     let ed = keys(ed, "RET");
-    assert_eq!(ed.buffers.len(), 1);
+    assert_eq!(ed.buffers().len(), 1);
 
     // 2. switch-to-buffer with new name creates buffer
     let (ed, _) = switch_to_buffer(ed, Vec::new());
     let ed = typ(ed, "novel_buf");
     let ed = keys(ed, "RET");
-    assert_eq!(ed.buffers.len(), 2);
+    assert_eq!(ed.buffers().len(), 2);
     assert_eq!(ed.buffer().name, "novel_buf");
 
     // 3. kill-buffer with nonexistent name reports error
     let (ed, _) = kill_buffer(ed, Vec::new());
     let ed = typ(ed, "ghost_buf");
     let ed = keys(ed, "RET");
-    assert_eq!(ed.message, "No buffer named ghost_buf");
-    assert_eq!(ed.buffers.len(), 2);
+    assert_eq!(ed.message(), "No buffer named ghost_buf");
+    assert_eq!(ed.buffers().len(), 2);
 
     // 4. kill-buffer with empty input targets current buffer
     let (ed, _) = kill_buffer(ed, Vec::new());
     let ed = keys(ed, "RET");
-    assert_eq!(ed.buffers.len(), 1);
+    assert_eq!(ed.buffers().len(), 1);
     assert_ne!(ed.buffer().name, "novel_buf");
 }
 
@@ -387,24 +393,24 @@ fn split_window_right_and_motion_boundaries() {
     ed = typ(editor(), "hello\nworld");
     // At line 2, next_line hits end of buffer
     ed = keys(ed, "C-n");
-    assert_eq!(ed.message, "End of buffer");
+    assert_eq!(ed.message(), "End of buffer");
 
     // Go to top, previous_line hits beginning of buffer
     ed = keys(ed, "C-p C-p");
-    assert_eq!(ed.message, "Beginning of buffer");
+    assert_eq!(ed.message(), "Beginning of buffer");
 
     // exchange_point_and_mark without mark
     let (ed_nomark, _) = exchange_point_and_mark(editor(), Vec::new());
-    assert_eq!(ed_nomark.message, "No mark set in this buffer");
+    assert_eq!(ed_nomark.message(), "No mark set in this buffer");
 }
 
 #[test]
 fn hostile_fuzz_sequence_no_panic() {
     let mut ed = editor();
     let hostile_inputs = [
-        "C-x", "C-g", "M-x", "C-g", "C-s", "C-g", "C-w", "M-w", "C-y", "M-y", "C-k", "C-/",
-        "C-a", "C-e", "C-n", "C-p", "DEL", "RET", "C-x b", "C-g", "C-x k", "C-g", "C-x 1",
-        "C-x 2", "C-x 3", "C-x o", "C-d", "C-SPC", "C-x C-s",
+        "C-x", "C-g", "M-x", "C-g", "C-s", "C-g", "C-w", "M-w", "C-y", "M-y", "C-k", "C-/", "C-a",
+        "C-e", "C-n", "C-p", "DEL", "RET", "C-x b", "C-g", "C-x k", "C-g", "C-x 1", "C-x 2",
+        "C-x 3", "C-x o", "C-d", "C-SPC", "C-x C-s",
     ];
 
     // Execute arbitrary hostile interleavings
@@ -416,7 +422,6 @@ fn hostile_fuzz_sequence_no_panic() {
     }
 
     // Must never panic, buffer must remain intact and valid UTF-8
-    assert!(!ed.buffers.is_empty());
+    assert!(!ed.buffers().is_empty());
     assert!(ed.window().point <= ed.buffer().text.len());
 }
-

@@ -55,12 +55,17 @@ fn truncated_save_confirms_once() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big.txt");
     fs::write(&path, b"0123456789").unwrap();
-    let mut ed = editor();
-    ed.config.max_file_size = 4;
+    let ed = editor().set_config(Config {
+        max_file_size: 4,
+        ..*editor().config()
+    });
     let mut ed = visit(ed, &path);
 
     ed = keys(ed, "C-x C-s");
-    assert!(matches!(ed.mode, Mode::Confirm(Confirm::SaveTruncated(_))));
+    assert!(matches!(
+        ed.mode(),
+        Mode::Confirm(Confirm::SaveTruncated(_))
+    ));
     assert_eq!(fs::read(&path).unwrap(), b"0123456789");
     ed = keys(ed, "y");
     assert_eq!(fs::read(&path).unwrap(), b"0123");
@@ -68,8 +73,8 @@ fn truncated_save_confirms_once() {
     ed = typ(ed, "x");
     ed = keys(ed, "C-x C-s");
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -86,13 +91,13 @@ fn external_change_asks_before_overwrite() {
 
     fs::write(&path, b"external change").unwrap();
     ed = keys(ed, "C-x C-s");
-    assert!(matches!(ed.mode, Mode::Confirm(Confirm::SaveExternal(_))));
+    assert!(matches!(ed.mode(), Mode::Confirm(Confirm::SaveExternal(_))));
     assert_eq!(fs::read(&path).unwrap(), b"external change");
 
     ed = keys(ed, "n");
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -112,8 +117,8 @@ fn own_save_is_not_external() {
     let mut ed = typ(ed, "d");
     ed = keys(ed, "C-x C-s");
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -122,8 +127,8 @@ fn own_save_is_not_external() {
     ed = typ(ed, "e");
     ed = keys(ed, "C-x C-s");
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -138,8 +143,8 @@ fn unknown_disk_state_saves_without_asking() {
     let mut ed = typ(ed, "hi");
     ed = keys(ed, "C-x C-s");
     assert_eq!(
-        ed.mode,
-        Mode::Normal {
+        ed.mode(),
+        &Mode::Normal {
             prefix: Prefix::None
         }
     );
@@ -154,17 +159,17 @@ fn quit_asks_only_with_unsaved_changes() {
 
     let clean = visit(editor(), &path);
     let clean = keys(clean, "C-x C-c");
-    assert!(clean.quit);
+    assert!(clean.quit());
 
     let dirty = visit(editor(), &path);
     let mut dirty = typ(dirty, "x");
     dirty = keys(dirty, "C-x C-c");
-    assert!(matches!(dirty.mode, Mode::Confirm(Confirm::QuitUnsaved)));
-    assert!(!dirty.quit);
+    assert!(matches!(dirty.mode(), Mode::Confirm(Confirm::QuitUnsaved)));
+    assert!(!dirty.quit());
     dirty = keys(dirty, "n");
-    assert!(!dirty.quit);
+    assert!(!dirty.quit());
     dirty = keys(dirty, "C-x C-c y");
-    assert!(dirty.quit);
+    assert!(dirty.quit());
 }
 
 #[test]
@@ -205,7 +210,10 @@ fn file_commands_find_goto_revert_write() {
     ed = keys(ed, "M-x");
     ed = typ(ed, "revert-buffer");
     ed = keys(ed, "RET");
-    assert!(matches!(ed.mode, Mode::Confirm(Confirm::RevertModified(_))));
+    assert!(matches!(
+        ed.mode(),
+        Mode::Confirm(Confirm::RevertModified(_))
+    ));
     ed = keys(ed, "y");
     assert_eq!(text(&ed), "one\ntwo\nthree\n");
 
@@ -292,7 +300,7 @@ fn write_failure_keeps_buffer_modified() {
         },
     );
     assert!(fx.is_empty());
-    assert_eq!(ed.message, "Save failed: disk full");
+    assert_eq!(ed.message(), "Save failed: disk full");
     assert!(ed.buffer_by_id(id).modified);
 }
 
@@ -333,7 +341,7 @@ fn undo_write_failure_is_reported() {
         },
     );
     assert_eq!(
-        ed.message,
+        ed.message(),
         format!("Wrote {}, undo not saved: denied", path.display())
     );
 }

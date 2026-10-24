@@ -43,11 +43,11 @@ pub(crate) fn previous_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 /// Moves to the goal column on the next or previous line. The goal survives
 /// consecutive vertical moves.
-fn vertical(mut ed: Editor, down: bool) -> Editor {
-    let tab = usize::from(ed.config.tab_width);
+fn vertical(ed: Editor, down: bool) -> Editor {
+    let tab = usize::from(ed.config().tab_width);
     let p = ed.window().point;
     let text = &ed.buffer().text;
-    let goal = match ed.prev {
+    let goal = match ed.prev() {
         LastCommand::Vertical { col } => col,
         _ => column(text, p, tab),
     };
@@ -62,33 +62,31 @@ fn vertical(mut ed: Editor, down: bool) -> Editor {
         Some(Ok(start) | Err(start)) => Some(pos_at_column(text, start, goal, tab)),
         None => None,
     };
-    let mut ed = match target {
+    let ed = match target {
         Some(pos) => ed.move_point(pos),
         None => {
-            ed.message = if down {
+            let msg = if down {
                 "End of buffer"
             } else {
                 "Beginning of buffer"
-            }
-            .to_owned();
-            ed
+            };
+            ed.set_message(msg)
         }
     };
-    ed.last = LastCommand::Vertical { col: goal };
-    ed
+    ed.set_last(LastCommand::Vertical { col: goal })
 }
 
-pub(crate) fn set_mark_command(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
+pub(crate) fn set_mark_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    ed = ed.with_current_buffer(|b| Buffer { mark: Some(p), ..b });
-    ed.message = "Mark set".to_owned();
+    let ed = ed
+        .with_current_buffer(|b| Buffer { mark: Some(p), ..b })
+        .set_message("Mark set");
     (ed, fx)
 }
 
-pub(crate) fn exchange_point_and_mark(mut ed: Editor, fx: Effects) -> (Editor, Effects) {
+pub(crate) fn exchange_point_and_mark(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let Some(mark) = ed.buffer().mark else {
-        ed.message = "No mark set in this buffer".to_owned();
-        return (ed, fx);
+        return (ed.set_message("No mark set in this buffer"), fx);
     };
     let p = ed.window().point;
     let ed = ed.with_current_buffer(|b| Buffer { mark: Some(p), ..b });

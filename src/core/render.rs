@@ -99,25 +99,26 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
         w: cols,
         h: rows.saturating_sub(1),
     };
-    rects(ed.windows.layout(), body)
+    rects(ed.windows().layout(), body)
 }
 
 /// Moves each window's `top` and `left_col` so that its point is visible.
-pub fn scroll(mut ed: Editor, cols: usize, rows: usize) -> Editor {
-    let tab = usize::from(ed.config.tab_width);
-    let windows: Vec<Window> = ed.windows.windows().into_iter().cloned().collect();
+pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
+    let tab = usize::from(ed.config().tab_width);
+    let windows: Vec<Window> = ed.windows().windows().into_iter().cloned().collect();
     let scrolled: Vec<Window> = windows
         .into_iter()
         .zip(areas(&ed, cols, rows))
         .map(|(w, area)| {
-            let text = &ed.buffers.get_by_id(w.buffer).text;
+            let text = &ed.buffer_by_id(w.buffer).text;
             scroll_window(text, w, area, tab)
         })
         .collect();
+    let mut win = ed.windows().clone();
     for (i, w) in scrolled.into_iter().enumerate() {
-        ed.windows = ed.windows.set_leaf(i, w);
+        win = win.set_leaf(i, w);
     }
-    ed
+    ed.set_windows(win)
 }
 
 fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
@@ -148,13 +149,13 @@ fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
 
 /// Builds the screen. Pure: call `scroll` first to bring point into view.
 pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
-    let tab = usize::from(ed.config.tab_width);
+    let tab = usize::from(ed.config().tab_width);
     let mut grid = vec![vec![Cell::space(); cols]; rows];
-    let leaves = ed.windows.windows();
+    let leaves = ed.windows().windows();
     let mut cursor = (0, 0);
 
     for (i, (w, area)) in leaves.into_iter().zip(areas(ed, cols, rows)).enumerate() {
-        let buf = ed.buffers.get_by_id(w.buffer);
+        let buf = ed.buffer_by_id(w.buffer);
         let lang = detect_lang(&buf.name);
         let (body, (row, col)) = window_cells(&buf.text, w, area, tab, lang);
         for (r, cells) in body.into_iter().enumerate() {
@@ -168,21 +169,18 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
             area.x,
             status_cells,
         );
-        if i == ed.windows.selected() {
+        if i == ed.windows().selected() {
             cursor = (area.x + col, area.y + row);
         }
     }
 
     if rows > 0 {
-        let echo = fit(&ed.message, cols, ' ');
+        let echo = fit(ed.message(), cols, ' ');
         let echo_cells: Vec<Cell> = echo.into_iter().map(Cell::plain).collect();
         grid = put(grid, rows - 1, 0, echo_cells);
     }
 
-    Frame {
-        rows: grid,
-        cursor,
-    }
+    Frame { rows: grid, cursor }
 }
 
 fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
