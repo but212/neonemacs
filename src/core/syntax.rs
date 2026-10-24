@@ -100,6 +100,11 @@ impl SyntaxRegistry {
     pub fn line_comment<'a>(&'a self, lang: &str) -> Option<&'a str> {
         self.find(lang).and_then(|d| d.line_comment.as_deref())
     }
+
+    pub fn line_comment_for_filename<'a>(&'a self, filename: &str) -> Option<&'a str> {
+        self.detect_lang(filename)
+            .and_then(|lang| self.line_comment(lang))
+    }
 }
 
 /// Helper function to detect language using registry.

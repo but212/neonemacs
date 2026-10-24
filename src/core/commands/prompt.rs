@@ -42,12 +42,19 @@ pub(crate) fn prompt(ed: Editor, label: &str, purpose: Purpose) -> Editor {
     }))
 }
 
-/// Every built-in command name with the keys bound to it, for `M-x` completion (§4).
+/// Every built-in command name and registered Lua command with the keys bound to it,
+/// for `M-x` completion (§4, §12).
 pub fn completions(ed: &Editor, prefix: &str) -> Vec<(String, String)> {
-    BUILTINS
+    let names: std::collections::BTreeSet<&str> = BUILTINS
         .iter()
-        .filter(|(n, _)| n.starts_with(prefix))
-        .map(|(n, _)| (n.to_string(), ed.keymap().keys_for(n).join(", ")))
+        .map(|(n, _)| *n)
+        .filter(|n| n.starts_with(prefix))
+        .chain(ed.commands().completions(prefix))
+        .collect();
+
+    names
+        .into_iter()
+        .map(|n| (n.to_string(), ed.keymap().keys_for(n).join(", ")))
         .collect()
 }
 
@@ -451,5 +458,19 @@ mod tests {
             Err("first error line\nsecond traceback line\nthird line".into()),
         );
         assert_eq!(ed_lua_err.message(), "first error line");
+    }
+
+    #[test]
+    fn completions_includes_registered_lua_commands() {
+        let ed = editor()
+            .register_command("forward-word")
+            .register_command("fill-paragraph");
+        let cands = completions(&ed, "fill-");
+        assert_eq!(cands, vec![("fill-paragraph".to_string(), String::new())]);
+
+        let all = completions(&ed, "");
+        assert!(all.iter().any(|(name, _)| name == "forward-word"));
+        assert!(all.iter().any(|(name, _)| name == "fill-paragraph"));
+        assert!(all.iter().any(|(name, _)| name == "kill-line"));
     }
 }

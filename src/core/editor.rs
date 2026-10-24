@@ -3,7 +3,7 @@
 //! Every transition takes the editor by value and returns the new one.
 
 use crate::core::buffer::BufferPool;
-use crate::core::commands;
+use crate::core::commands::{self, CommandRegistry};
 use crate::core::config::Config;
 use crate::core::effect::{Effect, Effects};
 use crate::core::file::Backing;
@@ -90,6 +90,7 @@ pub struct Editor {
     message: String,
     config: Config,
     syntax_registry: SyntaxRegistry,
+    commands: CommandRegistry,
     quit: bool,
 }
 
@@ -124,6 +125,7 @@ impl Editor {
             message: String::new(),
             config,
             syntax_registry: SyntaxRegistry::new(),
+            commands: CommandRegistry::new(),
             quit: false,
         }
     }
@@ -184,6 +186,15 @@ impl Editor {
 
     pub fn with_syntax_registry(mut self, registry: SyntaxRegistry) -> Self {
         self.syntax_registry = registry;
+        self
+    }
+
+    pub fn commands(&self) -> &CommandRegistry {
+        &self.commands
+    }
+
+    pub fn register_command(mut self, name: impl Into<String>) -> Self {
+        self.commands = self.commands.insert(name);
         self
     }
 

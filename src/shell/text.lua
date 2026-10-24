@@ -28,6 +28,21 @@ local function prev_line(pos)
     return prev_s, prev_e
 end
 
+local function collect_lines(from_pos, to_pos)
+    local s = buffer.line_start(from_pos)
+    local last_s = buffer.line_start(to_pos)
+    local lines = {}
+    local cur = s
+    while true do
+        table.insert(lines, { s = cur, e = buffer.line_end(cur) })
+        if cur >= last_s then break end
+        local next_s, _ = next_line(cur)
+        if not next_s then break end
+        cur = next_s
+    end
+    return lines
+end
+
 local function is_word_byte(b)
     if not b then return false end
     return (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (b == 95) or (b >= 128)
@@ -680,3 +695,113 @@ command("transpose-words", function()
     buffer.replace(w1_s, w2_e, word2 .. sep .. word1)
     buffer.set_point(w1_s + #word2 + #sep + #word1)
 end)
+
+--------------------------------------------------------------------------------
+-- 7. Comment Operations (comment-dwim & comment-line)
+--------------------------------------------------------------------------------
+
+local function split_indent(line_str)
+    local indent = line_str:match("^(%s*)") or ""
+    local content = line_str:sub(#indent + 1)
+    return indent, content
+end
+
+local function is_commented_with(content, prefix)
+    return content:sub(1, #prefix) == prefix
+end
+
+local function format_comment_line(indent, content, prefix)
+    local new_line = indent .. prefix .. " " .. content
+    local delta = #prefix + 1
+    return new_line, delta
+end
+
+local function strip_comment_line(indent, content, prefix)
+    local remove_len = #prefix
+    if content:sub(#prefix + 1, #prefix + 1) == " " then
+        remove_len = remove_len + 1
+    end
+    local new_line = indent .. content:sub(remove_len + 1)
+    return new_line, remove_len
+end
+
+local function comment_dwim()
+    local prefix = buffer.comment_prefix()
+    if not prefix or prefix == "" then
+        message("No comment syntax defined for buffer")
+        return
+    end
+
+    local pt = buffer.point()
+    local mark = buffer.mark()
+    local has_region = (mark ~= nil and mark ~= pt)
+
+    local range_s, eff_e
+    if has_region then
+        range_s = math.min(mark, pt)
+        eff_e = math.max(mark, pt)
+        if eff_e > range_s and buffer.line_start(eff_e) == eff_e then
+            eff_e = eff_e - 1
+        end
+    else
+        range_s = pt
+        eff_e = pt
+    end
+
+    local lines = collect_lines(range_s, eff_e)
+
+    -- Check if all non-blank lines are commented
+    local non_blank_count = 0
+    local commented_count = 0
+    for _, l in ipairs(lines) do
+        local str = buffer.get_text(l.s, l.e)
+        local _, content = split_indent(str)
+        if content ~= "" then
+            non_blank_count = non_blank_count + 1
+            if is_commented_with(content, prefix) then
+                commented_count = commented_count + 1
+            end
+        end
+    end
+
+    local should_uncomment = (non_blank_count > 0 and commented_count == non_blank_count)
+
+    local orig_pt = pt
+    local orig_mark = mark
+    local delta_at_pt = 0
+
+    -- Process lines in reverse order (bottom to top) to preserve offsets of earlier lines
+    for i = #lines, 1, -1 do
+        local l = lines[i]
+        local str = buffer.get_text(l.s, l.e)
+        local indent, content = split_indent(str)
+
+        if should_uncomment then
+            if is_commented_with(content, prefix) then
+                local new_line, removed = strip_comment_line(indent, content, prefix)
+                buffer.replace(l.s, l.e, new_line)
+                if orig_pt >= l.s then
+                    delta_at_pt = delta_at_pt - removed
+                end
+            end
+        else
+            -- If it's a non-blank line, or if it's the single line in a non-region call
+            if content ~= "" or (not has_region and #lines == 1) then
+                local new_line, added = format_comment_line(indent, content, prefix)
+                buffer.replace(l.s, l.e, new_line)
+                if orig_pt >= l.s then
+                    delta_at_pt = delta_at_pt + added
+                end
+            end
+        end
+    end
+
+    local new_pt = math.max(0, math.min(buffer.len(), orig_pt + delta_at_pt))
+    buffer.set_point(new_pt)
+    if has_region then
+        buffer.set_mark(orig_mark)
+    end
+end
+
+command("comment-dwim", comment_dwim)
+command("comment-line", comment_dwim)

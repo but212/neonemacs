@@ -160,8 +160,14 @@ fn install_command_api<'lua, 'scope>(
                     "{name} is a built-in command"
                 )));
             }
-            lua.globals().get::<Table>(COMMANDS)?.set(name, f)
+            lua.globals().get::<Table>(COMMANDS)?.set(name.clone(), f)?;
+            mutate_editor(cell, |ed| Ok(ed.register_command(&name)))
         })?,
+    )?;
+    g.set(
+        "message",
+        scope
+            .create_function(|_, msg: String| mutate_editor(cell, |ed| Ok(ed.set_message(msg))))?,
     )?;
     g.set(
         "run",
@@ -335,6 +341,17 @@ fn install_buffer_api<'lua, 'scope>(
             mutate_editor(cell, |ed| {
                 Ok(ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: pos, ..b }))
             })
+        })?,
+    )?;
+    buffer_table.set(
+        "comment_prefix",
+        scope.create_function(|_, ()| {
+            let ed = editor_ref(cell);
+            let prefix = ed
+                .syntax_registry()
+                .line_comment_for_filename(&ed.buffer().name)
+                .map(str::to_owned);
+            Ok(prefix)
         })?,
     )?;
     g.set("buffer", buffer_table)?;
@@ -1041,6 +1058,99 @@ mod tests {
         res.unwrap();
         assert_eq!(ed.buffer().text.to_bytes(), b"Second sentence! Third?");
         assert_eq!(ed.window().point, 0);
+    }
+
+    #[test]
+    fn comment_prefix_message_and_command_sync() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "main.rs",
+            crate::core::text::Text::new(),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window { buffer: id, ..w });
+
+        // comment_prefix for rust buffer
+        let (ed, res) = script(&lua, ed, r#"assert(buffer.comment_prefix() == "//")"#);
+        res.unwrap();
+
+        // message FFI
+        let (ed, res) = script(&lua, ed, r#"message("hello from lua")"#);
+        res.unwrap();
+        assert_eq!(ed.message(), "hello from lua");
+
+        // command sync into Editor::commands
+        let (ed, res) = script(&lua, ed, r#"command("my-test-lua-cmd", function() end)"#);
+        res.unwrap();
+        assert!(ed.commands().contains("my-test-lua-cmd"));
+    }
+
+    #[test]
+    fn comment_dwim_and_comment_line_tests() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test.rs",
+            crate::core::text::Text::from_bytes(b"    let x = 1;\n    let y = 2;"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 4,
+            ..w
+        });
+
+        // Single line comment-dwim on indented line
+        let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.buffer().text.to_bytes(),
+            b"    // let x = 1;\n    let y = 2;"
+        );
+
+        // Uncommenting single line with comment-line alias
+        let (ed, res) = script(&lua, ed, r#"run("comment-line")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.buffer().text.to_bytes(),
+            b"    let x = 1;\n    let y = 2;"
+        );
+
+        // Region multi-line comment
+        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(0), ..b });
+        let len = ed.buffer().text.len();
+        let ed = ed.move_point(len);
+        let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.buffer().text.to_bytes(),
+            b"    // let x = 1;\n    // let y = 2;"
+        );
+
+        // Region multi-line uncomment
+        let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
+        res.unwrap();
+        assert_eq!(
+            ed.buffer().text.to_bytes(),
+            b"    let x = 1;\n    let y = 2;"
+        );
+
+        // Missing syntax error message
+        let (ed, id2) = ed.add_buffer(
+            "notes.md",
+            crate::core::text::Text::from_bytes(b"plain markdown text"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id2,
+            point: 0,
+            ..w
+        });
+        let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text.to_bytes(), b"plain markdown text");
+        assert_eq!(ed.message(), "No comment syntax defined for buffer");
     }
 
     #[test]
