@@ -248,7 +248,7 @@ mod tests {
         let line = "hello 123; # comment";
         let tokens = highlight_line(syntax, line);
         assert_eq!(tokens[0], TokenKind::Keyword); // "hello"
-        assert_eq!(tokens[6], TokenKind::Number);  // "123"
+        assert_eq!(tokens[6], TokenKind::Number); // "123"
         assert_eq!(tokens[11], TokenKind::Comment); // "# comment"
     }
 
@@ -274,7 +274,12 @@ mod tests {
 
     #[test]
     fn tokenize_string_and_number() {
-        let def = SyntaxDef::new("rust".to_string(), vec!["rs".to_string()], Some("//".to_string()), vec![]);
+        let def = SyntaxDef::new(
+            "rust".to_string(),
+            vec!["rs".to_string()],
+            Some("//".to_string()),
+            vec![],
+        );
         let line = "let s = \"hello 123\"; let n = 42;";
         let tokens = highlight_line(Some(&def), line);
         let str_start = line.find('"').unwrap();

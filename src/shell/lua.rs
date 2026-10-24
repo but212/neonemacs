@@ -20,11 +20,23 @@ const COMMANDS: &str = "neonemacs_commands";
 /// The default syntax definitions bundled into the binary (§5, §12).
 pub const BUNDLED_SYNTAX: &str = include_str!("syntax.lua");
 
-/// Bootstraps built-in Lua scripts (such as syntax definitions) into `ed`.
-pub fn bootstrap(ed: Editor, lua: &Lua) -> Editor {
-    let (ed, result) = crate::shell::run_source(ed, lua, BUNDLED_SYNTAX);
-    if let Err(e) = result {
-        panic!("fatal: bundled syntax.lua failed to load: {e}");
+/// The default extended keymap bundled into the binary (§3, §12).
+pub const BUNDLED_KEYMAP: &str = include_str!("keymap.lua");
+
+/// All bundled scripts loaded during bootstrap, in evaluation order.
+pub const BUNDLED_SCRIPTS: &[(&str, &str)] = &[
+    ("syntax.lua", BUNDLED_SYNTAX),
+    ("keymap.lua", BUNDLED_KEYMAP),
+];
+
+/// Bootstraps built-in Lua scripts (such as syntax definitions and default keymaps) into `ed`.
+pub fn bootstrap(mut ed: Editor, lua: &Lua) -> Editor {
+    for (name, source) in BUNDLED_SCRIPTS {
+        let (next_ed, result) = crate::shell::run_source(ed, lua, source);
+        if let Err(e) = result {
+            panic!("fatal: bundled {name} failed to load: {e}");
+        }
+        ed = next_ed;
     }
     ed
 }
@@ -66,6 +78,17 @@ fn editor_mut(cell: &RefCell<Option<Editor>>) -> RefMut<'_, Editor> {
     })
 }
 
+/// Applies a fallible transition `f` to the editor inside `cell`.
+fn mutate_editor(
+    cell: &RefCell<Option<Editor>>,
+    f: impl FnOnce(Editor) -> mlua::Result<Editor>,
+) -> mlua::Result<()> {
+    let mut ed = editor_mut(cell);
+    let current = ed.clone();
+    *ed = f(current)?;
+    Ok(())
+}
+
 /// Runs `body` with the API bound to the editor in `cell`.
 pub fn with_api<R>(
     lua: &Lua,
@@ -78,14 +101,27 @@ pub fn with_api<R>(
         g.set(
             "bind",
             scope.create_function(|_, (keys, name): (String, String)| {
-                let mut ed = editor_mut(cell);
-                let new_keymap = ed
-                    .keymap()
-                    .clone()
-                    .bind_str(&keys, &name)
-                    .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
-                *ed = ed.clone().set_keymap(new_keymap);
-                Ok(())
+                mutate_editor(cell, |ed| {
+                    let keymap = ed
+                        .keymap()
+                        .clone()
+                        .bind_str(&keys, &name)
+                        .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+                    Ok(ed.with_keymap(|_| keymap))
+                })
+            })?,
+        )?;
+        g.set(
+            "unbind",
+            scope.create_function(|_, keys: String| {
+                mutate_editor(cell, |ed| {
+                    let keymap = ed
+                        .keymap()
+                        .clone()
+                        .unbind_str(&keys)
+                        .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+                    Ok(ed.with_keymap(|_| keymap))
+                })
             })?,
         )?;
         g.set(
@@ -132,14 +168,14 @@ pub fn with_api<R>(
             "set",
             scope.create_function(|_, (name, value): (String, LuaValue)| {
                 let value = from_lua(&value).map_err(mlua::Error::RuntimeError)?;
-                let mut ed = editor_mut(cell);
-                let new_config = ed
-                    .config()
-                    .clone()
-                    .set(&name, value)
-                    .map_err(mlua::Error::RuntimeError)?;
-                *ed = ed.clone().set_config(new_config);
-                Ok(())
+                mutate_editor(cell, |ed| {
+                    let new_config = ed
+                        .config()
+                        .clone()
+                        .set(&name, value)
+                        .map_err(mlua::Error::RuntimeError)?;
+                    Ok(ed.set_config(new_config))
+                })
             })?,
         )?;
         let syntax_table = lua.create_table()?;
@@ -147,10 +183,10 @@ pub fn with_api<R>(
             "register",
             scope.create_function(|_, (name, spec): (String, Table)| {
                 let def = parse_syntax_def(name, spec)?;
-                let mut ed = editor_mut(cell);
-                let new_registry = ed.syntax_registry().clone().register(def);
-                *ed = ed.clone().with_syntax_registry(new_registry);
-                Ok(())
+                mutate_editor(cell, |ed| {
+                    let new_registry = ed.syntax_registry().clone().register(def);
+                    Ok(ed.with_syntax_registry(new_registry))
+                })
             })?,
         )?;
         g.set("syntax", syntax_table)?;
@@ -360,7 +396,11 @@ mod tests {
         // Validation failures
         let (_, result) = script(&lua, ed.clone(), r#"syntax.register("", {})"#);
         assert!(result.is_err());
-        let (_, result) = script(&lua, ed.clone(), r#"syntax.register("bad", { extensions = 123 })"#);
+        let (_, result) = script(
+            &lua,
+            ed.clone(),
+            r#"syntax.register("bad", { extensions = 123 })"#,
+        );
         assert!(result.is_err());
     }
 
@@ -377,6 +417,70 @@ mod tests {
         assert_eq!(reg.detect_lang("build.sh"), Some("shell"));
         assert_eq!(reg.detect_lang("README.md"), Some("markdown"));
         assert_eq!(reg.detect_lang("main.c"), Some("c"));
+    }
+
+    #[test]
+    fn api_unbind_removes_binding_and_rejects_invalid_keys() {
+        let lua = new_state().unwrap();
+        let ed = Editor::new(Config::default());
+        let (ed, result) = script(&lua, ed, r#"bind("C-x 2", "split-window-below")"#);
+        result.unwrap();
+        let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
+        assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
+
+        let (ed, result) = script(&lua, ed, r#"unbind("C-x 2")"#);
+        result.unwrap();
+        assert_eq!(ed.keymap().lookup(&key), None);
+
+        // Invalid key syntax produces error
+        let (_, result) = script(&lua, ed, r#"unbind("C-left")"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bundled_keymap_loaded_by_bootstrap() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let keymap = ed.keymap();
+
+        // Check extended bindings defined in keymap.lua
+        let k_c_k = crate::core::keymap::parse_key_seq("C-k").unwrap();
+        assert_eq!(keymap.lookup(&k_c_k), Some("kill-line"));
+
+        let k_split = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
+        assert_eq!(keymap.lookup(&k_split), Some("split-window-below"));
+
+        let k_other = crate::core::keymap::parse_key_seq("C-x o").unwrap();
+        assert_eq!(keymap.lookup(&k_other), Some("other-window"));
+
+        let k_switch = crate::core::keymap::parse_key_seq("C-x b").unwrap();
+        assert_eq!(keymap.lookup(&k_switch), Some("switch-to-buffer"));
+
+        let k_kill = crate::core::keymap::parse_key_seq("C-x k").unwrap();
+        assert_eq!(keymap.lookup(&k_kill), Some("kill-buffer"));
+
+        let k_fill = crate::core::keymap::parse_key_seq("M-q").unwrap();
+        assert_eq!(keymap.lookup(&k_fill), Some("fill-paragraph"));
+
+        let k_goto = crate::core::keymap::parse_key_seq("M-g").unwrap();
+        assert_eq!(keymap.lookup(&k_goto), Some("goto-line"));
+    }
+
+    #[test]
+    fn bundled_keymap_commands_all_exist_in_builtins() {
+        for line in BUNDLED_KEYMAP.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("bind(") {
+                let parts: Vec<&str> = trimmed.split('"').collect();
+                if parts.len() >= 4 {
+                    let cmd_name = parts[3];
+                    assert!(
+                        commands::find(cmd_name).is_some(),
+                        "bundled keymap.lua references non-existent builtin: '{cmd_name}'"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -149,13 +149,14 @@
 ## 12. 확장과 설정 (Lua)
 
 - 설정과 확장은 Lua로 한다. 파일은 `~/.config/neonemacs/init.lua`이며, `XDG_CONFIG_HOME`이 있으면 `$XDG_CONFIG_HOME/neonemacs/init.lua`다. 세 플랫폼 모두 같은 규칙이다.
-- **공개 API는 최소로 한다.** 공개한 API는 호환성 약속이다 (ADR 0001, ADR 0004).
+- **공개 API는 최소로 한다.** 공개한 API는 호환성 약속이다 (ADR 0001, ADR 0004, ADR 0005).
   - `bind(keys, command)`: 키 바인딩 추가와 변경
+  - `unbind(keys)`: 키 바인딩 제거
   - `command(name, function)`: 명령 등록
   - `run(name)`: 명령 실행
   - `get(name)` / `set(name, value)`: 설정 값 읽기와 쓰기
   - `syntax.register(name, spec)`: 구문 강조 규칙 등록 (확장자 목록, 주석 기호, 키워드 목록 선언적 테이블 등록)
-- 기본 구문 강조(Rust, C, Python, JS, Lua, Go, Shell, Markdown)는 바이너리 내장 스크립트(`syntax.lua`)로 제공되며, `init.lua` 실행 전에 먼저 평가되어 사용자 설정에서 재정의할 수 있다.
+- 기본 구문 강조(`syntax.lua`) 및 표준 확장 키바인딩(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x u`, `M-q`, `M-y`, `C-r`, `M-%`, `M-g`, `M-!`)는 바이너리 내장 스크립트로 제공되며, `init.lua` 실행 전에 부트스트랩되어 사용자 설정에서 자유롭게 재정의하거나 해제할 수 있다.
 - 버퍼 텍스트, 이벤트 훅, 버퍼·창·파일 시스템은 공개하지 않는다.
 - 생존 집합 밖의 키는 Lua 설정으로 추가할 수 있다.
 
@@ -191,7 +192,7 @@
 ## 15. 한계와 주의점
 
 - Emacs와 독립된 편집기다. Emacs 구현의 매크로 문법과 호환되지 않는다.
-- 키 호환은 3절 범위에서만 보장한다. `C-x b`, `C-x o`, `C-x 2`가 없어 근육 기억이 깨질 수 있다.
+- 키 호환은 3절(생존 집합) 및 번들 `keymap.lua` 범위에서 보장한다.
 - `C-/`는 많은 터미널에서 `C-_`로 전송된다. 그래서 두 키를 함께 바인딩한다.
 - 영속 undo는 저장된 이력만 보존하며, 미저장 편집은 WAL(§7)이 복구한다.
 - `toggle-eol`은 undo와 WAL에 기록되지 않는다. 비정상 종료 후에는 디스크 파일의 줄 끝 방식으로 돌아간다.

@@ -20,11 +20,7 @@ impl Eol {
             .filter(|w| w[0] == b'\r' && w[1] == b'\n')
             .count();
         let lone_lf = lf.saturating_sub(crlf);
-        let eol = if crlf > lone_lf {
-            Self::Crlf
-        } else {
-            Self::Lf
-        };
+        let eol = if crlf > lone_lf { Self::Crlf } else { Self::Lf };
 
         if crlf == 0 {
             return (eol, raw);

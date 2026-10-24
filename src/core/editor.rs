@@ -232,6 +232,11 @@ impl Editor {
         self
     }
 
+    pub fn with_keymap(mut self, f: impl FnOnce(Keymap) -> Keymap) -> Self {
+        self.keymap = f(self.keymap);
+        self
+    }
+
     pub fn window(&self) -> &Window {
         self.windows.current()
     }
@@ -729,5 +734,9 @@ mod tests {
 
         let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec()));
         assert_eq!(ed.kill_ring().last(), Some(&b"sample"[..]));
+
+        let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());
+        let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
+        assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
     }
 }

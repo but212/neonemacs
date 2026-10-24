@@ -47,13 +47,12 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
 #[test]
 fn styled_render_preserves_column_and_cursor_positions() {
     let lua = lua::new_state().unwrap();
-    let ed = lua::bootstrap(Editor::new(Config::default()), &lua)
-        .with_current_buffer(|b| Buffer {
-            name: "test.rs".to_owned(),
-            text: Text::from_bytes(b"fn main() {\n    let x = 42;\n}\n"),
-            backing: Backing::None,
-            ..b
-        });
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua).with_current_buffer(|b| Buffer {
+        name: "test.rs".to_owned(),
+        text: Text::from_bytes(b"fn main() {\n    let x = 42;\n}\n"),
+        backing: Backing::None,
+        ..b
+    });
 
     let (cols, rows) = (40, 10);
     let ed = render::scroll(ed, cols, rows);
