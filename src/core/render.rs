@@ -129,12 +129,7 @@ fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
         w.top = text.line_start(p);
     }
     // Count whole lines from `top` to the line holding point.
-    let mut index = 0;
-    let mut s = w.top;
-    while p > text.line_end(s) {
-        index += 1;
-        s = text.line_end(s) + 1;
-    }
+    let index = text.count_lines(w.top, p);
     if index >= height {
         w.top = text.line_start(p);
     }

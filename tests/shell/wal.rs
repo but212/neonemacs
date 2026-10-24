@@ -383,3 +383,98 @@ fn wal_decode_wal_rejects_overflowing_nanos() {
         "decode_wal must reject WAL with overflowing nanos >= 1_000_000_000 without panicking"
     );
 }
+
+#[test]
+fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
+    let dir = tempfile::tempdir().unwrap();
+    let old_path = dir.path().join("old.txt");
+    fs::write(&old_path, "initial content").unwrap();
+
+    let disk = file::disk_state(&old_path);
+    wal::write_wal(&old_path, disk, b"modified content").unwrap();
+    assert!(wal::has_wal(&old_path), "Old WAL must exist before write-file");
+
+    let ed = Editor::new(Config::default());
+    let fx = request_open(&ed, old_path.clone(), None, true, Vec::new());
+    let mut ed = perform_all(ed, None, fx);
+
+    // Buffer has edits matching WAL
+    ed = ed.with_current_buffer(|mut buf| {
+        buf.text = neonemacs::core::text::Text::from_bytes(b"modified content");
+        buf.modified = true;
+        buf
+    });
+
+    // Execute write-file to "new.txt"
+    let new_path = dir.path().join("new.txt");
+    let keys = parse_keys("M-x").unwrap();
+    for k in keys {
+        ed = handle(ed, None, Event::Key(k));
+    }
+    for c in "write-file\n".chars() {
+        let code = if c == '\n' { KeyCode::Enter } else { KeyCode::Char(c) };
+        ed = handle(
+            ed,
+            None,
+            Event::Key(neonemacs::core::keymap::Key::plain(match code {
+                KeyCode::Enter => neonemacs::core::keymap::Code::Enter,
+                KeyCode::Char(ch) => neonemacs::core::keymap::Code::Char(ch),
+                _ => unreachable!(),
+            })),
+        );
+    }
+    for c in format!("{}\n", new_path.display()).chars() {
+        let code = if c == '\n' { KeyCode::Enter } else { KeyCode::Char(c) };
+        ed = handle(
+            ed,
+            None,
+            Event::Key(neonemacs::core::keymap::Key::plain(match code {
+                KeyCode::Enter => neonemacs::core::keymap::Code::Enter,
+                KeyCode::Char(ch) => neonemacs::core::keymap::Code::Char(ch),
+                _ => unreachable!(),
+            })),
+        );
+    }
+
+    assert!(new_path.is_file(), "new.txt must have been created");
+    assert_eq!(fs::read(&new_path).unwrap(), b"modified content");
+    assert!(
+        !wal::has_wal(&old_path),
+        "CRITICAL: Old file's WAL must be removed when write-file saves under a new name (preventing orphan WAL)"
+    );
+}
+
+#[test]
+fn wal_concurrent_write_wal_does_not_collide_on_fixed_tmp() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("concurrent.txt");
+    fs::write(&target, "base").unwrap();
+    let disk = file::disk_state(&target);
+
+    // Concurrently write WAL from 8 threads, 10 iterations each.
+    // If write_wal uses a fixed ".wal.tmp" without PID or proper isolation,
+    // this will fail with file sharing / collision errors on Windows.
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let p = target.clone();
+            std::thread::spawn(move || {
+                for iter in 0..10 {
+                    let payload = format!("worker {i} iter {iter}").into_bytes();
+                    wal::write_wal(&p, disk, &payload)?;
+                }
+                std::io::Result::Ok(())
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap().expect("concurrent write_wal should not collide or fail with sharing violation");
+    }
+
+    assert!(wal::has_wal(&target));
+    let recovered = wal::read_wal(&target, disk).expect("recovered WAL must be intact");
+    assert!(
+        recovered.starts_with(b"worker "),
+        "WAL content must not be corrupted"
+    );
+}

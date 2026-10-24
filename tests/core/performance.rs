@@ -41,3 +41,51 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
         elapsed
     );
 }
+
+#[test]
+fn large_file_nth_line_start_and_line_navigation_latency() {
+    // 16MB buffer with 100,000 lines (each ~160 bytes)
+    let line = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n";
+    let line_len = line.len();
+    let num_lines = 100_000;
+    let mut data = Vec::with_capacity(line_len * num_lines);
+    for _ in 0..num_lines {
+        data.extend_from_slice(line.as_bytes());
+    }
+
+    let mut text = Text::from_vec(data);
+    // Insert text in the middle to create an active gap right at the 50,000th line
+    let mid_pos = line_len * 50_000;
+    text = text.insert(mid_pos, b"# GAP INSERTION POINT #\n");
+
+    // Navigating to late lines should not suffer from un-vectorized byte-by-byte looping.
+    // In release mode or even debug mode with SIMD slice searching, scanning 50,000 lines is near-instant (< 30ms).
+    // With byte-at-a-time loop calling byte_at() millions of times with bounds checking and branches, it degrades drastically.
+    let start = Instant::now();
+    let pos_80k = text.nth_line_start(80_000);
+    let elapsed_nth = start.elapsed();
+
+    // Since we inserted 1 line at 50,000, line 80,000 is original line (80,000 - 2) + inserted line len
+    let expected_pos_80k = (80_000 - 2) * line_len + b"# GAP INSERTION POINT #\n".len();
+    assert_eq!(pos_80k, expected_pos_80k);
+
+    let start = Instant::now();
+    let lend = text.line_end(pos_80k);
+    let lstart = text.line_start(lend);
+    let elapsed_single = start.elapsed();
+
+    assert_eq!(lstart, pos_80k);
+    assert_eq!(lend, pos_80k + line_len - 1);
+
+    // Strict performance assertion: nth_line_start for 80k lines must complete under 60ms (sub-millisecond in release mode)
+    assert!(
+        elapsed_nth < Duration::from_millis(60),
+        "nth_line_start(80_000) took {:?} (expected < 60ms). Byte-by-byte linear search overhead detected!",
+        elapsed_nth
+    );
+    assert!(
+        elapsed_single < Duration::from_millis(1),
+        "line_start/line_end took {:?} (expected < 1ms)",
+        elapsed_single
+    );
+}

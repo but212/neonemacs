@@ -345,3 +345,36 @@ fn undo_write_failure_is_reported() {
         format!("Wrote {}, undo not saved: denied", path.display())
     );
 }
+
+#[test]
+fn save_symlink_target_and_stat_disk_consistency() {
+    let dir = tempfile::tempdir().unwrap();
+    let real_file = dir.path().join("real.txt");
+    fs::write(&real_file, b"original real data").unwrap();
+
+    let link_file = dir.path().join("link.txt");
+    #[cfg(unix)]
+    let link_created = std::os::unix::fs::symlink(&real_file, &link_file).is_ok();
+    #[cfg(windows)]
+    let link_created = std::os::windows::fs::symlink_file(&real_file, &link_file).is_ok();
+
+    if !link_created {
+        // Skipping test on Windows when Developer Mode / Elevation is not enabled
+        return;
+    }
+
+    // Save through link_file
+    let state_after_save = file::save(&link_file, b"updated through symlink").unwrap();
+    let stat_via_link = file::disk_state(&link_file);
+    let stat_via_target = file::disk_state(&real_file);
+
+    assert_eq!(
+        state_after_save, stat_via_link,
+        "DiskState returned by save must match disk_state(link)"
+    );
+    assert_eq!(
+        stat_via_link, stat_via_target,
+        "StatDisk on link must match target file metadata"
+    );
+    assert_eq!(fs::read(&real_file).unwrap(), b"updated through symlink");
+}

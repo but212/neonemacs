@@ -97,11 +97,8 @@ pub fn has_wal(path: &Path) -> bool {
 /// Writes buffer contents with its base DiskState to WAL atomically via temp file.
 pub fn write_wal(path: &Path, disk: DiskState, bytes: &[u8]) -> io::Result<()> {
     let wp = wal_path(path);
-    let tmp = wp.with_extension("wal.tmp");
     let encoded = encode_wal(disk, bytes);
-    fs::write(&tmp, encoded)?;
-    fs::rename(tmp, wp)?;
-    Ok(())
+    crate::shell::atomic::atomic_write(&wp, ".", ".wal.tmp", &encoded, None)
 }
 
 /// Reads the WAL contents if available and matching disk state.

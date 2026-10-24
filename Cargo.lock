@@ -250,6 +250,7 @@ name = "neonemacs"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "memchr",
  "mlua",
  "tempfile",
  "unicode-width",

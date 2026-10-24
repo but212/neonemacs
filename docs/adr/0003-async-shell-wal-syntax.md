@@ -24,7 +24,7 @@ Previously:
 
 - Implemented in `src/core/syntax.rs` without regex backtracking or external parsers.
 - Detects keywords, strings, comments, and numbers for Rust, C/C++, Python, JavaScript/TypeScript, Lua, Go, Shell, and Markdown.
-- `Frame` in `src/core/render.rs` retains raw character text in `rows` and adds `styles: Vec<Vec<TokenKind>>`.
+- Frame in `src/core/render.rs` models the terminal grid with `rows: Vec<Vec<Cell>>` where each `Cell` encapsulates both display glyph and `TokenKind` syntax style.
 - Terminal color escapes (ANSI) are injected only during final terminal queue emission in `main.rs`, ensuring `char_width`, `column`, cursor coordinates, and `render::diff` are completely free from ANSI byte interference (**I-22**).
 
 ### 2. Async Shell Task Queue (I-24)

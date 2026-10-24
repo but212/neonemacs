@@ -203,12 +203,15 @@ pub(crate) fn find_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effect
 }
 
 /// Writes the current buffer to a new file name and makes that its file (§8).
-pub(crate) fn write_file(mut ed: Editor, input: &str, fx: Effects) -> (Editor, Effects) {
+pub(crate) fn write_file(mut ed: Editor, input: &str, mut fx: Effects) -> (Editor, Effects) {
     if input.is_empty() {
         return (ed, fx);
     }
-    let path = PathBuf::from(input);
     let id = ed.window().buffer;
+    if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
+        fx.push(eff);
+    }
+    let path = PathBuf::from(input);
     let name = path
         .file_name()
         .map_or_else(|| input.to_owned(), |n| n.to_string_lossy().into_owned());
