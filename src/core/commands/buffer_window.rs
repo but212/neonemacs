@@ -4,18 +4,9 @@
 //! - Layer 1: Pure domain logic on buffer IDs, layout transitions, and confirmation predicates.
 //! - Layer 2: Built-in command adapters operating on `Editor`.
 
-use crate::core::commands::util::ask;
-use crate::core::editor::{Buffer, BufferId, Confirm, Dir, Editor, Window};
+use crate::core::editor::{BufferId, Confirm, Dir, Editor, Window};
 use crate::core::effect::{Effect, Effects};
-
-// --- Layer 1: Pure domain primitives ---
-
-/// Returns true if killing the buffer requires user confirmation.
-pub const fn kill_requires_confirmation(is_modified: bool) -> bool {
-    is_modified
-}
-
-// --- Layer 2: Built-in command adapters ---
+use crate::core::window::WindowManager;
 
 pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (split(ed, Dir::Below), fx)
@@ -27,18 +18,15 @@ pub(crate) fn split_window_right(ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 /// Replaces the selected leaf with a split of two windows that show the same buffer.
 pub(crate) fn split(ed: Editor, dir: Dir) -> Editor {
-    let win = ed.windows().clone().split(dir);
-    ed.set_windows(win)
+    ed.with_windows(|wm| wm.split(dir))
 }
 
 pub(crate) fn other_window(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let win = ed.windows().clone().next_window();
-    (ed.set_windows(win), fx)
+    (ed.with_windows(WindowManager::next_window), fx)
 }
 
 pub(crate) fn delete_other_windows(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let win = ed.windows().clone().delete_other_windows();
-    (ed.set_windows(win), fx)
+    (ed.with_windows(WindowManager::delete_other_windows), fx)
 }
 
 /// Shows buffer `id` in the selected window. The old buffer keeps its point.
@@ -48,11 +36,8 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
         return ed;
     }
     let point = ed.window().point;
-    let ed = ed.with_buffer(old, |b| Buffer {
-        saved_point: point,
-        ..b
-    });
-    let target = ed.buffer_by_id(id).saved_point;
+    let ed = ed.with_buffer(old, |b| b.set_saved_point(point));
+    let target = ed.buffer_by_id(id).saved_point();
     ed.with_window(|w| Window {
         buffer: id,
         point: target,
@@ -63,10 +48,9 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
 
 /// Kills buffer `id`. A modified buffer asks first.
 pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
-    if kill_requires_confirmation(ed.buffer_by_id(id).modified) {
+    if ed.buffer_by_id(id).modified() {
         (
-            ask(
-                ed,
+            ed.confirm(
                 Confirm::KillModified(id),
                 "Buffer is modified; kill anyway? (y or n)",
             ),
@@ -76,14 +60,8 @@ pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
         if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
             fx.push(eff);
         }
-        (kill_now(ed, id), fx)
+        (ed.kill_buffer_id(id), fx)
     }
-}
-
-/// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
-/// Killing the last buffer leaves an empty `*scratch*` (A4).
-pub(crate) fn kill_now(ed: Editor, id: BufferId) -> Editor {
-    ed.kill_buffer_id(id)
 }
 
 #[cfg(test)]
@@ -122,7 +100,7 @@ mod tests {
 
         let (ed, _) = kill_buffer(ed, other, Vec::new());
         assert_eq!(ed.buffers().len(), 1);
-        assert_eq!(ed.buffer().name, "*scratch*");
+        assert_eq!(ed.buffer().name(), "*scratch*");
     }
 
     #[test]
@@ -131,8 +109,8 @@ mod tests {
         let only = ed.window().buffer;
         let (ed, _) = kill_buffer(ed, only, Vec::new());
         assert_eq!(ed.buffers().len(), 1);
-        assert_eq!(ed.buffer().name, "*scratch*");
-        assert_ne!(ed.buffer().id, only);
+        assert_eq!(ed.buffer().name(), "*scratch*");
+        assert_ne!(ed.buffer().id(), only);
     }
 
     #[test]

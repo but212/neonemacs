@@ -53,7 +53,7 @@ mod tests {
     fn step_returns_editor_and_effects() {
         let ed = Editor::new(Config::default());
         let (ed, fx) = step(ed, Event::Key(Key::plain(Code::Char('a'))));
-        assert_eq!(ed.buffer().text.to_bytes(), b"a");
+        assert_eq!(ed.buffer().text().to_bytes(), b"a");
         assert!(fx.is_empty());
     }
 }

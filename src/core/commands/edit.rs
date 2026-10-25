@@ -5,8 +5,7 @@
 //! - Layer 2: Built-in command adapters operating on `Editor`.
 
 use crate::core::commands::motion::region;
-use crate::core::commands::util::{delete_range, insert_at};
-use crate::core::editor::{Buffer, Editor, LastCommand};
+use crate::core::editor::{Editor, LastCommand};
 use crate::core::effect::Effects;
 use crate::core::text::Text;
 
@@ -49,18 +48,18 @@ pub fn kill_line_range(text: &Text, point: usize) -> Option<(usize, usize)> {
 
 pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let Some((start, end)) = delete_backward_char_range(&ed.buffer().text, p) else {
+    let Some((start, end)) = delete_backward_char_range(ed.buffer().text(), p) else {
         return (ed, fx);
     };
-    (delete_range(ed, start, end).0, fx)
+    (ed.delete_range(start, end).0, fx)
 }
 
 pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let Some((start, end)) = delete_char_range(&ed.buffer().text, p) else {
+    let Some((start, end)) = delete_char_range(ed.buffer().text(), p) else {
         return (ed, fx);
     };
-    (delete_range(ed, start, end).0, fx)
+    (ed.delete_range(start, end).0, fx)
 }
 
 pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -71,7 +70,7 @@ pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
         return (ed, fx);
     }
     let ed = ed.kill_range(start, end);
-    let ed = ed.with_current_buffer(|b| Buffer { mark: None, ..b });
+    let ed = ed.with_current_buffer(|b| b.set_mark(None));
     (ed, fx)
 }
 
@@ -79,7 +78,7 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let Some((start, end)) = region(&ed) else {
         return (ed.set_message("The mark is not set now"), fx);
     };
-    let bytes = ed.buffer().text.bytes(start..end);
+    let bytes = ed.buffer().text().bytes(start..end);
     let ed = ed.with_kill_ring(|kr| kr.push(bytes));
     (ed, fx)
 }
@@ -87,7 +86,7 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
 /// Kills to the end of the line, or the newline when already at the end.
 pub(crate) fn kill_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let Some((start, end)) = kill_line_range(&ed.buffer().text, p) else {
+    let Some((start, end)) = kill_line_range(ed.buffer().text(), p) else {
         return (ed, fx);
     };
     (ed.kill_range(start, end), fx)
@@ -98,7 +97,7 @@ pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
         return (ed.set_message("Kill ring is empty"), fx);
     };
     let p = ed.window().point;
-    let ed = insert_at(ed, p, &bytes);
+    let ed = ed.insert_at(p, &bytes);
     let ed = ed.set_last(LastCommand::Yank {
         start: p,
         end: p + bytes.len(),
@@ -111,14 +110,14 @@ pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let LastCommand::Yank { start, end } = ed.prev() else {
         return (ed.set_message("Previous command was not a yank"), fx);
     };
-    let (ed, _) = delete_range(ed, start, end);
+    let (ed, _) = ed.delete_range(start, end);
     let ed = ed.with_kill_ring(|kr| kr.rotate_right(1));
     let bytes = ed
         .kill_ring()
         .last()
         .map(<[u8]>::to_vec)
         .unwrap_or_default();
-    let ed = insert_at(ed, start, &bytes);
+    let ed = ed.insert_at(start, &bytes);
     let ed = ed.set_last(LastCommand::Yank {
         start,
         end: start + bytes.len(),
@@ -127,8 +126,8 @@ pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let on = !ed.buffer().view_only;
-    let ed = ed.with_current_buffer(|b| Buffer { view_only: on, ..b });
+    let on = !ed.buffer().view_only();
+    let ed = ed.with_current_buffer(|b| b.set_view_only(on));
     let ed = ed.set_message(if on { "View mode on" } else { "View mode off" });
     (ed, fx)
 }
@@ -142,7 +141,7 @@ mod tests {
     #[test]
     fn insert_hangul_saves_utf8() {
         let ed = typ(editor(), "한");
-        assert_eq!(ed.buffer().text.to_bytes(), "한".as_bytes());
+        assert_eq!(ed.buffer().text().to_bytes(), "한".as_bytes());
     }
 
     #[test]

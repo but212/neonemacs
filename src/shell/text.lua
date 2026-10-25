@@ -55,39 +55,95 @@ end
 local function scan_word_forward(from_pos)
     local len = buffer.len()
     if from_pos >= len then return nil, nil end
-    local text = buffer.get_text(from_pos, len)
-    local i = 1
-    local text_len = #text
 
-    while i <= text_len and not is_word_byte(string.byte(text, i)) do
-        i = i + 1
-    end
-    if i > text_len then return nil, nil end
-    local w_start = from_pos + i - 1
+    local cur_pos = from_pos
+    local w_start = nil
 
-    while i <= text_len and is_word_byte(string.byte(text, i)) do
-        i = i + 1
+    while cur_pos < len do
+        local l_end = buffer.line_end(cur_pos)
+        local scan_end = l_end
+        -- If current line has content to scan
+        if scan_end > cur_pos then
+            local text = buffer.get_text(cur_pos, scan_end)
+            local text_len = #text
+            local i = 1
+            if not w_start then
+                while i <= text_len and not is_word_byte(string.byte(text, i)) do
+                    i = i + 1
+                end
+                if i <= text_len then
+                    w_start = cur_pos + i - 1
+                    while i <= text_len and is_word_byte(string.byte(text, i)) do
+                        i = i + 1
+                    end
+                    local w_end = cur_pos + i - 1
+                    return w_start, w_end
+                end
+            else
+                while i <= text_len and is_word_byte(string.byte(text, i)) do
+                    i = i + 1
+                end
+                local w_end = cur_pos + i - 1
+                return w_start, w_end
+            end
+        elseif w_start then
+            return w_start, cur_pos
+        end
+
+        if l_end >= len then
+            break
+        end
+        -- Move past the newline
+        cur_pos = l_end + 1
     end
-    local w_end = from_pos + i - 1
-    return w_start, w_end
+
+    if w_start then
+        return w_start, len
+    end
+    return nil, nil
 end
 
 local function scan_word_backward(from_pos)
     if from_pos <= 0 then return nil, nil end
-    local text = buffer.get_text(0, from_pos)
-    local i = #text
 
-    while i >= 1 and not is_word_byte(string.byte(text, i)) do
-        i = i - 1
-    end
-    if i == 0 then return nil, nil end
-    local w_end = i
+    local cur_pos = from_pos
+    local w_end = nil
 
-    while i >= 1 and is_word_byte(string.byte(text, i)) do
-        i = i - 1
+    while cur_pos > 0 do
+        local l_start = buffer.line_start(cur_pos)
+        if cur_pos > l_start then
+            local text = buffer.get_text(l_start, cur_pos)
+            local i = #text
+            if not w_end then
+                while i >= 1 and not is_word_byte(string.byte(text, i)) do
+                    i = i - 1
+                end
+                if i >= 1 then
+                    w_end = l_start + i
+                end
+            end
+            if w_end then
+                while i >= 1 and is_word_byte(string.byte(text, i)) do
+                    i = i - 1
+                end
+                if i >= 1 then
+                    local w_start = l_start + i
+                    return w_start, w_end
+                end
+            end
+        end
+
+        if l_start <= 0 then
+            break
+        end
+        -- Move before newline
+        cur_pos = l_start - 1
     end
-    local w_start = i
-    return w_start, w_end
+
+    if w_end then
+        return 0, w_end
+    end
+    return nil, nil
 end
 
 local function forward_word_end(p)

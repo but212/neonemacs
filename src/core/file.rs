@@ -26,7 +26,88 @@ pub enum Backing {
         path: PathBuf,
         disk: DiskState,
         extent: LoadExtent,
+        wal_dirty: bool,
     },
+}
+
+impl Backing {
+    pub const fn file(path: PathBuf, disk: DiskState, extent: LoadExtent) -> Self {
+        Self::File {
+            path,
+            disk,
+            extent,
+            wal_dirty: false,
+        }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path, .. } => Some(path),
+            Self::None => None,
+        }
+    }
+
+    pub const fn disk(&self) -> DiskState {
+        match self {
+            Self::File { disk, .. } => *disk,
+            Self::None => DiskState::Unknown,
+        }
+    }
+
+    pub const fn is_wal_dirty(&self) -> bool {
+        match self {
+            Self::File { wal_dirty, .. } => *wal_dirty,
+            Self::None => false,
+        }
+    }
+
+    pub fn set_wal_dirty(self, dirty: bool) -> Self {
+        match self {
+            Self::File {
+                path, disk, extent, ..
+            } => Self::File {
+                path,
+                disk,
+                extent,
+                wal_dirty: dirty,
+            },
+            Self::None => Self::None,
+        }
+    }
+
+    pub fn with_disk(self, disk: DiskState) -> Self {
+        match self {
+            Self::File {
+                path,
+                extent,
+                wal_dirty,
+                ..
+            } => Self::File {
+                path,
+                disk,
+                extent,
+                wal_dirty,
+            },
+            Self::None => Self::None,
+        }
+    }
+
+    pub fn confirm_truncated(self) -> Self {
+        match self {
+            Self::File {
+                path,
+                disk,
+                wal_dirty,
+                ..
+            } => Self::File {
+                path,
+                disk,
+                extent: LoadExtent::TruncatedConfirmed,
+                wal_dirty,
+            },
+            Self::None => Self::None,
+        }
+    }
 }
 
 pub struct Loaded {
@@ -41,11 +122,7 @@ pub fn loaded_from(path: &Path, read: Read, max_size: u64) -> Loaded {
     match read {
         Read::Missing => Loaded {
             text: Text::default(),
-            backing: Backing::File {
-                path: path.to_path_buf(),
-                disk: DiskState::Unknown,
-                extent: LoadExtent::Whole,
-            },
+            backing: Backing::file(path.to_path_buf(), DiskState::Unknown, LoadExtent::Whole),
             eol: Eol::default(),
         },
         Read::Found(raw) => {
@@ -60,11 +137,7 @@ pub fn loaded_from(path: &Path, read: Read, max_size: u64) -> Loaded {
 
             Loaded {
                 text: Text::from_vec(text),
-                backing: Backing::File {
-                    path: path.to_path_buf(),
-                    disk: raw.disk,
-                    extent,
-                },
+                backing: Backing::file(path.to_path_buf(), raw.disk, extent),
                 eol,
             }
         }

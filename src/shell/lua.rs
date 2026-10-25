@@ -6,11 +6,11 @@ use crate::core::commands;
 use crate::core::config::Value;
 use crate::core::editor::Editor;
 use crate::core::effect::Event;
-use crate::core::keymap::KeyError;
+use crate::core::keymap::{KeyError, parse_key_seq};
 use crate::core::syntax::SyntaxDef;
 use crate::shell::{perform_in, step_in};
 use mlua::{Function, Lua, Scope, Table, Value as LuaValue};
-use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -45,11 +45,6 @@ pub fn bootstrap(mut ed: Editor, lua: &Lua) -> Editor {
     ed
 }
 
-/// Backwards-compatible alias for `bootstrap`.
-pub fn load_bundled_syntax(ed: Editor, lua: &Lua) -> Editor {
-    bootstrap(ed, lua)
-}
-
 /// Most nested `run` calls allowed. A command that runs itself stops with an error here, before the native stack runs out.
 const MAX_RUN_DEPTH: usize = 50;
 
@@ -75,22 +70,13 @@ fn editor_ref(cell: &RefCell<Option<Editor>>) -> Ref<'_, Editor> {
     })
 }
 
-/// The editor in `cell`, for writing. The cell is full whenever Lua runs (I-21).
-fn editor_mut(cell: &RefCell<Option<Editor>>) -> RefMut<'_, Editor> {
-    RefMut::map(cell.borrow_mut(), |slot| {
-        slot.as_mut().expect("editor is in the cell (I-21)")
-    })
-}
-
-/// Applies a fallible transition `f` to the editor inside `cell`.
-fn mutate_editor(
-    cell: &RefCell<Option<Editor>>,
-    f: impl FnOnce(Editor) -> mlua::Result<Editor>,
-) -> mlua::Result<()> {
-    let mut ed = editor_mut(cell);
-    let current = ed.clone();
-    *ed = f(current)?;
-    Ok(())
+/// Applies an infallible transition `f` to the editor inside `cell`.
+fn mutate_editor(cell: &RefCell<Option<Editor>>, f: impl FnOnce(Editor) -> Editor) {
+    let current = cell
+        .borrow_mut()
+        .take()
+        .expect("editor is in the cell (I-21)");
+    *cell.borrow_mut() = Some(f(current));
 }
 
 /// Runs `body` with the API bound to the editor in `cell`.
@@ -119,27 +105,19 @@ fn install_keymap_api<'lua, 'scope>(
     g.set(
         "bind",
         scope.create_function(|_, (keys, name): (String, String)| {
-            mutate_editor(cell, |ed| {
-                let keymap = ed
-                    .keymap()
-                    .clone()
-                    .bind_str(&keys, &name)
-                    .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
-                Ok(ed.with_keymap(|_| keymap))
-            })
+            let seq =
+                parse_key_seq(&keys).map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+            mutate_editor(cell, |ed| ed.with_keymap(|km| km.bind(seq, &name)));
+            Ok(())
         })?,
     )?;
     g.set(
         "unbind",
         scope.create_function(|_, keys: String| {
-            mutate_editor(cell, |ed| {
-                let keymap = ed
-                    .keymap()
-                    .clone()
-                    .unbind_str(&keys)
-                    .map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
-                Ok(ed.with_keymap(|_| keymap))
-            })
+            let seq =
+                parse_key_seq(&keys).map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+            mutate_editor(cell, |ed| ed.with_keymap(|km| km.unbind(&seq)));
+            Ok(())
         })?,
     )?;
     Ok(())
@@ -161,13 +139,16 @@ fn install_command_api<'lua, 'scope>(
                 )));
             }
             lua.globals().get::<Table>(COMMANDS)?.set(name.clone(), f)?;
-            mutate_editor(cell, |ed| Ok(ed.register_command(&name)))
+            mutate_editor(cell, |ed| ed.register_command(&name));
+            Ok(())
         })?,
     )?;
     g.set(
         "message",
-        scope
-            .create_function(|_, msg: String| mutate_editor(cell, |ed| Ok(ed.set_message(msg))))?,
+        scope.create_function(|_, msg: String| {
+            mutate_editor(cell, |ed| ed.set_message(msg));
+            Ok(())
+        })?,
     )?;
     g.set(
         "run",
@@ -209,14 +190,12 @@ fn install_config_api<'lua, 'scope>(
         "set",
         scope.create_function(|_, (name, value): (String, LuaValue)| {
             let value = from_lua(&value).map_err(mlua::Error::RuntimeError)?;
-            mutate_editor(cell, |ed| {
-                let new_config = ed
-                    .config()
-                    .clone()
-                    .set(&name, value)
-                    .map_err(mlua::Error::RuntimeError)?;
-                Ok(ed.set_config(new_config))
-            })
+            let new_config = editor_ref(cell)
+                .config()
+                .set(&name, value)
+                .map_err(mlua::Error::RuntimeError)?;
+            mutate_editor(cell, |ed| ed.set_config(new_config));
+            Ok(())
         })?,
     )?;
     Ok(())
@@ -233,10 +212,8 @@ fn install_syntax_api<'lua, 'scope>(
         "register",
         scope.create_function(|_, (name, spec): (String, Table)| {
             let def = parse_syntax_def(name, spec)?;
-            mutate_editor(cell, |ed| {
-                let new_registry = ed.syntax_registry().clone().register(def);
-                Ok(ed.with_syntax_registry(new_registry))
-            })
+            mutate_editor(cell, |ed| ed.with_syntax_registry(|reg| reg.register(def)));
+            Ok(())
         })?,
     )?;
     g.set("syntax", syntax_table)?;
@@ -256,55 +233,62 @@ fn install_buffer_api<'lua, 'scope>(
     )?;
     buffer_table.set(
         "set_point",
-        scope.create_function(|_, pos: usize| mutate_editor(cell, |ed| Ok(ed.move_point(pos))))?,
+        scope.create_function(|_, pos: usize| {
+            mutate_editor(cell, |ed| ed.move_point(pos));
+            Ok(())
+        })?,
     )?;
     buffer_table.set(
         "len",
-        scope.create_function(|_, ()| Ok(editor_ref(cell).buffer().text.len()))?,
+        scope.create_function(|_, ()| Ok(editor_ref(cell).buffer().text().len()))?,
     )?;
     buffer_table.set(
         "get_text",
-        scope.create_function(|_, (start, end): (Option<usize>, Option<usize>)| {
+        scope.create_function(|lua, (start, end): (Option<usize>, Option<usize>)| {
             let ed = editor_ref(cell);
-            let text = &ed.buffer().text;
+            let text = ed.buffer().text();
             let len = text.len();
             let s = start.unwrap_or(0).min(len);
             let e = end.unwrap_or(len).min(len);
             if s >= e {
-                return Ok(String::new());
+                return lua.create_string("");
             }
             let bytes = text.bytes(s..e);
-            String::from_utf8(bytes).map_err(|e| mlua::Error::RuntimeError(e.to_string()))
+            lua.create_string(&bytes)
         })?,
     )?;
     buffer_table.set(
         "line_start",
         scope.create_function(|_, pos: usize| {
             let ed = editor_ref(cell);
-            let pos = pos.min(ed.buffer().text.len());
-            Ok(ed.buffer().text.line_start(pos))
+            let pos = pos.min(ed.buffer().text().len());
+            Ok(ed.buffer().text().line_start(pos))
         })?,
     )?;
     buffer_table.set(
         "line_end",
         scope.create_function(|_, pos: usize| {
             let ed = editor_ref(cell);
-            let pos = pos.min(ed.buffer().text.len());
-            Ok(ed.buffer().text.line_end(pos))
+            let pos = pos.min(ed.buffer().text().len());
+            Ok(ed.buffer().text().line_end(pos))
         })?,
     )?;
     buffer_table.set(
         "width",
-        scope.create_function(|_, s: String| {
+        scope.create_function(|_, s: mlua::LuaString| {
             let ed = editor_ref(cell);
             let tab = usize::from(ed.config().tab_width);
-            Ok(crate::core::width::str_width(&s, tab))
+            let bytes = s.as_bytes();
+            let lossy = String::from_utf8_lossy(&bytes);
+            Ok(crate::core::width::str_width(&lossy, tab))
         })?,
     )?;
     buffer_table.set(
         "insert",
-        scope.create_function(|_, (pos, text): (usize, String)| {
-            mutate_editor(cell, |ed| Ok(ed.insert_at(pos, text.as_bytes())))
+        scope.create_function(|_, (pos, text): (usize, mlua::LuaString)| {
+            let bytes = text.as_bytes();
+            mutate_editor(cell, |ed| ed.insert_at(pos, &bytes));
+            Ok(())
         })?,
     )?;
     buffer_table.set(
@@ -312,35 +296,38 @@ fn install_buffer_api<'lua, 'scope>(
         scope.create_function(|_, (start, end): (usize, usize)| {
             mutate_editor(cell, |ed| {
                 let (ed, _) = ed.delete_range(start, end);
-                Ok(ed)
-            })
+                ed
+            });
+            Ok(())
         })?,
     )?;
     buffer_table.set(
         "kill",
         scope.create_function(|_, (start, end): (usize, usize)| {
-            mutate_editor(cell, |ed| Ok(ed.kill_range(start, end)))
+            mutate_editor(cell, |ed| ed.kill_range(start, end));
+            Ok(())
         })?,
     )?;
     buffer_table.set(
         "replace",
-        scope.create_function(|_, (start, end, text): (usize, usize, String)| {
+        scope.create_function(|_, (start, end, text): (usize, usize, mlua::LuaString)| {
+            let bytes = text.as_bytes();
             mutate_editor(cell, |ed| {
                 let (ed, _) = ed.delete_range(start, end);
-                Ok(ed.insert_at(start, text.as_bytes()))
-            })
+                ed.insert_at(start, &bytes)
+            });
+            Ok(())
         })?,
     )?;
     buffer_table.set(
         "mark",
-        scope.create_function(|_, ()| Ok(editor_ref(cell).buffer().mark))?,
+        scope.create_function(|_, ()| Ok(editor_ref(cell).buffer().mark()))?,
     )?;
     buffer_table.set(
         "set_mark",
         scope.create_function(|_, pos: Option<usize>| {
-            mutate_editor(cell, |ed| {
-                Ok(ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: pos, ..b }))
-            })
+            mutate_editor(cell, |ed| ed.with_current_buffer(|b| b.set_mark(pos)));
+            Ok(())
         })?,
     )?;
     buffer_table.set(
@@ -349,7 +336,7 @@ fn install_buffer_api<'lua, 'scope>(
             let ed = editor_ref(cell);
             let prefix = ed
                 .syntax_registry()
-                .line_comment_for_filename(&ed.buffer().name)
+                .line_comment_for_filename(ed.buffer().name())
                 .map(str::to_owned);
             Ok(prefix)
         })?,
@@ -391,14 +378,15 @@ fn parse_syntax_def(name: String, spec: Table) -> mlua::Result<SyntaxDef> {
     let types = parse_string_list(&spec, "types")?;
     let case_insensitive: bool = spec.get("case_insensitive").unwrap_or(false);
 
-    Ok(SyntaxDef::builder(name)
-        .extensions(extensions)
-        .filenames(filenames)
-        .line_comment(line_comment)
-        .keywords(keywords)
-        .types(types)
-        .case_insensitive(case_insensitive)
-        .build())
+    Ok(SyntaxDef::new(
+        name,
+        extensions,
+        filenames,
+        line_comment,
+        keywords,
+        types,
+        case_insensitive,
+    ))
 }
 
 /// Calls the Lua command `name`, which must have been defined with `command`.
@@ -439,6 +427,70 @@ mod tests {
     /// Runs `src` against `ed`. Returns the editor back with the result.
     fn script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
         run_source(ed, lua, src)
+    }
+
+    #[test]
+    fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let ed = ed.with_current_buffer(|b| {
+            b.set_name("test.rs")
+                .with_text(crate::core::text::Text::from_bytes(
+                    b"hello\nworld \xff tail\n",
+                ))
+        });
+
+        // M-f from pos 0
+        let ed = ed.with_window(|w| crate::core::editor::Window { point: 0, ..w });
+        let ed = handle(ed, Some(&lua), Event::Run("forward-word".to_owned()));
+        assert!(ed.message().is_empty(), "M-f failed: {}", ed.message());
+        assert_eq!(ed.window().point, 5);
+
+        // M-f again: moves past 'world'
+        let ed = handle(ed, Some(&lua), Event::Run("forward-word".to_owned()));
+        assert!(ed.message().is_empty(), "M-f 2 failed: {}", ed.message());
+        assert_eq!(ed.window().point, 11);
+
+        // M-f past \xff to 'tail'
+        let ed = handle(ed, Some(&lua), Event::Run("forward-word".to_owned()));
+        assert!(ed.message().is_empty(), "M-f 3 failed: {}", ed.message());
+
+        // comment-dwim on the line containing \xff
+        let ed = ed.with_window(|w| crate::core::editor::Window { point: 13, ..w });
+        let ed = handle(ed, Some(&lua), Event::Run("comment-dwim".to_owned()));
+        assert!(
+            ed.message().is_empty(),
+            "comment-dwim failed: {}",
+            ed.message()
+        );
+        assert!(
+            ed.buffer().text().to_bytes().contains(&0xff),
+            "Raw byte 0xff was lost or corrupted!"
+        );
+    }
+
+    #[test]
+    fn set_mark_snaps_to_unit_boundary() {
+        let lua = new_state().unwrap();
+        let ed = Editor::new(Config::default()).with_current_buffer(|b| {
+            b.with_text(crate::core::text::Text::from_bytes("가".as_bytes()))
+        });
+        let (ed, res) = script(&lua, ed, "buffer.set_mark(1)");
+        res.unwrap();
+        assert_eq!(ed.buffer().mark(), Some(0));
+
+        let (ed, res) = script(&lua, ed, "buffer.set_mark(999)");
+        res.unwrap();
+        assert_eq!(ed.buffer().mark(), Some(3));
+    }
+
+    #[test]
+    fn mutate_editor_preserves_cell_on_error() {
+        let lua = new_state().unwrap();
+        let ed = Editor::new(Config::default());
+        let (ed, res) = script(&lua, ed, r#"bind("C-", "invalid-key")"#);
+        assert!(res.is_err());
+        assert_eq!(ed.config().tab_width, 8);
     }
 
     #[test]
@@ -593,7 +645,10 @@ mod tests {
             })"##,
         );
         result.unwrap();
-        assert_eq!(ed.syntax_registry().detect_lang("query.sql.txt"), Some("sql"));
+        assert_eq!(
+            ed.syntax_registry().detect_lang("query.sql.txt"),
+            Some("sql")
+        );
         assert!(ed.syntax_registry().is_keyword("sql", "SELECT"));
         assert!(ed.syntax_registry().is_type("sql", "VARCHAR"));
     }
@@ -601,7 +656,7 @@ mod tests {
     #[test]
     fn bundled_syntax_loaded_by_default() {
         let lua = new_state().unwrap();
-        let ed = load_bundled_syntax(Editor::new(Config::default()), &lua);
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
         let reg = ed.syntax_registry();
         assert_eq!(reg.detect_lang("main.rs"), Some("rust"));
         assert_eq!(reg.detect_lang("script.py"), Some("python"));
@@ -761,7 +816,10 @@ mod tests {
 
         let (ed, res) = script(&lua, ed, r#"run("fill-paragraph")"#);
         res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"  hello\n  world foo\n  bar");
+        assert_eq!(
+            ed.buffer().text().to_bytes(),
+            b"  hello\n  world foo\n  bar"
+        );
     }
 
     #[test]
@@ -806,13 +864,15 @@ mod tests {
     #[test]
     fn buffer_mark_api() {
         let lua = new_state().unwrap();
-        let ed = Editor::new(Config::default());
-        assert_eq!(ed.buffer().mark, None);
+        let ed = Editor::new(Config::default()).with_current_buffer(|b| {
+            b.with_text(crate::core::text::Text::from_bytes(b"hello world"))
+        });
+        assert_eq!(ed.buffer().mark(), None);
 
         // set mark to 5
         let (ed, res) = script(&lua, ed, r#"buffer.set_mark(5)"#);
         res.unwrap();
-        assert_eq!(ed.buffer().mark, Some(5));
+        assert_eq!(ed.buffer().mark(), Some(5));
 
         // query mark from lua
         let (ed, res) = script(
@@ -825,7 +885,7 @@ mod tests {
         "#,
         );
         res.unwrap();
-        assert_eq!(ed.buffer().mark, None);
+        assert_eq!(ed.buffer().mark(), None);
     }
 
     #[test]
@@ -847,16 +907,16 @@ mod tests {
         // kill-word from point 0
         let (ed, res) = script(&lua, ed, r#"run("kill-word")"#);
         res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b" world and neon");
+        assert_eq!(ed.buffer().text().to_bytes(), b" world and neon");
         assert_eq!(ed.window().point, 0);
 
         // move to end and backward-kill-word
-        let len = ed.buffer().text.len();
+        let len = ed.buffer().text().len();
         let ed = ed.move_point(len);
         let (ed, res) = script(&lua, ed, r#"run("backward-kill-word")"#);
         res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b" world and ");
-        assert_eq!(ed.window().point, ed.buffer().text.len());
+        assert_eq!(ed.buffer().text().to_bytes(), b" world and ");
+        assert_eq!(ed.window().point, ed.buffer().text().len());
     }
 
     #[test]
@@ -904,7 +964,7 @@ mod tests {
         let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
         res.unwrap();
         assert_eq!(
-            ed.buffer().text.to_bytes(),
+            ed.buffer().text().to_bytes(),
             b"    // let x = 1;\n    let y = 2;"
         );
 
@@ -912,18 +972,18 @@ mod tests {
         let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
         res.unwrap();
         assert_eq!(
-            ed.buffer().text.to_bytes(),
+            ed.buffer().text().to_bytes(),
             b"    let x = 1;\n    let y = 2;"
         );
 
         // Region multi-line comment
-        let ed = ed.with_current_buffer(|b| crate::core::buffer::Buffer { mark: Some(0), ..b });
-        let len = ed.buffer().text.len();
+        let ed = ed.with_current_buffer(|b| b.set_mark(Some(0)));
+        let len = ed.buffer().text().len();
         let ed = ed.move_point(len);
         let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
         res.unwrap();
         assert_eq!(
-            ed.buffer().text.to_bytes(),
+            ed.buffer().text().to_bytes(),
             b"    // let x = 1;\n    // let y = 2;"
         );
 
@@ -931,7 +991,7 @@ mod tests {
         let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
         res.unwrap();
         assert_eq!(
-            ed.buffer().text.to_bytes(),
+            ed.buffer().text().to_bytes(),
             b"    let x = 1;\n    let y = 2;"
         );
 
@@ -948,7 +1008,7 @@ mod tests {
         });
         let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
         res.unwrap();
-        assert_eq!(ed.buffer().text.to_bytes(), b"plain markdown text");
+        assert_eq!(ed.buffer().text().to_bytes(), b"plain markdown text");
         assert_eq!(ed.message(), "No comment syntax defined for buffer");
     }
 
@@ -972,7 +1032,7 @@ mod tests {
         let (ed, res) = script(&lua, ed, r#"run("mark-whole-buffer")"#);
         res.unwrap();
         assert_eq!(ed.window().point, 0);
-        assert_eq!(ed.buffer().mark, Some(18));
+        assert_eq!(ed.buffer().mark(), Some(18));
         assert_eq!(ed.message(), "Mark set");
 
         // Empty buffer
@@ -989,7 +1049,7 @@ mod tests {
         let (ed, res) = script(&lua, ed, r#"run("mark-whole-buffer")"#);
         res.unwrap();
         assert_eq!(ed.window().point, 0);
-        assert_eq!(ed.buffer().mark, Some(0));
+        assert_eq!(ed.buffer().mark(), Some(0));
         assert_eq!(ed.message(), "Mark set");
     }
 

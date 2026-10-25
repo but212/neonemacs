@@ -42,16 +42,16 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
     let bad_ed2 = typ(editor(), "가나다").with_window(|w| Window { point: 1, ..w });
     let (after_del, _) = delete_char(bad_ed2, Vec::new());
     // Deleting from middle of unit should delete to boundary without panic
-    assert!(point(&after_del) <= after_del.buffer().text.len());
+    assert!(point(&after_del) <= after_del.buffer().text().len());
 
     // Force point way past end of buffer (e.g. 9999)
     let oob_ed = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_bkwd, _) = delete_backward_char(oob_ed, Vec::new());
-    assert!(point(&after_bkwd) <= after_bkwd.buffer().text.len());
+    assert!(point(&after_bkwd) <= after_bkwd.buffer().text().len());
 
     let oob_ed2 = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_kill, _) = kill_line(oob_ed2, Vec::new());
-    assert!(point(&after_kill) <= after_kill.buffer().text.len());
+    assert!(point(&after_kill) <= after_kill.buffer().text().len());
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn massive_kill_pop_and_undo_reversibility() {
     // Now undo all operations back to the initial state
     // Consecutive undos should walk back through each edit group
     let mut steps = 0;
-    while ed.buffer().text.to_bytes() != initial_text.as_bytes() && steps < 50 {
+    while ed.buffer().text().to_bytes() != initial_text.as_bytes() && steps < 50 {
         ed = keys(ed, "C-/");
         steps += 1;
     }
@@ -248,11 +248,11 @@ fn view_mode_toggle_and_protection() {
     let view_mode = find("view-mode").unwrap();
 
     let ed = typ(editor(), "immutable text");
-    assert!(!ed.buffer().view_only);
+    assert!(!ed.buffer().view_only());
 
     // Toggle view-mode ON
     let (mut ed, _) = view_mode(ed, Vec::new());
-    assert!(ed.buffer().view_only);
+    assert!(ed.buffer().view_only());
     assert_eq!(ed.message(), "View mode on");
 
     // Attempting edits while view-mode is on must be blocked
@@ -262,7 +262,7 @@ fn view_mode_toggle_and_protection() {
 
     // Toggle view-mode OFF
     let (mut ed, _) = view_mode(ed, Vec::new());
-    assert!(!ed.buffer().view_only);
+    assert!(!ed.buffer().view_only());
     assert_eq!(ed.message(), "View mode off");
 
     // Now edits should succeed
@@ -286,7 +286,7 @@ fn buffer_prompt_hostile_names_and_lifecycle() {
     let ed = typ(ed, "novel_buf");
     let ed = keys(ed, "RET");
     assert_eq!(ed.buffers().len(), 2);
-    assert_eq!(ed.buffer().name, "novel_buf");
+    assert_eq!(ed.buffer().name(), "novel_buf");
 
     // 3. kill-buffer with nonexistent name reports error
     let (ed, _) = kill_buffer(ed, Vec::new());
@@ -299,7 +299,7 @@ fn buffer_prompt_hostile_names_and_lifecycle() {
     let (ed, _) = kill_buffer(ed, Vec::new());
     let ed = keys(ed, "RET");
     assert_eq!(ed.buffers().len(), 1);
-    assert_ne!(ed.buffer().name, "novel_buf");
+    assert_ne!(ed.buffer().name(), "novel_buf");
 }
 
 #[test]
@@ -347,7 +347,7 @@ fn hostile_fuzz_sequence_no_panic() {
 
     // Must never panic, buffer must remain intact and valid UTF-8
     assert!(!ed.buffers().is_empty());
-    assert!(ed.window().point <= ed.buffer().text.len());
+    assert!(ed.window().point <= ed.buffer().text().len());
 }
 
 #[test]
@@ -452,7 +452,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
         assert_eq!(p.input, "work_log_2026");
     }
     ed = keys(e, "RET");
-    assert_eq!(ed.buffer().name, "work_log_2026");
+    assert_eq!(ed.buffer().name(), "work_log_2026");
 
     // 3. Multibyte UTF-8 buffer completion on "한글_"
     let (e, _) = switch_to_buffer(ed, Vec::new());
@@ -471,7 +471,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
         assert_eq!(p.input, "한글_문서_1");
     }
     ed = keys(e, "RET");
-    assert_eq!(ed.buffer().name, "한글_문서_1");
+    assert_eq!(ed.buffer().name(), "한글_문서_1");
 
     // 4. Buffer completion with no match
     let (e, _) = switch_to_buffer(ed, Vec::new());
@@ -491,7 +491,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     let initial_count = e.buffers().len();
     ed = keys(e, "RET");
     assert_eq!(ed.buffers().len(), initial_count - 1);
-    assert!(!ed.buffers().iter().any(|b| b.name == "work_log_archive"));
+    assert!(!ed.buffers().iter().any(|b| b.name() == "work_log_archive"));
 }
 
 #[test]

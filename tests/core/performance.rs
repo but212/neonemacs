@@ -34,7 +34,7 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
     let (ed, _) = ed.apply(edit2);
     let elapsed = start.elapsed();
 
-    assert_eq!(ed.buffer().text.len(), size + 2);
+    assert_eq!(ed.buffer().text().len(), size + 2);
     assert!(
         elapsed < Duration::from_millis(5),
         "Subsequent insert took {:?} (expected < 5ms). Full buffer clone detected in Editor::apply!",
@@ -88,4 +88,42 @@ fn large_file_nth_line_start_and_line_navigation_latency() {
         "line_start/line_end took {:?} (expected < 1ms)",
         elapsed_single
     );
+}
+
+#[test]
+fn lua_comment_dwim_100_lines_on_32mb_buffer_is_fast() {
+    let lua = neonemacs::shell::lua::new_state().unwrap();
+    let ed = neonemacs::shell::lua::bootstrap(Editor::new(Config::default()), &lua);
+
+    // Create 32MB buffer with ~100 lines at start
+    let mut data = Vec::with_capacity(32 * 1024 * 1024);
+    for _ in 0..100 {
+        data.extend_from_slice(b"let x = 42;\n");
+    }
+    // Pad to 32MB
+    let pad = (32 * 1024 * 1024) - data.len();
+    data.resize(data.len() + pad, b' ');
+
+    let (ed, id) = ed.add_buffer("test.rs", Text::from_bytes(&data), Backing::None);
+    let ed = neonemacs::core::commands::buffer_window::switch_to(ed, id);
+
+    // Mark region covering first 100 lines (from 0 to 1200)
+    let ed = ed.with_current_buffer(|b| b.set_mark(Some(1200)));
+    let ed = ed.with_window(|w| neonemacs::core::editor::Window { point: 0, ..w });
+
+    let start = Instant::now();
+    let ed = neonemacs::shell::handle(
+        ed,
+        Some(&lua),
+        neonemacs::core::effect::Event::Run("comment-dwim".to_owned()),
+    );
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "comment-dwim on 100 lines of 32MB buffer took {:?} (expected < 100ms). Full Editor clone in mutate_editor detected!",
+        elapsed
+    );
+    // Verify first line commented
+    assert_eq!(&ed.buffer().text().bytes(0..15), b"// let x = 42;\n");
 }

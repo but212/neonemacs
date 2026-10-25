@@ -45,7 +45,7 @@ pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Eff
 
 /// The text of the selected buffer.
 pub fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text.to_bytes()).into_owned()
+    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
 }
 
 /// Point of the selected window.

@@ -85,6 +85,11 @@ pub fn handle_normal_key(
 /// Runs the command `name`. A built-in runs now. Any other name is sent to Lua as `RunLua`;
 /// its result comes back as `LuaDone`.
 pub fn run_named(ed: Editor, name: &str, mut fx: Effects) -> (Editor, Effects) {
+    let ed = if matches!(ed.last(), crate::core::editor::LastCommand::Insert { .. }) {
+        ed.boundary()
+    } else {
+        ed
+    };
     match commands::find(name) {
         Some(run) => command(ed, fx, run),
         None => {

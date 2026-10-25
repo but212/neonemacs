@@ -4,9 +4,9 @@
 use std::path::Path;
 
 use crate::core::eol::Eol;
-use crate::core::file::Backing;
+use crate::core::file::{Backing, DiskState};
 use crate::core::text::Text;
-use crate::core::undo::UndoLog;
+use crate::core::undo::{Edit, UndoLog};
 use crate::core::window::snap_point as snap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -14,17 +14,17 @@ pub struct BufferId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
-    pub id: BufferId,
-    pub name: String,
-    pub text: Text,
-    pub backing: Backing,
-    pub undo: UndoLog,
-    pub modified: bool,
-    pub view_only: bool,
-    pub mark: Option<usize>,
+    id: BufferId,
+    name: String,
+    text: Text,
+    backing: Backing,
+    undo: UndoLog,
+    modified: bool,
+    view_only: bool,
+    mark: Option<usize>,
     /// Point when this buffer was last left by its window (anchor, I-01).
-    pub saved_point: usize,
-    pub eol: Eol,
+    saved_point: usize,
+    eol: Eol,
 }
 
 impl Buffer {
@@ -43,12 +43,153 @@ impl Buffer {
         }
     }
 
+    pub const fn id(&self) -> BufferId {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn text(&self) -> &Text {
+        &self.text
+    }
+
+    pub const fn backing(&self) -> &Backing {
+        &self.backing
+    }
+
+    pub const fn undo(&self) -> &UndoLog {
+        &self.undo
+    }
+
+    pub const fn modified(&self) -> bool {
+        self.modified
+    }
+
+    pub const fn view_only(&self) -> bool {
+        self.view_only
+    }
+
+    pub const fn mark(&self) -> Option<usize> {
+        self.mark
+    }
+
+    pub const fn saved_point(&self) -> usize {
+        self.saved_point
+    }
+
+    pub const fn eol(&self) -> Eol {
+        self.eol
+    }
+
     /// Returns the file path if this buffer is backed by a disk file.
     pub fn file_path(&self) -> Option<&Path> {
-        match &self.backing {
-            Backing::File { path, .. } => Some(path),
-            Backing::None => None,
-        }
+        self.backing.path()
+    }
+
+    pub const fn is_wal_dirty(&self) -> bool {
+        self.backing.is_wal_dirty()
+    }
+
+    /// Sets `mark`, snapped to a valid unit boundary in `0..=text.len()` (I-01).
+    pub fn set_mark(mut self, mark: Option<usize>) -> Self {
+        self.mark = mark.map(|m| snap(&self.text, m));
+        self
+    }
+
+    /// Sets `saved_point`, snapped to a valid unit boundary in `0..=text.len()` (I-01).
+    pub fn set_saved_point(mut self, pos: usize) -> Self {
+        self.saved_point = snap(&self.text, pos);
+        self
+    }
+
+    pub const fn set_view_only(mut self, view_only: bool) -> Self {
+        self.view_only = view_only;
+        self
+    }
+
+    pub const fn set_modified(mut self, modified: bool) -> Self {
+        self.modified = modified;
+        self
+    }
+
+    pub const fn set_eol(mut self, eol: Eol) -> Self {
+        self.eol = eol;
+        self
+    }
+
+    pub fn set_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn set_backing(mut self, backing: Backing) -> Self {
+        self.backing = backing;
+        self
+    }
+
+    /// Replaces `text` and snaps `saved_point` and `mark` to valid unit boundaries (I-01).
+    pub fn with_text(mut self, text: Text) -> Self {
+        self.text = text;
+        self.snap_anchors()
+    }
+
+    pub fn with_undo(mut self, undo: UndoLog) -> Self {
+        self.undo = undo;
+        self
+    }
+
+    pub fn close_undo(mut self) -> Self {
+        self.undo = self.undo.close();
+        self
+    }
+
+    pub fn clear_wal_dirty(mut self) -> Self {
+        self.backing = self.backing.set_wal_dirty(false);
+        self
+    }
+
+    pub fn confirm_truncated(mut self) -> Self {
+        self.backing = self.backing.confirm_truncated();
+        self
+    }
+
+    pub fn record_saved(mut self, new_disk: DiskState) -> Self {
+        self.backing = self.backing.with_disk(new_disk).set_wal_dirty(false);
+        self.modified = false;
+        self.undo = self.undo.close();
+        self
+    }
+
+    pub fn replace_from_disk(
+        mut self,
+        text: Text,
+        backing: Backing,
+        eol: Eol,
+        undo_limit: usize,
+    ) -> Self {
+        self.text = text;
+        self.backing = backing;
+        self.eol = eol;
+        self.modified = false;
+        self.undo = UndoLog::new(undo_limit);
+        self.snap_anchors()
+    }
+
+    pub fn apply_edit(mut self, edit: Edit, remap_fn: impl Fn(usize) -> usize) -> (Self, usize) {
+        self.text = match &edit {
+            Edit::Insert { pos, bytes } => self.text.insert(*pos, bytes),
+            Edit::Delete { pos, bytes } => self.text.delete(*pos..*pos + bytes.len()),
+        };
+        self.modified = true;
+        self.backing = self.backing.set_wal_dirty(true);
+        let anchor = |a| snap(&self.text, remap_fn(a));
+        self.mark = self.mark.map(anchor);
+        self.saved_point = anchor(self.saved_point);
+        let (undo, dropped) = self.undo.record(edit);
+        self.undo = undo;
+        (self, dropped)
     }
 
     /// Snaps `saved_point` and `mark` to valid UTF-8 unit boundaries within the current text (I-01, I-25).
@@ -108,10 +249,6 @@ impl BufferPool {
         self.buffers.get(index)
     }
 
-    pub fn get_by_index(&self, index: usize) -> Option<&Buffer> {
-        self.buffers.get(index)
-    }
-
     pub fn find_by_id(&self, id: BufferId) -> Option<&Buffer> {
         self.buffers.iter().find(|b| b.id == id)
     }
@@ -120,19 +257,8 @@ impl BufferPool {
         &self.buffers[self.index_of(id)]
     }
 
-    pub fn find_by_name(&self, name: &str) -> Option<&Buffer> {
-        self.buffers.iter().find(|b| b.name == name)
-    }
-
     pub fn find_by_path(&self, path: &Path) -> Option<&Buffer> {
-        self.buffers.iter().find(|b| match &b.backing {
-            Backing::File { path: p, .. } => p == path,
-            Backing::None => false,
-        })
-    }
-
-    pub fn any_modified(&self) -> bool {
-        self.buffers.iter().any(|b| b.modified)
+        self.buffers.iter().find(|b| b.file_path() == Some(path))
     }
 
     /// Adds a buffer with an automatically assigned unique id. Ids are never reused.
@@ -159,19 +285,30 @@ impl BufferPool {
     }
 
     /// Restores the content of the buffer visiting `path` from WAL bytes (I-23).
-    pub fn restore_content(self, path: &Path, bytes: &[u8]) -> Self {
+    pub fn restore_content(
+        self,
+        path: &Path,
+        bytes: &[u8],
+        line: Option<usize>,
+    ) -> (Self, Option<BufferId>) {
         let found = self.find_by_path(path).map(|b| b.id);
         if let Some(id) = found {
-            self.with_buffer(id, |buf| {
-                Buffer {
-                    text: Text::from_bytes(bytes),
-                    modified: true,
-                    ..buf
+            let pool = self.with_buffer(id, |buf| {
+                let limit = buf.undo.limit();
+                let mut buf = buf
+                    .with_text(Text::from_bytes(bytes))
+                    .set_modified(true)
+                    .clear_wal_dirty()
+                    .with_undo(UndoLog::new(limit));
+                if let Some(n) = line {
+                    let pos = buf.text.nth_line_start(n);
+                    buf = buf.set_saved_point(pos);
                 }
-                .snap_anchors()
-            })
+                buf
+            });
+            (pool, Some(id))
         } else {
-            self
+            (self, None)
         }
     }
 
@@ -217,8 +354,8 @@ mod tests {
     fn buffer_pool_starts_with_scratch() {
         let pool = BufferPool::new(100);
         assert_eq!(pool.len(), 1);
-        assert_eq!(pool.get_by_index(0).unwrap().name, "*scratch*");
-        assert_eq!(pool.get_by_index(0).unwrap().id, BufferId(0));
+        assert_eq!(pool.get(0).unwrap().name(), "*scratch*");
+        assert_eq!(pool.get(0).unwrap().id(), BufferId(0));
     }
 
     #[test]
@@ -227,7 +364,7 @@ mod tests {
         let (pool, replacement) = pool.kill(BufferId(0), 100);
         assert_eq!(pool.len(), 1);
         assert_ne!(replacement, BufferId(0));
-        assert_eq!(pool.find_by_id(replacement).unwrap().name, "*scratch*");
+        assert_eq!(pool.find_by_id(replacement).unwrap().name(), "*scratch*");
     }
 
     #[test]
@@ -238,5 +375,25 @@ mod tests {
         assert_eq!(id1, BufferId(1));
         assert_eq!(id2, BufferId(2));
         assert_eq!(pool.len(), 3);
+    }
+
+    #[test]
+    fn backing_none_never_wal_dirty() {
+        let buf = Buffer::new(
+            BufferId(0),
+            "*scratch*",
+            Text::default(),
+            Backing::None,
+            100,
+        );
+        let (buf, _) = buf.apply_edit(
+            Edit::Insert {
+                pos: 0,
+                bytes: b"a".to_vec(),
+            },
+            |a| a,
+        );
+        assert!(buf.modified());
+        assert!(!buf.is_wal_dirty());
     }
 }

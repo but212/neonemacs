@@ -1,11 +1,10 @@
 //! Screen model: window rectangles, per-cell grid, and line diffs (§5, §11, A5).
 //! `scroll` adjusts the view so point stays visible; `frame` is pure.
 
-use crate::core::commands::column;
 use crate::core::editor::{Buffer, Dir, Editor, Layout, Window};
 use crate::core::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::core::text::{Text, Unit};
-use crate::core::width::{char_width, unit_width};
+use crate::core::width::{char_width, column, unit_width};
 
 /// A single terminal cell containing display glyph and syntax style (I-22).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,20 +104,21 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
 /// Moves each window's `top` and `left_col` so that its point is visible.
 pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
     let tab = usize::from(ed.config().tab_width);
-    let windows: Vec<Window> = ed.windows().windows().into_iter().cloned().collect();
+    let windows: Vec<Window> = ed.windows().windows().into_iter().copied().collect();
     let scrolled: Vec<Window> = windows
         .into_iter()
         .zip(areas(&ed, cols, rows))
         .map(|(w, area)| {
-            let text = &ed.buffer_by_id(w.buffer).text;
+            let text = ed.buffer_by_id(w.buffer).text();
             scroll_window(text, w, area, tab)
         })
         .collect();
-    let mut win = ed.windows().clone();
-    for (i, w) in scrolled.into_iter().enumerate() {
-        win = win.set_leaf(i, w);
-    }
-    ed.set_windows(win)
+    ed.with_windows(|mut win| {
+        for (i, w) in scrolled.into_iter().enumerate() {
+            win = win.set_leaf(i, w);
+        }
+        win
+    })
 }
 
 fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
@@ -151,8 +151,8 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
 
     for (i, (w, area)) in leaves.into_iter().zip(areas(ed, cols, rows)).enumerate() {
         let buf = ed.buffer_by_id(w.buffer);
-        let syntax = ed.syntax_registry().find_by_filename(&buf.name);
-        let (body, (row, col)) = window_cells(syntax, &buf.text, w, area, tab);
+        let syntax = ed.syntax_registry().find_by_filename(buf.name());
+        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, tab);
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
@@ -236,19 +236,16 @@ fn line_cells(
     let mut cut = false;
 
     let line_bytes = text.bytes(start..end);
-    let line_str = String::from_utf8_lossy(&line_bytes);
-    let token_kinds = highlight_line(syntax, &line_str);
-    let mut char_idx = 0;
+    let token_kinds = highlight_line(syntax, &line_bytes);
 
     while p < end {
         let Some((unit, n)) = text.unit_at(p) else {
             break;
         };
         let style = token_kinds
-            .get(char_idx)
+            .get(p - start)
             .copied()
             .unwrap_or(TokenKind::Normal);
-        char_idx += 1;
 
         if col >= right {
             cut = true;
@@ -307,11 +304,11 @@ fn glyph(c: char, w: usize) -> Vec<String> {
 
 /// The status line for a window `width` cells wide. The EOL mode is dropped first when it does not fit.
 fn status_text(buf: &Buffer, point: usize, width: usize) -> String {
-    let mark = if buf.modified { "**" } else { "--" };
-    let view = if buf.view_only { " (view)" } else { "" };
-    let percent = (point * 100).checked_div(buf.text.len()).unwrap_or(100);
-    let head = format!("-{mark}-  {}{view}", buf.name);
-    let full = format!("{head}  {}  {percent}%", buf.eol.label());
+    let mark = if buf.modified() { "**" } else { "--" };
+    let view = if buf.view_only() { " (view)" } else { "" };
+    let percent = (point * 100).checked_div(buf.text().len()).unwrap_or(100);
+    let head = format!("-{mark}-  {}{view}", buf.name());
+    let full = format!("{head}  {}  {percent}%", buf.eol().label());
     if text_width(&full) <= width {
         full
     } else {
@@ -363,10 +360,7 @@ mod tests {
 
     fn screen(text: &str, point: usize, cols: usize, rows: usize) -> Frame {
         let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| Buffer {
-                text: Text::from_bytes(text.as_bytes()),
-                ..b
-            })
+            .with_current_buffer(|b| b.with_text(Text::from_bytes(text.as_bytes())))
             .with_window(|w| Window { point, ..w });
         let ed = scroll(ed, cols, rows);
         frame(&ed, cols, rows)
@@ -391,10 +385,8 @@ mod tests {
 
     #[test]
     fn frame_control_and_c1_glyphs() {
-        let ed = Editor::new(Config::default()).with_current_buffer(|b| Buffer {
-            text: Text::from_bytes(&[0x01, b'x', 0x85]),
-            ..b
-        });
+        let ed = Editor::new(Config::default())
+            .with_current_buffer(|b| b.with_text(Text::from_bytes(&[0x01, b'x', 0x85])));
         let ed = scroll(ed, 10, 3);
         let f = frame(&ed, 10, 3);
         assert_eq!(f.row_strings()[0], "^Ax\\85    ");
@@ -402,12 +394,11 @@ mod tests {
 
     #[test]
     fn frame_status_line_shows_name_state_and_percent() {
-        let ed = Editor::new(Config::default()).with_current_buffer(|b| Buffer {
-            text: Text::from_bytes(b"abc"),
-            modified: true,
-            view_only: true,
-            name: "f.txt".to_owned(),
-            ..b
+        let ed = Editor::new(Config::default()).with_current_buffer(|b| {
+            b.with_text(Text::from_bytes(b"abc"))
+                .set_modified(true)
+                .set_view_only(true)
+                .set_name("f.txt")
         });
         let ed = scroll(ed, 30, 3);
         let f = frame(&ed, 30, 3);
@@ -417,11 +408,10 @@ mod tests {
     }
 
     fn status_editor(eol: Eol) -> Editor {
-        Editor::new(Config::default()).with_current_buffer(|b| Buffer {
-            text: Text::from_bytes(b"abc"),
-            eol,
-            name: "f.txt".to_owned(),
-            ..b
+        Editor::new(Config::default()).with_current_buffer(|b| {
+            b.with_text(Text::from_bytes(b"abc"))
+                .set_eol(eol)
+                .set_name("f.txt")
         })
     }
 

@@ -10,7 +10,7 @@ pub enum Dir {
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Window {
     pub buffer: BufferId,
     pub point: usize,
@@ -175,22 +175,11 @@ impl WindowManager {
         self
     }
 
-    pub fn with_selected(mut self, f: impl FnOnce(Window) -> Window, text: &Text) -> Self {
-        let w = f(self.current().clone());
-        let w = Window {
-            point: snap_point(text, w.point),
-            top: snap_point(text, w.top),
-            ..w
-        };
-        self.layout = self.layout.set_leaf(self.selected, w);
-        self
-    }
-
     pub fn split(mut self, dir: Dir) -> Self {
         let i = self.selected;
         self.layout = self.layout.replace_leaf(i, |w| Layout::Split {
             dir,
-            first: Box::new(Layout::Leaf(w.clone())),
+            first: Box::new(Layout::Leaf(w)),
             second: Box::new(Layout::Leaf(w)),
         });
         self
@@ -202,7 +191,7 @@ impl WindowManager {
     }
 
     pub fn delete_other_windows(mut self) -> Self {
-        let w = self.current().clone();
+        let w = *self.current();
         self.layout = Layout::Leaf(w);
         self.selected = 0;
         self
@@ -227,10 +216,6 @@ impl WindowManager {
     pub fn map_windows(mut self, f: &impl Fn(Window) -> Window) -> Self {
         self.layout = self.layout.map_windows(f);
         self
-    }
-
-    pub fn replace_layout(self, layout: Layout, selected: usize) -> Self {
-        Self::from_layout(layout, selected)
     }
 }
 

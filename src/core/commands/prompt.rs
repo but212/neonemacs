@@ -64,8 +64,8 @@ fn candidates(ed: &Editor, purpose: &Purpose, input: &str) -> Vec<(String, Strin
         Purpose::SwitchBuffer | Purpose::KillBuffer => ed
             .buffers()
             .iter()
-            .filter(|b| b.name.starts_with(input))
-            .map(|b| (b.name.clone(), String::new()))
+            .filter(|b| b.name().starts_with(input))
+            .map(|b| (b.name().to_owned(), String::new()))
             .collect(),
         _ => Vec::new(),
     }
@@ -193,7 +193,11 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     if name.is_empty() {
         return ed;
     }
-    let found = ed.buffers().iter().find(|b| b.name == name).map(|b| b.id);
+    let found = ed
+        .buffers()
+        .iter()
+        .find(|b| b.name() == name)
+        .map(Buffer::id);
     match found {
         Some(id) => switch_to(ed, id),
         None => {
@@ -207,7 +211,10 @@ fn kill_named(ed: Editor, name: &str, fx: Effects) -> (Editor, Effects) {
     let id = if name.is_empty() {
         Some(ed.window().buffer)
     } else {
-        ed.buffers().iter().find(|b| b.name == name).map(|b| b.id)
+        ed.buffers()
+            .iter()
+            .find(|b| b.name() == name)
+            .map(Buffer::id)
     };
     match id {
         Some(id) => kill_buffer(ed, id, fx),
@@ -219,7 +226,7 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
     let Ok(n) = input.trim().parse::<usize>() else {
         return ed.set_message(format!("Not a line number: {input}"));
     };
-    let pos = ed.buffer().text.nth_line_start(n);
+    let pos = ed.buffer().text().nth_line_start(n);
     ed.move_point(pos)
 }
 
@@ -257,15 +264,18 @@ pub fn shell_done(ed: Editor, result: Result<String, String>) -> Editor {
 /// Puts `text` in the output buffer and shows it in the other window.
 fn show_output(ed: Editor, text: &str) -> Editor {
     const NAME: &str = "*Shell Command Output*";
-    let found = ed.buffers().iter().find(|b| b.name == NAME).map(|b| b.id);
+    let found = ed
+        .buffers()
+        .iter()
+        .find(|b| b.name() == NAME)
+        .map(Buffer::id);
     let (ed, id) = match found {
         Some(id) => (ed, id),
         None => ed.add_buffer(NAME, Text::default(), Backing::None),
     };
-    let mut ed = ed.with_buffer(id, |b| Buffer {
-        text: Text::from_bytes(text.as_bytes()),
-        modified: false,
-        ..b
+    let mut ed = ed.with_buffer(id, |b| {
+        b.with_text(Text::from_bytes(text.as_bytes()))
+            .set_modified(false)
     });
     if ed.leaf_count() == 1 {
         ed = split(ed, Dir::Below);
@@ -276,10 +286,8 @@ fn show_output(ed: Editor, text: &str) -> Editor {
     } else {
         orig - 1
     };
-    let windows = ed.windows().clone().set_selected(other);
-    let ed = switch_to(ed.set_windows(windows), id);
-    let windows = ed.windows().clone().set_selected(orig);
-    ed.set_windows(windows)
+    let ed = switch_to(ed.with_windows(|wm| wm.set_selected(other)), id);
+    ed.with_windows(|wm| wm.set_selected(orig))
 }
 
 /// Ends a Lua command: shows the first line of its error, then closes its undo group like any command.
@@ -329,9 +337,9 @@ mod tests {
         let out = ed
             .buffers()
             .iter()
-            .find(|b| b.name == "*Shell Command Output*")
+            .find(|b| b.name() == "*Shell Command Output*")
             .expect("output buffer");
-        assert_eq!(out.text.to_bytes(), b"a\nb");
+        assert_eq!(out.text().to_bytes(), b"a\nb");
         assert_eq!(ed.leaf_count(), 2);
     }
 
@@ -432,8 +440,8 @@ mod tests {
             ed_out1
                 .buffers()
                 .iter()
-                .find(|b| b.name == "*Shell Command Output*")
-                .map(|b| b.text.to_bytes()),
+                .find(|b| b.name() == "*Shell Command Output*")
+                .map(|b| b.text().to_bytes()),
             Some(b"line 1\nline 2".to_vec())
         );
 
@@ -444,7 +452,7 @@ mod tests {
             ed_out2
                 .buffers()
                 .iter()
-                .filter(|b| b.name == "*Shell Command Output*")
+                .filter(|b| b.name() == "*Shell Command Output*")
                 .count(),
             1
         );

@@ -60,6 +60,10 @@ impl UndoLog {
         &self.groups
     }
 
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
     /// Appends `edit` to the open group, or starts a new group. Returns the
     /// new log and the number of oldest groups dropped to respect the limit.
     pub fn record(mut self, edit: Edit) -> (Self, usize) {

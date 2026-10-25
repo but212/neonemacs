@@ -9,6 +9,7 @@ pub mod atomic;
 pub mod file;
 pub mod lua;
 pub mod session;
+pub mod startup;
 pub mod terminal;
 pub mod wal;
 

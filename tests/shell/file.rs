@@ -37,7 +37,7 @@ fn typ(mut ed: Editor, s: &str) -> Editor {
 }
 
 fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text.to_bytes()).into_owned()
+    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
 }
 
 fn point(ed: &Editor) -> usize {
@@ -270,16 +270,12 @@ fn written_records_disk_and_emits_undo() {
         },
     );
     let buf = ed.buffer_by_id(id);
-    assert!(!buf.modified);
+    assert!(!buf.modified());
     assert_eq!(
-        buf.backing,
-        Backing::File {
-            path: path.clone(),
-            disk,
-            extent: LoadExtent::Whole
-        }
+        *buf.backing(),
+        Backing::file(path.clone(), disk, LoadExtent::Whole)
     );
-    let bytes = buf.undo.encode(disk).unwrap();
+    let bytes = buf.undo().encode(disk).unwrap();
     assert_eq!(fx, vec![Effect::WriteUndo { id, path, bytes }]);
 }
 
@@ -301,7 +297,7 @@ fn write_failure_keeps_buffer_modified() {
     );
     assert!(fx.is_empty());
     assert_eq!(ed.message(), "Save failed: disk full");
-    assert!(ed.buffer_by_id(id).modified);
+    assert!(ed.buffer_by_id(id).modified());
 }
 
 #[test]

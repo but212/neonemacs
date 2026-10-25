@@ -51,7 +51,19 @@ impl Text {
     }
 
     pub fn bytes(&self, range: std::ops::Range<usize>) -> Vec<u8> {
-        range.map(|i| self.byte_at(i)).collect()
+        let len = self.len();
+        let start = range.start.min(len);
+        let end = range.end.min(len).max(start);
+        let (left, right) = self.slices();
+        let left_len = left.len();
+        let mut out = Vec::with_capacity(end - start);
+        if start < left_len {
+            out.extend_from_slice(&left[start..end.min(left_len)]);
+        }
+        if end > left_len {
+            out.extend_from_slice(&right[start.saturating_sub(left_len)..end - left_len]);
+        }
+        out
     }
 
     /// Returns the two contiguous slices before and after the gap.

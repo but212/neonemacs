@@ -61,15 +61,17 @@ fn recovery_from_wal_restores_unsaved_content() {
 
     if wal::has_wal(&file_path) {
         let wal_bytes = wal::read_wal(&file_path, disk).unwrap();
-        ed = ed.with_current_buffer(|mut buf| {
-            buf.text = neonemacs::core::text::Text::from_bytes(&wal_bytes);
-            buf.modified = true;
-            buf
+        ed = ed.with_current_buffer(|buf| {
+            buf.with_text(neonemacs::core::text::Text::from_bytes(&wal_bytes))
+                .set_modified(true)
         });
     }
 
-    assert_eq!(ed.buffer().text.to_bytes(), b"fn new() { // recovered }\n");
-    assert!(ed.buffer().modified);
+    assert_eq!(
+        ed.buffer().text().to_bytes(),
+        b"fn new() { // recovered }\n"
+    );
+    assert!(ed.buffer().modified());
 }
 
 #[test]
@@ -161,7 +163,7 @@ fn typing_and_idle_wal_recording() {
         );
     }
 
-    assert!(session.ed.buffer().modified);
+    assert!(session.ed.buffer().modified());
 
     session.tick_at(t0 + Duration::from_millis(999));
     assert!(!wal::has_wal(&file_path));
@@ -402,10 +404,9 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
     let mut ed = perform_all(ed, None, fx);
 
     // Buffer has edits matching WAL
-    ed = ed.with_current_buffer(|mut buf| {
-        buf.text = neonemacs::core::text::Text::from_bytes(b"modified content");
-        buf.modified = true;
-        buf
+    ed = ed.with_current_buffer(|buf| {
+        buf.with_text(neonemacs::core::text::Text::from_bytes(b"modified content"))
+            .set_modified(true)
     });
 
     // Execute write-file to "new.txt"

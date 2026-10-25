@@ -47,7 +47,7 @@ pub fn typ(mut ed: Editor, s: &str) -> Editor {
 
 #[allow(dead_code)]
 pub fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text.to_bytes()).into_owned()
+    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
 }
 
 #[allow(dead_code)]

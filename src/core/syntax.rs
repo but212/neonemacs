@@ -25,9 +25,45 @@ pub struct SyntaxDef {
 }
 
 impl SyntaxDef {
-    /// Creates a new builder for constructing a validated `SyntaxDef`.
-    pub fn builder(name: impl Into<String>) -> SyntaxDefBuilder {
-        SyntaxDefBuilder::new(name.into())
+    /// Creates a validated and normalized `SyntaxDef` (I-28, I-29).
+    pub fn new(
+        name: impl Into<String>,
+        extensions: Vec<String>,
+        filenames: Vec<String>,
+        line_comment: Option<String>,
+        mut keywords: Vec<String>,
+        mut types: Vec<String>,
+        case_insensitive: bool,
+    ) -> Self {
+        let name = name.into();
+        assert!(!name.trim().is_empty(), "syntax name must not be empty");
+        assert!(
+            !extensions.is_empty() || !filenames.is_empty(),
+            "syntax spec must have at least one extension or filename (I-28)"
+        );
+
+        if case_insensitive {
+            for k in &mut keywords {
+                k.make_ascii_lowercase();
+            }
+            for t in &mut types {
+                t.make_ascii_lowercase();
+            }
+        }
+        keywords.sort_unstable();
+        keywords.dedup();
+        types.sort_unstable();
+        types.dedup();
+
+        Self {
+            name,
+            extensions,
+            filenames,
+            line_comment,
+            keywords,
+            types,
+            case_insensitive,
+        }
     }
 
     fn contains_word(&self, list: &[String], word: &str) -> bool {
@@ -47,100 +83,6 @@ impl SyntaxDef {
     /// Checks if a word is a type using binary search in $O(\log T)$ (I-29).
     pub fn is_type(&self, word: &str) -> bool {
         self.contains_word(&self.types, word)
-    }
-}
-
-/// Builder for constructing validated `SyntaxDef` instances (I-27, I-28).
-#[derive(Debug, Clone, Default)]
-pub struct SyntaxDefBuilder {
-    name: String,
-    extensions: Vec<String>,
-    filenames: Vec<String>,
-    line_comment: Option<String>,
-    keywords: Vec<String>,
-    types: Vec<String>,
-    case_insensitive: bool,
-}
-
-impl SyntaxDefBuilder {
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-            extensions: Vec::new(),
-            filenames: Vec::new(),
-            line_comment: None,
-            keywords: Vec::new(),
-            types: Vec::new(),
-            case_insensitive: false,
-        }
-    }
-
-    pub fn extensions(mut self, extensions: Vec<String>) -> Self {
-        self.extensions = extensions;
-        self
-    }
-
-    pub fn filenames(mut self, filenames: Vec<String>) -> Self {
-        self.filenames = filenames;
-        self
-    }
-
-    pub fn line_comment(mut self, line_comment: Option<String>) -> Self {
-        self.line_comment = line_comment;
-        self
-    }
-
-    pub fn keywords(mut self, keywords: Vec<String>) -> Self {
-        self.keywords = keywords;
-        self
-    }
-
-    pub fn types(mut self, types: Vec<String>) -> Self {
-        self.types = types;
-        self
-    }
-
-    pub fn case_insensitive(mut self, case_insensitive: bool) -> Self {
-        self.case_insensitive = case_insensitive;
-        self
-    }
-
-    /// Builds a normalized and validated `SyntaxDef`.
-    /// Panics if name is empty or both extensions and filenames are empty (I-28).
-    pub fn build(self) -> SyntaxDef {
-        assert!(
-            !self.name.trim().is_empty(),
-            "syntax name must not be empty"
-        );
-        assert!(
-            !self.extensions.is_empty() || !self.filenames.is_empty(),
-            "syntax spec must have at least one extension or filename (I-28)"
-        );
-
-        let mut keywords = self.keywords;
-        let mut types = self.types;
-        if self.case_insensitive {
-            for k in &mut keywords {
-                k.make_ascii_lowercase();
-            }
-            for t in &mut types {
-                t.make_ascii_lowercase();
-            }
-        }
-        keywords.sort_unstable();
-        keywords.dedup();
-        types.sort_unstable();
-        types.dedup();
-
-        SyntaxDef {
-            name: self.name,
-            extensions: self.extensions,
-            filenames: self.filenames,
-            line_comment: self.line_comment,
-            keywords,
-            types,
-            case_insensitive: self.case_insensitive,
-        }
     }
 }
 
@@ -230,57 +172,52 @@ impl SyntaxRegistry {
     }
 }
 
-/// Helper function to detect language using registry.
-pub fn detect_lang<'a>(registry: &'a SyntaxRegistry, name: &str) -> Option<&'a str> {
-    registry.detect_lang(name)
-}
-
 /// Tokenizes a single line of text into per-character `TokenKind` array.
 /// Returns a `Vec<TokenKind>` whose length matches `line.chars().count()`.
-pub fn highlight_line(syntax: Option<&SyntaxDef>, line: &str) -> Vec<TokenKind> {
-    let chars: Vec<char> = line.chars().collect();
-    if chars.is_empty() {
+pub fn highlight_line(syntax: Option<&SyntaxDef>, line: impl AsRef<[u8]>) -> Vec<TokenKind> {
+    let bytes = line.as_ref();
+    if bytes.is_empty() {
         return Vec::new();
     }
     let Some(syntax) = syntax else {
-        return vec![TokenKind::Normal; chars.len()];
+        return vec![TokenKind::Normal; bytes.len()];
     };
 
     if syntax.name == "markdown" {
-        return highlight_markdown(&chars);
+        return highlight_markdown(bytes);
     }
 
-    LineLexer::new(syntax, chars).tokenize()
+    LineLexer::new(syntax, bytes).tokenize()
 }
 
 /// Single-line stateless lexer encapsulating tokenization rules (I-30).
 struct LineLexer<'a> {
-    chars: Vec<char>,
+    bytes: &'a [u8],
     syntax: &'a SyntaxDef,
     out: Vec<TokenKind>,
     pos: usize,
-    comment_chars: Option<Vec<char>>,
+    comment_bytes: Option<&'a [u8]>,
 }
 
 impl<'a> LineLexer<'a> {
-    fn new(syntax: &'a SyntaxDef, chars: Vec<char>) -> Self {
-        let n = chars.len();
-        let comment_chars = syntax
+    fn new(syntax: &'a SyntaxDef, bytes: &'a [u8]) -> Self {
+        let n = bytes.len();
+        let comment_bytes = syntax
             .line_comment
             .as_deref()
             .filter(|p| !p.is_empty())
-            .map(|p| p.chars().collect());
+            .map(str::as_bytes);
         Self {
-            chars,
+            bytes,
             syntax,
             out: vec![TokenKind::Normal; n],
             pos: 0,
-            comment_chars,
+            comment_bytes,
         }
     }
 
     fn tokenize(mut self) -> Vec<TokenKind> {
-        let n = self.chars.len();
+        let n = self.bytes.len();
         while self.pos < n {
             let (next, done) = self.consume_comment();
             self = next;
@@ -308,8 +245,8 @@ impl<'a> LineLexer<'a> {
     }
 
     fn consume_comment(mut self) -> (Self, bool) {
-        if let Some(ref prefix) = self.comment_chars
-            && self.chars[self.pos..].starts_with(prefix)
+        if let Some(prefix) = self.comment_bytes
+            && self.bytes[self.pos..].starts_with(prefix)
         {
             let pos = self.pos;
             let slots = &mut self.out[pos..];
@@ -323,22 +260,22 @@ impl<'a> LineLexer<'a> {
     }
 
     fn consume_string(mut self) -> (Self, bool) {
-        let c = self.chars[self.pos];
-        if c != '"' && c != '\'' && c != '`' {
+        let b = self.bytes[self.pos];
+        if b != b'"' && b != b'\'' && b != b'`' {
             return (self, false);
         }
-        let quote = c;
+        let quote = b;
         self.out[self.pos] = TokenKind::String;
         let mut j = self.pos + 1;
         let mut escaped = false;
-        let n = self.chars.len();
+        let n = self.bytes.len();
         while j < n {
             self.out[j] = TokenKind::String;
             if escaped {
                 escaped = false;
-            } else if self.chars[j] == '\\' {
+            } else if self.bytes[j] == b'\\' {
                 escaped = true;
-            } else if self.chars[j] == quote {
+            } else if self.bytes[j] == quote {
                 j += 1;
                 break;
             }
@@ -349,16 +286,16 @@ impl<'a> LineLexer<'a> {
     }
 
     fn consume_number(mut self) -> (Self, bool) {
-        let c = self.chars[self.pos];
-        if !c.is_ascii_digit() || (self.pos > 0 && is_ident_char(self.chars[self.pos - 1])) {
+        let b = self.bytes[self.pos];
+        if !b.is_ascii_digit() || (self.pos > 0 && is_ident_byte(self.bytes[self.pos - 1])) {
             return (self, false);
         }
         let mut j = self.pos;
-        let n = self.chars.len();
+        let n = self.bytes.len();
         while j < n
-            && (self.chars[j].is_ascii_alphanumeric()
-                || self.chars[j] == '_'
-                || self.chars[j] == '.')
+            && (self.bytes[j].is_ascii_alphanumeric()
+                || self.bytes[j] == b'_'
+                || self.bytes[j] == b'.')
         {
             self.out[j] = TokenKind::Number;
             j += 1;
@@ -368,19 +305,20 @@ impl<'a> LineLexer<'a> {
     }
 
     fn consume_ident(mut self) -> (Self, bool) {
-        let c = self.chars[self.pos];
-        if !is_ident_start(c) {
+        let b = self.bytes[self.pos];
+        if !is_ident_start_byte(b) {
             return (self, false);
         }
         let start = self.pos;
-        let n = self.chars.len();
-        while self.pos < n && is_ident_char(self.chars[self.pos]) {
+        let n = self.bytes.len();
+        while self.pos < n && is_ident_byte(self.bytes[self.pos]) {
             self.pos += 1;
         }
-        let word: String = self.chars[start..self.pos].iter().collect();
-        let target_kind = if self.syntax.is_keyword(&word) {
+        let word_bytes = &self.bytes[start..self.pos];
+        let word = std::str::from_utf8(word_bytes).unwrap_or("");
+        let target_kind = if self.syntax.is_keyword(word) {
             Some(TokenKind::Keyword)
-        } else if self.syntax.is_type(&word) {
+        } else if self.syntax.is_type(word) {
             Some(TokenKind::Type)
         } else {
             None
@@ -396,24 +334,24 @@ impl<'a> LineLexer<'a> {
     }
 }
 
-fn highlight_markdown(chars: &[char]) -> Vec<TokenKind> {
-    let mut out = vec![TokenKind::Normal; chars.len()];
-    if chars.is_empty() {
+fn highlight_markdown(bytes: &[u8]) -> Vec<TokenKind> {
+    let mut out = vec![TokenKind::Normal; bytes.len()];
+    if bytes.is_empty() {
         return out;
     }
     // Headings starting with #
-    if chars[0] == '#' {
+    if bytes[0] == b'#' {
         out.fill(TokenKind::Keyword);
     }
     out
 }
 
-fn is_ident_start(c: char) -> bool {
-    c.is_alphabetic() || c == '_'
+const fn is_ident_start_byte(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
 }
 
-fn is_ident_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+const fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 #[cfg(test)]
@@ -422,13 +360,15 @@ mod tests {
 
     #[test]
     fn registry_detect_lang() {
-        let reg = SyntaxRegistry::new().register(
-            SyntaxDef::builder("rust")
-                .extensions(vec!["rs".to_string()])
-                .line_comment(Some("//".to_string()))
-                .keywords(vec!["fn".to_string(), "let".to_string()])
-                .build(),
-        );
+        let reg = SyntaxRegistry::new().register(SyntaxDef::new(
+            "rust",
+            vec!["rs".to_string()],
+            Vec::new(),
+            Some("//".to_string()),
+            vec!["fn".to_string(), "let".to_string()],
+            Vec::new(),
+            false,
+        ));
         assert_eq!(reg.detect_lang("main.rs"), Some("rust"));
         assert_eq!(reg.detect_lang("src/lib.rs"), Some("rust"));
         assert_eq!(reg.detect_lang("test.py"), None);
@@ -437,12 +377,15 @@ mod tests {
 
     #[test]
     fn detect_lang_by_exact_filename() {
-        let reg = SyntaxRegistry::new().register(
-            SyntaxDef::builder("makefile")
-                .filenames(vec!["Makefile".to_string(), "GNUmakefile".to_string()])
-                .line_comment(Some("#".to_string()))
-                .build(),
-        );
+        let reg = SyntaxRegistry::new().register(SyntaxDef::new(
+            "makefile",
+            Vec::new(),
+            vec!["Makefile".to_string(), "GNUmakefile".to_string()],
+            Some("#".to_string()),
+            Vec::new(),
+            Vec::new(),
+            false,
+        ));
         assert_eq!(reg.detect_lang("Makefile"), Some("makefile"));
         assert_eq!(reg.detect_lang("src/Makefile"), Some("makefile"));
         assert_eq!(reg.detect_lang("nested/dir/GNUmakefile"), Some("makefile"));
@@ -451,14 +394,24 @@ mod tests {
 
     #[test]
     fn filename_precedence_over_extension() {
-        let def_special = SyntaxDef::builder("special")
-            .filenames(vec!["config.c".to_string()])
-            .line_comment(Some("//".to_string()))
-            .build();
-        let def_c = SyntaxDef::builder("c")
-            .extensions(vec!["c".to_string()])
-            .line_comment(Some("//".to_string()))
-            .build();
+        let def_special = SyntaxDef::new(
+            "special",
+            Vec::new(),
+            vec!["config.c".to_string()],
+            Some("//".to_string()),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+        let def_c = SyntaxDef::new(
+            "c",
+            vec!["c".to_string()],
+            Vec::new(),
+            Some("//".to_string()),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
         let reg = SyntaxRegistry::new().register(def_c).register(def_special);
         assert_eq!(reg.detect_lang("config.c"), Some("special"));
         assert_eq!(reg.detect_lang("src/config.c"), Some("special"));
@@ -467,12 +420,15 @@ mod tests {
 
     #[test]
     fn tokenize_keywords_and_types() {
-        let def = SyntaxDef::builder("rust")
-            .extensions(vec!["rs".to_string()])
-            .line_comment(Some("//".to_string()))
-            .keywords(vec!["let".to_string(), "mut".to_string()])
-            .types(vec!["i32".to_string(), "String".to_string()])
-            .build();
+        let def = SyntaxDef::new(
+            "rust",
+            vec!["rs".to_string()],
+            Vec::new(),
+            Some("//".to_string()),
+            vec!["let".to_string(), "mut".to_string()],
+            vec!["i32".to_string(), "String".to_string()],
+            false,
+        );
         let line = "let mut x: i32 = 42;";
         let tokens = highlight_line(Some(&def), line);
         // "let" -> Keyword
@@ -491,13 +447,15 @@ mod tests {
 
     #[test]
     fn tokenize_case_insensitive() {
-        let def = SyntaxDef::builder("sql")
-            .extensions(vec!["sql".to_string()])
-            .line_comment(Some("--".to_string()))
-            .keywords(vec!["select".to_string(), "where".to_string()])
-            .types(vec!["int".to_string(), "varchar".to_string()])
-            .case_insensitive(true)
-            .build();
+        let def = SyntaxDef::new(
+            "sql",
+            vec!["sql".to_string()],
+            Vec::new(),
+            Some("--".to_string()),
+            vec!["select".to_string(), "where".to_string()],
+            vec!["int".to_string(), "varchar".to_string()],
+            true,
+        );
         let line = "SELECT col FROM t WHERE id: INT;";
         let tokens = highlight_line(Some(&def), line);
         // "SELECT" -> Keyword
@@ -513,11 +471,15 @@ mod tests {
 
     #[test]
     fn registry_highlight_custom_lang() {
-        let def = SyntaxDef::builder("custom")
-            .extensions(vec!["xyz".to_string()])
-            .line_comment(Some("#".to_string()))
-            .keywords(vec!["hello".to_string(), "world".to_string()])
-            .build();
+        let def = SyntaxDef::new(
+            "custom",
+            vec!["xyz".to_string()],
+            Vec::new(),
+            Some("#".to_string()),
+            vec!["hello".to_string(), "world".to_string()],
+            Vec::new(),
+            false,
+        );
         let reg = SyntaxRegistry::new().register(def);
         let syntax = reg.find("custom");
         let line = "hello 123; # comment";
@@ -529,15 +491,20 @@ mod tests {
 
     #[test]
     fn syntax_def_keyword_binary_search_and_dedup() {
-        let def = SyntaxDef::builder("test")
-            .extensions(vec!["t".to_string()])
-            .keywords(vec![
+        let def = SyntaxDef::new(
+            "test",
+            vec!["t".to_string()],
+            Vec::new(),
+            None,
+            vec![
                 "zebra".to_string(),
                 "apple".to_string(),
                 "apple".to_string(),
                 "middle".to_string(),
-            ])
-            .build();
+            ],
+            Vec::new(),
+            false,
+        );
         assert_eq!(def.keywords, vec!["apple", "middle", "zebra"]);
         assert!(def.is_keyword("apple"));
         assert!(def.is_keyword("middle"));
@@ -547,10 +514,15 @@ mod tests {
 
     #[test]
     fn tokenize_string_and_number() {
-        let def = SyntaxDef::builder("rust")
-            .extensions(vec!["rs".to_string()])
-            .line_comment(Some("//".to_string()))
-            .build();
+        let def = SyntaxDef::new(
+            "rust",
+            vec!["rs".to_string()],
+            Vec::new(),
+            Some("//".to_string()),
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
         let line = "let s = \"hello 123\"; let n = 42;";
         let tokens = highlight_line(Some(&def), line);
         let str_start = line.find('"').unwrap();
@@ -565,15 +537,29 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "at least one extension or filename")]
-    fn builder_rejects_empty_extension_and_filename() {
-        SyntaxDef::builder("invalid").build();
+    fn new_rejects_empty_extension_and_filename() {
+        SyntaxDef::new(
+            "invalid",
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
     }
 
     #[test]
     #[should_panic(expected = "syntax name must not be empty")]
-    fn builder_rejects_empty_name() {
-        SyntaxDef::builder("   ")
-            .extensions(vec!["txt".to_string()])
-            .build();
+    fn new_rejects_empty_name() {
+        SyntaxDef::new(
+            "   ",
+            vec!["txt".to_string()],
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
     }
 }
