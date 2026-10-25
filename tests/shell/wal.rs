@@ -388,6 +388,40 @@ fn wal_decode_wal_rejects_overflowing_nanos() {
 }
 
 #[test]
+fn failed_write_file_keeps_old_wal() {
+    use neonemacs::test_support::{keys, typ};
+
+    let dir = tempfile::tempdir().unwrap();
+    let old_path = dir.path().join("old.txt");
+    fs::write(&old_path, "initial content").unwrap();
+    let disk = file::disk_state(&old_path);
+    wal::write_wal(&old_path, disk, Eol::Lf, b"unsaved edits").unwrap();
+
+    let ed = Editor::new(Config::default());
+    let fx = request_open(&ed, old_path.clone(), None, true, Vec::new());
+    let ed = perform_all(ed, None, fx);
+    let ed = ed.with_current_buffer(|buf| {
+        buf.with_text(neonemacs::core::text::Text::from_bytes(b"unsaved edits"))
+            .set_modified(true)
+    });
+
+    // The parent directory does not exist, so the write fails.
+    let bad_path = dir.path().join("missing").join("new.txt");
+    let ed = keys(ed, "M-x");
+    let ed = typ(ed, "write-file");
+    let ed = keys(ed, "RET");
+    let ed = typ(ed, &bad_path.display().to_string());
+    let ed = keys(ed, "RET");
+
+    assert!(ed.message().starts_with("Save failed"));
+    assert_eq!(ed.buffer().name(), "old.txt");
+    assert!(
+        wal::has_wal(&old_path),
+        "a failed write-file keeps the old file's WAL (I-36)"
+    );
+}
+
+#[test]
 fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
     let dir = tempfile::tempdir().unwrap();
     let old_path = dir.path().join("old.txt");

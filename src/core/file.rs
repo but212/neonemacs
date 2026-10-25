@@ -3,7 +3,7 @@
 use crate::core::effect::Read;
 use crate::core::eol::Eol;
 use crate::core::text::Text;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,18 +12,50 @@ pub enum DiskState {
     Unknown,
 }
 
+/// The absolute path of a file. `resolve` is its only constructor, so two buffers visiting the
+/// same file hold equal values (I-37).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePath(PathBuf);
+
+impl FilePath {
+    /// Joins `input` onto `cwd` and folds the result lexically: `.` is dropped and `..` removes the
+    /// component before it. A relative path keeps the `..` it cannot fold. No link is followed, so
+    /// the function is pure (I-14).
+    pub fn resolve(cwd: &Path, input: &Path) -> Self {
+        let mut out = PathBuf::new();
+        for c in cwd.join(input).components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => match out.components().next_back() {
+                    Some(Component::Normal(_)) => {
+                        out.pop();
+                    }
+                    Some(Component::RootDir | Component::Prefix(_)) => {}
+                    _ => out.push(".."),
+                },
+                c => out.push(c.as_os_str()),
+            }
+        }
+        Self(out)
+    }
+
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backing {
     None,
     File {
-        path: PathBuf,
+        path: FilePath,
         disk: DiskState,
         wal_dirty: bool,
     },
 }
 
 impl Backing {
-    pub const fn file(path: PathBuf, disk: DiskState) -> Self {
+    pub const fn file(path: FilePath, disk: DiskState) -> Self {
         Self::File {
             path,
             disk,
@@ -33,7 +65,7 @@ impl Backing {
 
     pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::File { path, .. } => Some(path),
+            Self::File { path, .. } => Some(path.as_path()),
             Self::None => None,
         }
     }
@@ -102,11 +134,11 @@ impl TooLarge {
 
 /// Builds the buffer for a file read. A file longer than `max_size` is refused (I-04).
 /// A missing file is an empty buffer with unknown disk state.
-pub fn loaded_from(path: &Path, read: Read, max_size: u64) -> Result<Loaded, TooLarge> {
+pub fn loaded_from(path: &FilePath, read: Read, max_size: u64) -> Result<Loaded, TooLarge> {
     match read {
         Read::Missing => Ok(Loaded {
             text: Text::default(),
-            backing: Backing::file(path.to_path_buf(), DiskState::Unknown),
+            backing: Backing::file(path.clone(), DiskState::Unknown),
             eol: Eol::default(),
         }),
         Read::Found(raw) => {
@@ -119,7 +151,7 @@ pub fn loaded_from(path: &Path, read: Read, max_size: u64) -> Result<Loaded, Too
             let (eol, text) = Eol::from_raw(raw.bytes);
             Ok(Loaded {
                 text: Text::from_vec(text),
-                backing: Backing::file(path.to_path_buf(), raw.disk),
+                backing: Backing::file(path.clone(), raw.disk),
                 eol,
             })
         }
@@ -140,12 +172,61 @@ mod tests {
     }
 
     fn load(read: Read, max_size: u64) -> Loaded {
-        loaded_from(Path::new("f"), read, max_size).unwrap()
+        loaded_from(
+            &FilePath::resolve(Path::new(""), Path::new("f")),
+            read,
+            max_size,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn resolve_folds_parent() {
+        let cwd = Path::new("/w");
+        let expected = Path::new("/w/a.txt");
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("./a.txt")).as_path(),
+            expected
+        );
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("a.txt")).as_path(),
+            expected
+        );
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("/w/./a.txt")).as_path(),
+            expected
+        );
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("../w/a.txt")).as_path(),
+            expected
+        );
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("a/../b.txt")).as_path(),
+            Path::new("/w/b.txt")
+        );
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("/..")).as_path(),
+            Path::new("/")
+        );
+    }
+
+    #[test]
+    fn resolve_keeps_leading_parent_of_relative_path() {
+        let cwd = Path::new("");
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("../x")).as_path(),
+            Path::new("../x")
+        );
+        assert_eq!(
+            FilePath::resolve(cwd, Path::new("a/../../x")).as_path(),
+            Path::new("../x")
+        );
     }
 
     #[test]
     fn oversized_file_is_refused() {
-        let err = loaded_from(Path::new("big.txt"), found(10, b"0123"), 4).err();
+        let big = FilePath::resolve(Path::new(""), Path::new("big.txt"));
+        let err = loaded_from(&big, found(10, b"0123"), 4).err();
         assert_eq!(err, Some(TooLarge { len: 10, max: 4 }));
     }
 

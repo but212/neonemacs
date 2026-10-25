@@ -151,7 +151,7 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             if result.is_ok() {
                 wal::remove_wal(&path);
             }
-            Event::Written { id, result }
+            Event::Written { id, path, result }
         }
         Effect::ReadFile {
             target,

@@ -18,29 +18,44 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
     let reg = ed.syntax_registry();
 
     // Rust
-    assert_eq!(reg.detect_lang("lib.rs"), Some("rust"));
-    let rust_tokens = highlight_line(reg.find("rust"), "let x = 10; // assign");
+    assert_eq!(
+        reg.find_by_filename("lib.rs").map(|d| d.name.as_str()),
+        Some("rust")
+    );
+    let rust_tokens = highlight_line(reg.find_by_filename("lib.rs"), "let x = 10; // assign");
     assert_eq!(rust_tokens[0], TokenKind::Keyword); // "let"
     assert_eq!(rust_tokens[8], TokenKind::Number); // "10"
     assert_eq!(rust_tokens[13], TokenKind::Comment); // "// assign"
 
     // Python
-    assert_eq!(reg.detect_lang("script.py"), Some("python"));
-    let py_tokens = highlight_line(reg.find("python"), "def foo(): # comment");
+    assert_eq!(
+        reg.find_by_filename("script.py").map(|d| d.name.as_str()),
+        Some("python")
+    );
+    let py_tokens = highlight_line(reg.find_by_filename("script.py"), "def foo(): # comment");
     assert_eq!(py_tokens[0], TokenKind::Keyword); // "def"
     assert_eq!(py_tokens[11], TokenKind::Comment); // "# comment"
 
     // C
-    assert_eq!(reg.detect_lang("main.c"), Some("c"));
-    let c_tokens = highlight_line(reg.find("c"), "int a = 0; return a;");
+    assert_eq!(
+        reg.find_by_filename("main.c").map(|d| d.name.as_str()),
+        Some("c")
+    );
+    let c_tokens = highlight_line(reg.find_by_filename("main.c"), "int a = 0; return a;");
     assert_eq!(c_tokens[0], TokenKind::Type); // "int"
     assert_eq!(c_tokens[8], TokenKind::Number); // "0"
     let ret_idx = "int a = 0; return a;".find("return").unwrap();
     assert_eq!(c_tokens[ret_idx], TokenKind::Keyword); // "return"
 
     // Lua
-    assert_eq!(reg.detect_lang("init.lua"), Some("lua"));
-    let lua_tokens = highlight_line(reg.find("lua"), "local v = 'str' -- comment");
+    assert_eq!(
+        reg.find_by_filename("init.lua").map(|d| d.name.as_str()),
+        Some("lua")
+    );
+    let lua_tokens = highlight_line(
+        reg.find_by_filename("init.lua"),
+        "local v = 'str' -- comment",
+    );
     assert_eq!(lua_tokens[0], TokenKind::Keyword); // "local"
     assert_eq!(lua_tokens[10], TokenKind::String); // 'str'
     assert_eq!(lua_tokens[16], TokenKind::Comment); // -- comment

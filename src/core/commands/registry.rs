@@ -25,10 +25,6 @@ impl CommandRegistry {
         self.commands.contains(name)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &str> {
-        self.commands.iter().map(String::as_str)
-    }
-
     pub fn completions<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a str> {
         self.commands
             .iter()

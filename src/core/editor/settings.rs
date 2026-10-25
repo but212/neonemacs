@@ -5,6 +5,7 @@ use crate::core::commands::CommandRegistry;
 use crate::core::config::Config;
 use crate::core::keymap::Keymap;
 use crate::core::syntax::SyntaxRegistry;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -12,6 +13,8 @@ pub struct Settings {
     pub(super) keymap: Keymap,
     pub(super) syntax_registry: SyntaxRegistry,
     pub(super) commands: CommandRegistry,
+    /// Directory that relative file paths resolve against (I-37). Empty until the shell sets it.
+    pub(super) cwd: PathBuf,
 }
 
 impl Settings {
@@ -21,6 +24,7 @@ impl Settings {
             keymap: Keymap::survival(),
             syntax_registry: SyntaxRegistry::new(),
             commands: CommandRegistry::new(),
+            cwd: PathBuf::new(),
         }
     }
 }

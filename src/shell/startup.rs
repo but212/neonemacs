@@ -55,17 +55,19 @@ pub fn open_and_recover_single(
     lua: Option<&mlua::Lua>,
     arg: &FileArg,
 ) -> (Editor, Option<String>) {
-    let has_wal = wal::has_wal(&arg.path);
-    let fx = request_open(&ed, arg.path.clone(), arg.line, false, Vec::new());
+    let path = ed.resolve_path(&arg.path).as_path().to_path_buf();
+    let has_wal = wal::has_wal(&path);
+    // A path already open was recovered by an earlier argument, so it is not recovered again.
+    let already_open = ed.buffers().find_by_path(&path).is_some();
+    let fx = request_open(&ed, path.clone(), arg.line, false, Vec::new());
     let mut ed = perform_all(ed, lua, fx);
 
     // A refused open (over `max-file-size`) leaves no buffer, so there is nothing to recover into.
-    if has_wal && ed.buffers().find_by_path(&arg.path).is_some() {
-        let cur_disk = buffer_disk_state(&ed, &arg.path);
-        if let Ok(recovered) = wal::read_wal(&arg.path, cur_disk) {
-            ed = ed.restore_buffer_content(&arg.path, &recovered.bytes, recovered.eol, arg.line);
-            let name = arg
-                .path
+    if has_wal && !already_open && ed.buffers().find_by_path(&path).is_some() {
+        let cur_disk = buffer_disk_state(&ed, &path);
+        if let Ok(recovered) = wal::read_wal(&path, cur_disk) {
+            ed = ed.restore_buffer_content(&path, &recovered.bytes, recovered.eol, arg.line);
+            let name = path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
@@ -181,6 +183,63 @@ mod tests {
         assert_eq!(ed.buffer().name(), "a.txt");
         let other = ed.buffers().iter().find(|x| x.name() == "b.txt").unwrap();
         assert_eq!(other.saved_point(), 4);
+    }
+
+    #[test]
+    fn duplicate_args_recover_wal_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        fs::write(&path, "disk a").unwrap();
+        let disk = crate::shell::file::disk_state(&path);
+        wal::write_wal(&path, disk, Eol::Lf, b"recovered a").unwrap();
+
+        let args = [path.display().to_string(), path.display().to_string()];
+        let files = parse_args(&args).unwrap();
+        let ed = open_files(Editor::new(Config::default()), None, &files);
+        assert_eq!(ed.message(), "[Recovered a.txt from WAL]");
+    }
+
+    #[test]
+    fn duplicate_args_make_one_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        fs::write(&a, b"a\n").unwrap();
+        // The second spelling names the same file, so it must reuse the buffer.
+        let args = [
+            a.display().to_string(),
+            dir.path().join(".").join("a.txt").display().to_string(),
+        ];
+        let files = parse_args(&args).unwrap();
+
+        let ed = open_files(Editor::new(Config::default()), None, &files);
+        assert_eq!(
+            ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn duplicate_args_with_parent_make_one_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        fs::write(&a, b"a\n").unwrap();
+        // `sub` does not exist: `..` folds lexically, so the second spelling is the same file.
+        let args = [
+            a.display().to_string(),
+            dir.path()
+                .join("sub")
+                .join("..")
+                .join("a.txt")
+                .display()
+                .to_string(),
+        ];
+        let files = parse_args(&args).unwrap();
+
+        let ed = open_files(Editor::new(Config::default()), None, &files);
+        assert_eq!(
+            ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
+            1
+        );
     }
 
     #[test]

@@ -118,11 +118,6 @@ impl SyntaxRegistry {
         self
     }
 
-    /// Detects language from buffer name or file path (I-28).
-    pub fn detect_lang<'a>(&'a self, name: &str) -> Option<&'a str> {
-        self.find_by_filename(name).map(|d| d.name.as_str())
-    }
-
     /// Finds the syntax definition matching the file or buffer name.
     /// Priority (I-28): Exact basename match against `filenames` > extension match against `extensions`.
     pub fn find_by_filename<'a>(&'a self, name: &str) -> Option<&'a SyntaxDef> {
@@ -150,25 +145,9 @@ impl SyntaxRegistry {
             .find(|l| l.extensions.iter().any(|e| e == ext))
     }
 
-    pub fn find<'a>(&'a self, lang: &str) -> Option<&'a SyntaxDef> {
-        self.languages.iter().find(|l| l.name == lang)
-    }
-
-    pub fn is_keyword(&self, lang: &str, word: &str) -> bool {
-        self.find(lang).is_some_and(|d| d.is_keyword(word))
-    }
-
-    pub fn is_type(&self, lang: &str, word: &str) -> bool {
-        self.find(lang).is_some_and(|d| d.is_type(word))
-    }
-
-    pub fn line_comment<'a>(&'a self, lang: &str) -> Option<&'a str> {
-        self.find(lang).and_then(|d| d.line_comment.as_deref())
-    }
-
     pub fn line_comment_for_filename<'a>(&'a self, filename: &str) -> Option<&'a str> {
-        self.detect_lang(filename)
-            .and_then(|lang| self.line_comment(lang))
+        self.find_by_filename(filename)
+            .and_then(|d| d.line_comment.as_deref())
     }
 }
 
@@ -358,6 +337,11 @@ const fn is_ident_byte(b: u8) -> bool {
 mod tests {
     use super::*;
 
+    /// The language name that `name` (a file or buffer name) resolves to (I-28).
+    fn lang<'a>(reg: &'a SyntaxRegistry, name: &str) -> Option<&'a str> {
+        reg.find_by_filename(name).map(|d| d.name.as_str())
+    }
+
     #[test]
     fn registry_detect_lang() {
         let reg = SyntaxRegistry::new().register(SyntaxDef::new(
@@ -369,9 +353,9 @@ mod tests {
             Vec::new(),
             false,
         ));
-        assert_eq!(reg.detect_lang("main.rs"), Some("rust"));
-        assert_eq!(reg.detect_lang("src/lib.rs"), Some("rust"));
-        assert_eq!(reg.detect_lang("test.py"), None);
+        assert_eq!(lang(&reg, "main.rs"), Some("rust"));
+        assert_eq!(lang(&reg, "src/lib.rs"), Some("rust"));
+        assert_eq!(lang(&reg, "test.py"), None);
         assert!(reg.find_by_filename("main.rs").is_some());
     }
 
@@ -386,10 +370,10 @@ mod tests {
             Vec::new(),
             false,
         ));
-        assert_eq!(reg.detect_lang("Makefile"), Some("makefile"));
-        assert_eq!(reg.detect_lang("src/Makefile"), Some("makefile"));
-        assert_eq!(reg.detect_lang("nested/dir/GNUmakefile"), Some("makefile"));
-        assert_eq!(reg.detect_lang("Makefile.bak"), None);
+        assert_eq!(lang(&reg, "Makefile"), Some("makefile"));
+        assert_eq!(lang(&reg, "src/Makefile"), Some("makefile"));
+        assert_eq!(lang(&reg, "nested/dir/GNUmakefile"), Some("makefile"));
+        assert_eq!(lang(&reg, "Makefile.bak"), None);
     }
 
     #[test]
@@ -413,9 +397,9 @@ mod tests {
             false,
         );
         let reg = SyntaxRegistry::new().register(def_c).register(def_special);
-        assert_eq!(reg.detect_lang("config.c"), Some("special"));
-        assert_eq!(reg.detect_lang("src/config.c"), Some("special"));
-        assert_eq!(reg.detect_lang("other.c"), Some("c"));
+        assert_eq!(lang(&reg, "config.c"), Some("special"));
+        assert_eq!(lang(&reg, "src/config.c"), Some("special"));
+        assert_eq!(lang(&reg, "other.c"), Some("c"));
     }
 
     #[test]
@@ -481,7 +465,7 @@ mod tests {
             false,
         );
         let reg = SyntaxRegistry::new().register(def);
-        let syntax = reg.find("custom");
+        let syntax = reg.find_by_filename("x.xyz");
         let line = "hello 123; # comment";
         let tokens = highlight_line(syntax, line);
         assert_eq!(tokens[0], TokenKind::Keyword); // "hello"

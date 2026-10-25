@@ -177,11 +177,6 @@ impl Keymap {
         self
     }
 
-    pub fn unbind_str(self, keys: &str) -> Result<Self, KeyError> {
-        let seq = parse_key_seq(keys)?;
-        Ok(self.unbind(&seq))
-    }
-
     /// Key sequences bound to `name`, for display.
     pub fn keys_for(&self, name: &str) -> Vec<String> {
         let mut keys: Vec<String> = self
@@ -288,7 +283,7 @@ mod tests {
         let key = parse_key_seq("C-x C-s").unwrap();
         assert_eq!(map.lookup(&key), Some("save-buffer"));
 
-        let unmapped = map.unbind_str("C-x C-s").unwrap();
+        let unmapped = map.unbind(&key);
         assert_eq!(unmapped.lookup(&key), None);
     }
 

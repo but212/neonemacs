@@ -11,7 +11,7 @@ use crate::core::commands::CommandRegistry;
 use crate::core::config::Config;
 use crate::core::effect::Effects;
 use crate::core::eol::Eol;
-use crate::core::file::Backing;
+use crate::core::file::{Backing, FilePath};
 use crate::core::keymap::Keymap;
 pub use crate::core::kill_ring::KillRing;
 use crate::core::syntax::SyntaxRegistry;
@@ -21,6 +21,7 @@ use crate::core::window::WindowManager;
 use documents::Documents;
 use interaction::Interaction;
 use settings::Settings;
+use std::path::{Path, PathBuf};
 
 pub use crate::core::buffer::{Buffer, BufferId};
 pub use crate::core::mode::{
@@ -63,7 +64,7 @@ impl Editor {
             left_col: 0,
         };
         Self {
-            documents: Documents::new(config.undo_limit, initial_window),
+            documents: Documents::new(initial_window),
             interaction: Interaction::new(),
             settings: Settings::new(config),
         }
@@ -108,11 +109,6 @@ impl Editor {
         &self.documents.buffers
     }
 
-    pub fn set_buffers(mut self, buffers: BufferPool) -> Self {
-        self.documents.buffers = buffers;
-        self
-    }
-
     pub const fn windows(&self) -> &WindowManager {
         &self.documents.windows
     }
@@ -129,6 +125,17 @@ impl Editor {
     pub const fn set_config(mut self, config: Config) -> Self {
         self.settings.config = config;
         self
+    }
+
+    /// Sets the directory that relative file paths resolve against (I-37).
+    pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
+        self.settings.cwd = cwd;
+        self
+    }
+
+    /// The absolute path that `input` names, resolved against the working directory (I-37).
+    pub fn resolve_path(&self, input: &Path) -> FilePath {
+        FilePath::resolve(&self.settings.cwd, input)
     }
 
     pub const fn syntax_registry(&self) -> &SyntaxRegistry {
@@ -183,18 +190,8 @@ impl Editor {
         self.interaction.prev
     }
 
-    pub const fn set_prev(mut self, prev: LastCommand) -> Self {
-        self.interaction.prev = prev;
-        self
-    }
-
     pub const fn keymap(&self) -> &Keymap {
         &self.settings.keymap
-    }
-
-    pub fn set_keymap(mut self, keymap: Keymap) -> Self {
-        self.settings.keymap = keymap;
-        self
     }
 
     pub fn with_keymap(mut self, f: impl FnOnce(Keymap) -> Keymap) -> Self {
@@ -209,10 +206,7 @@ impl Editor {
     /// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
     /// Killing the last buffer leaves an empty `*scratch*` (A4).
     pub fn kill_buffer_id(mut self, id: BufferId) -> Self {
-        let (buffers, replacement) = self
-            .documents
-            .buffers
-            .kill(id, self.settings.config.undo_limit);
+        let (buffers, replacement) = self.documents.buffers.kill(id);
         self.documents.buffers = buffers;
         let saved = self.buffer_by_id(replacement).saved_point();
         self.documents.windows = self.documents.windows.retarget(id, replacement, saved);
@@ -253,6 +247,13 @@ impl Editor {
         self.with_buffer(id, f)
     }
 
+    /// Replaces the text of buffer `id` outside `apply`. The undo history restarts (I-34), and the
+    /// windows showing it are snapped to the new text (I-01).
+    pub fn replace_text(self, id: BufferId, text: Text) -> Self {
+        self.with_buffer(id, |b| b.with_text(text))
+            .snap_windows_for_buffer(id)
+    }
+
     /// Snaps `point` and resets `top` for every window displaying buffer `id` (I-01).
     pub fn snap_windows_for_buffer(mut self, id: BufferId) -> Self {
         let text = self.documents.buffers.get_by_id(id).text();
@@ -291,10 +292,7 @@ impl Editor {
 
     /// Adds a buffer and returns its id. Ids are never reused.
     pub fn add_buffer(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
-        let (buffers, id) =
-            self.documents
-                .buffers
-                .add(name, text, backing, self.settings.config.undo_limit);
+        let (buffers, id) = self.documents.buffers.add(name, text, backing);
         self.documents.buffers = buffers;
         (self, id)
     }
@@ -308,10 +306,16 @@ impl Editor {
             return (self, None);
         }
 
+        // The yank offsets describe the text before this edit, so the yank ends here (I-38).
+        if matches!(self.interaction.last, LastCommand::Yank { .. }) {
+            self.interaction.last = LastCommand::Other;
+        }
+
         let mut dropped_res = None;
+        let undo_limit = self.settings.config.undo_limit;
         self.documents.edit_seq = self.documents.edit_seq.wrapping_add(1);
         self.documents.buffers = self.documents.buffers.with_buffer(id, |buf| {
-            let (buf, dropped) = buf.apply_edit(edit.clone(), |a| remap(&edit, a));
+            let (buf, dropped) = buf.apply_edit(edit.clone(), |a| remap(&edit, a), undo_limit);
             dropped_res = Some(dropped);
             buf
         });

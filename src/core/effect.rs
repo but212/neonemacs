@@ -84,6 +84,7 @@ pub enum Event {
     },
     Written {
         id: BufferId,
+        path: PathBuf,
         result: Result<DiskState, String>,
     },
     FileRead {

@@ -97,7 +97,7 @@ pub fn with_api<R>(
     lua.scope(|scope| {
         let g = lua.globals();
         install_keymap_api(scope, &g, cell)?;
-        install_command_api(lua, scope, &g, cell, &depth)?;
+        install_command_api(scope, &g, cell, &depth)?;
         install_config_api(scope, &g, cell)?;
         install_syntax_api(lua, scope, &g, cell)?;
         install_buffer_api(lua, scope, &g, cell)?;

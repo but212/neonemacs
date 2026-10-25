@@ -28,13 +28,13 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    pub fn new(id: BufferId, name: &str, text: Text, backing: Backing, undo_limit: usize) -> Self {
+    pub fn new(id: BufferId, name: &str, text: Text, backing: Backing) -> Self {
         Self {
             id,
             name: name.to_owned(),
             text,
             backing,
-            undo: UndoLog::new(undo_limit),
+            undo: UndoLog::new(),
             modified: false,
             view_only: false,
             mark: None,
@@ -130,14 +130,11 @@ impl Buffer {
     }
 
     /// Replaces `text` and snaps `saved_point` and `mark` to valid unit boundaries (I-01).
+    /// The undo history described the old text, so it starts over (I-34).
     pub fn with_text(mut self, text: Text) -> Self {
         self.text = text;
+        self.undo = UndoLog::new();
         self.snap_anchors()
-    }
-
-    pub fn with_undo(mut self, undo: UndoLog) -> Self {
-        self.undo = undo;
-        self
     }
 
     pub fn close_undo(mut self) -> Self {
@@ -157,22 +154,22 @@ impl Buffer {
         self
     }
 
-    pub fn replace_from_disk(
-        mut self,
-        text: Text,
-        backing: Backing,
-        eol: Eol,
-        undo_limit: usize,
-    ) -> Self {
+    pub fn replace_from_disk(mut self, text: Text, backing: Backing, eol: Eol) -> Self {
         self.text = text;
         self.backing = backing;
         self.eol = eol;
         self.modified = false;
-        self.undo = UndoLog::new(undo_limit);
+        self.undo = UndoLog::new();
         self.snap_anchors()
     }
 
-    pub fn apply_edit(mut self, edit: Edit, remap_fn: impl Fn(usize) -> usize) -> (Self, usize) {
+    /// Applies `edit` and records it for undo, keeping at most `undo_limit` bytes (I-35).
+    pub fn apply_edit(
+        mut self,
+        edit: Edit,
+        remap_fn: impl Fn(usize) -> usize,
+        undo_limit: usize,
+    ) -> (Self, usize) {
         match &edit {
             Edit::Insert { pos, bytes } => self.text = self.text.insert(*pos, bytes),
             Edit::Delete { pos, bytes } => {
@@ -185,7 +182,7 @@ impl Buffer {
         let anchor = |a| snap(&self.text, remap_fn(a));
         self.mark = self.mark.map(anchor);
         self.saved_point = anchor(self.saved_point);
-        let (undo, dropped) = self.undo.record(edit);
+        let (undo, dropped) = self.undo.record(edit, undo_limit);
         self.undo = undo;
         (self, dropped)
     }
@@ -205,15 +202,15 @@ pub struct BufferPool {
     next_id: u32,
 }
 
+impl Default for BufferPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BufferPool {
-    pub fn new(undo_limit: usize) -> Self {
-        let scratch = Buffer::new(
-            BufferId(0),
-            "*scratch*",
-            Text::default(),
-            Backing::None,
-            undo_limit,
-        );
+    pub fn new() -> Self {
+        let scratch = Buffer::new(BufferId(0), "*scratch*", Text::default(), Backing::None);
         Self {
             buffers: vec![scratch],
             next_id: 1,
@@ -247,10 +244,6 @@ impl BufferPool {
         self.buffers.get(index)
     }
 
-    pub fn find_by_id(&self, id: BufferId) -> Option<&Buffer> {
-        self.buffers.iter().find(|b| b.id == id)
-    }
-
     pub fn get_by_id(&self, id: BufferId) -> &Buffer {
         &self.buffers[self.index_of(id)]
     }
@@ -260,17 +253,10 @@ impl BufferPool {
     }
 
     /// Adds a buffer with an automatically assigned unique id. Ids are never reused.
-    pub fn add(
-        mut self,
-        name: &str,
-        text: Text,
-        backing: Backing,
-        undo_limit: usize,
-    ) -> (Self, BufferId) {
+    pub fn add(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
         let id = BufferId(self.next_id);
         self.next_id += 1;
-        self.buffers
-            .push(Buffer::new(id, name, text, backing, undo_limit));
+        self.buffers.push(Buffer::new(id, name, text, backing));
         (self, id)
     }
 
@@ -293,13 +279,11 @@ impl BufferPool {
         let found = self.find_by_path(path).map(|b| b.id);
         if let Some(id) = found {
             let pool = self.with_buffer(id, |buf| {
-                let limit = buf.undo.limit();
                 let mut buf = buf
                     .with_text(Text::from_bytes(bytes))
                     .set_eol(eol)
                     .set_modified(true)
-                    .clear_wal_dirty()
-                    .with_undo(UndoLog::new(limit));
+                    .clear_wal_dirty();
                 if let Some(n) = line {
                     let pos = buf.text.nth_line_start(n);
                     buf = buf.set_saved_point(pos);
@@ -314,7 +298,7 @@ impl BufferPool {
 
     /// Removes buffer `id`. If `id` was the only buffer, an empty `*scratch*` buffer is created first.
     /// Returns the new pool and the `BufferId` of the replacement buffer that windows should switch to (I-08).
-    pub fn kill(mut self, id: BufferId, undo_limit: usize) -> (Self, BufferId) {
+    pub fn kill(mut self, id: BufferId) -> (Self, BufferId) {
         if self.buffers.len() == 1 {
             let scratch_id = BufferId(self.next_id);
             self.next_id += 1;
@@ -323,7 +307,6 @@ impl BufferPool {
                 "*scratch*",
                 Text::default(),
                 Backing::None,
-                undo_limit,
             ));
         }
         let replacement = self
@@ -352,7 +335,7 @@ mod tests {
 
     #[test]
     fn buffer_pool_starts_with_scratch() {
-        let pool = BufferPool::new(100);
+        let pool = BufferPool::new();
         assert_eq!(pool.len(), 1);
         assert_eq!(pool.get(0).unwrap().name(), "*scratch*");
         assert_eq!(pool.get(0).unwrap().id(), BufferId(0));
@@ -360,18 +343,18 @@ mod tests {
 
     #[test]
     fn buffer_pool_kill_last_creates_scratch_enforcing_i08() {
-        let pool = BufferPool::new(100);
-        let (pool, replacement) = pool.kill(BufferId(0), 100);
+        let pool = BufferPool::new();
+        let (pool, replacement) = pool.kill(BufferId(0));
         assert_eq!(pool.len(), 1);
         assert_ne!(replacement, BufferId(0));
-        assert_eq!(pool.find_by_id(replacement).unwrap().name(), "*scratch*");
+        assert_eq!(pool.get_by_id(replacement).name(), "*scratch*");
     }
 
     #[test]
     fn buffer_pool_unique_ids() {
-        let pool = BufferPool::new(100);
-        let (pool, id1) = pool.add("a", Text::default(), Backing::None, 100);
-        let (pool, id2) = pool.add("b", Text::default(), Backing::None, 100);
+        let pool = BufferPool::new();
+        let (pool, id1) = pool.add("a", Text::default(), Backing::None);
+        let (pool, id2) = pool.add("b", Text::default(), Backing::None);
         assert_eq!(id1, BufferId(1));
         assert_eq!(id2, BufferId(2));
         assert_eq!(pool.len(), 3);
@@ -379,19 +362,14 @@ mod tests {
 
     #[test]
     fn backing_none_never_wal_dirty() {
-        let buf = Buffer::new(
-            BufferId(0),
-            "*scratch*",
-            Text::default(),
-            Backing::None,
-            100,
-        );
+        let buf = Buffer::new(BufferId(0), "*scratch*", Text::default(), Backing::None);
         let (buf, _) = buf.apply_edit(
             Edit::Insert {
                 pos: 0,
                 bytes: b"a".to_vec(),
             },
             |a| a,
+            1 << 20,
         );
         assert!(buf.modified());
         assert!(!buf.is_wal_dirty());

@@ -3,13 +3,13 @@
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Editor, Window, snap};
 use neonemacs::core::eol::Eol;
-use neonemacs::core::file::{Backing, DiskState};
+use neonemacs::core::file::{Backing, DiskState, FilePath};
 use neonemacs::core::text::Text;
 use neonemacs::shell::file;
 use neonemacs::shell::startup::{FileArg, open_files};
 use neonemacs::shell::wal;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn restore_content_must_snap_saved_point_and_mark() {
@@ -19,7 +19,7 @@ fn restore_content_must_snap_saved_point_and_mark() {
     let (mut ed, id) = ed.add_buffer(
         "test",
         initial_text,
-        Backing::file(path.clone(), DiskState::Unknown),
+        Backing::file(FilePath::resolve(Path::new(""), &path), DiskState::Unknown),
     );
 
     // Set saved_point far down at offset 45 and mark at offset 40
@@ -55,7 +55,7 @@ fn restore_content_snaps_active_window_and_applies_line() {
     let (ed, id) = ed.add_buffer(
         "test",
         initial_text,
-        Backing::file(path.clone(), DiskState::Unknown),
+        Backing::file(FilePath::resolve(Path::new(""), &path), DiskState::Unknown),
     );
     let ed = neonemacs::core::commands::buffer_window::switch_to(ed, id).with_window(|w| Window {
         point: 35,
@@ -118,7 +118,7 @@ fn open_files_with_line_arg_and_shrunk_wal_preserves_i01() {
 
 #[test]
 fn wal_recovery_clears_stale_undo_and_applies_line_offset() {
-    use neonemacs::core::undo::{Edit, UndoLog};
+    use neonemacs::core::undo::Edit;
 
     let ed = Editor::new(Config::default());
     let path = PathBuf::from("f_wal_test.txt");
@@ -126,15 +126,21 @@ fn wal_recovery_clears_stale_undo_and_applies_line_offset() {
     let (ed, id) = ed.add_buffer(
         "test",
         initial_text,
-        Backing::file(path.clone(), DiskState::Unknown),
+        Backing::file(FilePath::resolve(Path::new(""), &path), DiskState::Unknown),
     );
 
-    // Stale undo log from disk says: last edit inserted "c" at 2
-    let (log, _) = UndoLog::new(1 << 20).record(Edit::Insert {
-        pos: 2,
-        bytes: b"c".to_vec(),
+    // Stale undo history from before the crash: the last edit inserted "c" at 2
+    let ed = ed.with_buffer(id, |b| {
+        b.apply_edit(
+            Edit::Insert {
+                pos: 2,
+                bytes: b"c".to_vec(),
+            },
+            |a| a,
+            1 << 20,
+        )
+        .0
     });
-    let ed = ed.with_buffer(id, |b| b.with_undo(log.close()));
 
     // Recover from WAL: "PRE_LINE\nline 1\nline 2\nline 3\n"
     let recovered_ed =

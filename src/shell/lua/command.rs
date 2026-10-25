@@ -12,7 +12,6 @@ use std::cell::{Cell, RefCell};
 const MAX_RUN_DEPTH: usize = 50;
 
 pub(super) fn install_command_api<'lua, 'scope>(
-    _lua: &'lua Lua,
     scope: &'lua Scope<'lua, 'scope>,
     g: &Table,
     cell: &'scope RefCell<Option<Editor>>,

@@ -15,9 +15,9 @@ pub struct Documents {
 }
 
 impl Documents {
-    pub fn new(undo_limit: usize, initial_window: Window) -> Self {
+    pub fn new(initial_window: Window) -> Self {
         Self {
-            buffers: BufferPool::new(undo_limit),
+            buffers: BufferPool::new(),
             windows: WindowManager::new(initial_window),
             kill_ring: KillRing::new(),
             edit_seq: 0,

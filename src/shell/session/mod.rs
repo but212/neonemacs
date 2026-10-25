@@ -5,7 +5,7 @@ mod screen;
 #[cfg(test)]
 mod tests;
 
-pub use active::{ActiveShell, ShellNotice};
+pub use active::ActiveShell;
 
 use crate::core::editor::{Editor, Mode};
 use crate::core::effect::Event as CoreEvent;
@@ -80,7 +80,7 @@ impl ShellSession {
                 }
                 ShellOutcome::BusyRejected => {
                     if let Some(active) = &mut self.active_shell {
-                        active.set_notice(ShellNotice::AlreadyRunning);
+                        active.set_already_running();
                     }
                 }
                 ShellOutcome::None => {}

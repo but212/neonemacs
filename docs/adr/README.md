@@ -17,6 +17,7 @@
 | [0007](0007-lua-extended-text-operations-and-inspection.md) | Lua Extended Text Operations and Inspection (Historical) | Superseded | 2026-10-25 | §6, §12 | Superseded by ADR 0006 Pareto Spec Normalization (Consolidates former ADRs 0007, 0008, 0010, 0011) |
 | [0008](0008-lua-comment-dwim-and-mx-completion.md) | Lua Comment DWIM and M-x Command Completion Integration | Accepted | 2026-10-25 | §4, §6, §12 | Unified `M-x` completion for Lua commands, `buffer.comment_prefix`, echo `message`, indent-aware `comment-dwim` (`M-;`) |
 | [0009](0009-oversized-files-and-eol-edit.md) | Refuse Oversized Files, Undoable EOL Toggle, and Query-Replace Read-Only Check | Accepted | 2026-10-26 | §7, §8, §9, §10 | Oversized files refused at open (I-04), `toggle-eol` as `Edit::SetEol` (I-31), WAL v2 stores EOL (I-23) |
+| [0010](0010-save-as-transitions-path-identity-bounded-history.md) | Save-As Transitions, Path Identity, and Bounded History | Accepted | 2026-10-26 | §6, §7, §8, §12 | Save-as changes state only after success (I-36), `FilePath` and one buffer per path (I-37), one undo limit (I-35), undo reset on text replacement (I-34), yank ends at next edit (I-38), kill ring cap (I-26) |
 
 ---
 
@@ -71,7 +72,7 @@
 
 ---
 
-## 3. System Invariant Matrix (`I-01` ~ `I-33`)
+## 3. System Invariant Matrix (`I-01` ~ `I-38`)
 
 | ID | Invariant Summary | Enforcement Layer | Governed By |
 | :--- | :--- | :---: | :--- |
@@ -99,15 +100,20 @@
 | **I-22** | ANSI color escapes never distort text display width, coordinates, or diff | Type / Render queue | ADR 0003 |
 | **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. The header records the EOL (`NEONWAL2`) | Runtime (`wal.rs`) | ADR 0003, ADR 0009 |
 | **I-24** | Background shell execution is non-blocking with active spinner feedback | Runtime / Thread | ADR 0003 |
-| **I-25** | Regular save, revert, or close immediately deletes sibling WAL file | Runtime (`wal.rs`) | ADR 0003 |
-| **I-26** | Kill ring history is encapsulated in `KillRing` with ring rotation invariants | Data structure | ADR 0006, Spec §6 |
+| **I-25** | Regular save, revert, or close immediately deletes sibling WAL file; `write-file` deletes the old path's WAL only after its write succeeds | Runtime (`wal.rs`) | ADR 0003, ADR 0010 |
+| **I-26** | Kill ring history is encapsulated in `KillRing` with ring rotation invariants, and holds at most `KILL_RING_MAX` (120) entries; `from_entries` (no check) is test-only | Data structure | ADR 0006, ADR 0010, Spec §6 |
 | **I-27** | Syntax definitions are purely declarative in `SyntaxRegistry` | Data structure | ADR 0004 |
 | **I-28** | [Pruned] Line counting semantics (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
 | **I-29** | [Pruned] UTF-8 inspection slicing (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
 | **I-30** | [Pruned] Cursor inspection coordinates (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
-| **I-31** | Text and EOL change only through `Editor::apply(Edit)`, which updates undo, `modified`, and `wal_dirty` | Runtime (`Editor::apply`) | ADR 0009 |
+| **I-31** | Text and EOL change only through `Editor::apply(Edit)`, which updates undo, `modified`, and `wal_dirty`, or through a whole-text replacement that resets undo (I-34) | Runtime (`Editor::apply`, `Buffer::with_text`) | ADR 0009, ADR 0010 |
 | **I-32** | `Editor` groups (Documents, Interaction, Settings) are private to `editor`; a group never writes another group's fields, and cross-group operations are composed in `Editor` methods | Module privacy (`src/core/editor/`) | ADR 0002 |
 | **I-33** | `edit_seq` is owned by Documents and changed only by `Editor::apply` | Runtime (`Editor::apply`) | ADR 0002 |
+| **I-34** | Replacing a buffer's text outside `Editor::apply` resets its undo log, so undo describes the current text | Runtime (`Buffer::with_text`) | ADR 0010 |
+| **I-35** | The undo limit is `Config.undo_limit` only; `UndoLog` stores no limit | Type (`UndoLog::record(edit, limit)`) | ADR 0010 |
+| **I-36** | `write-file` changes the buffer's backing, name, and old WAL only after a successful write | Type (`Event::Written { id, path, result }`) | ADR 0010 |
+| **I-37** | `FilePath` has one constructor, `resolve`, which folds `.` and `..` lexically; one buffer visits one path (checked in `file_read(Open)` and `write_file`) | Type (`FilePath`) + Runtime (`commands/file.rs`) | ADR 0010 |
+| **I-38** | `LastCommand::Yank` is valid only until the next applied edit | Runtime (`Editor::apply`) | ADR 0010 |
 
 ---
 

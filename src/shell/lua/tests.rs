@@ -4,6 +4,7 @@ use crate::core::commands::request_open;
 use crate::core::config::Config;
 use crate::core::effect::Event;
 use crate::core::keymap::{Code, Key, parse_keys};
+use crate::core::syntax::SyntaxRegistry;
 use crate::shell::{handle, perform_all, run_source};
 use mlua::{Function, Table};
 use std::fs;
@@ -11,6 +12,24 @@ use std::fs;
 /// Runs `src` against `ed`. Returns the editor back with the result.
 fn script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
     run_source(ed, lua, src)
+}
+
+/// Syntax lookups by file name, as the editor resolves a buffer's language (I-28).
+fn lang_of<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
+    reg.find_by_filename(file).map(|d| d.name.as_str())
+}
+
+fn keyword_in(reg: &SyntaxRegistry, file: &str, word: &str) -> bool {
+    reg.find_by_filename(file)
+        .is_some_and(|d| d.is_keyword(word))
+}
+
+fn type_in(reg: &SyntaxRegistry, file: &str, word: &str) -> bool {
+    reg.find_by_filename(file).is_some_and(|d| d.is_type(word))
+}
+
+fn comment_in<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
+    reg.line_comment_for_filename(file)
 }
 
 #[test]
@@ -194,9 +213,9 @@ fn api_syntax_register_and_validation() {
         })"##,
     );
     result.unwrap();
-    assert_eq!(ed.syntax_registry().detect_lang("file.xyz"), Some("mylang"));
-    assert!(ed.syntax_registry().is_keyword("mylang", "fn"));
-    assert_eq!(ed.syntax_registry().line_comment("mylang"), Some("#"));
+    assert_eq!(lang_of(ed.syntax_registry(), "file.xyz"), Some("mylang"));
+    assert!(keyword_in(ed.syntax_registry(), "file.xyz", "fn"));
+    assert_eq!(comment_in(ed.syntax_registry(), "file.xyz"), Some("#"));
 
     // Validation failures
     let (_, result) = script(&lua, ed.clone(), r#"syntax.register("", {})"#);
@@ -228,12 +247,9 @@ fn api_syntax_register_and_validation() {
         })"##,
     );
     result.unwrap();
-    assert_eq!(
-        ed.syntax_registry().detect_lang("query.sql.txt"),
-        Some("sql")
-    );
-    assert!(ed.syntax_registry().is_keyword("sql", "SELECT"));
-    assert!(ed.syntax_registry().is_type("sql", "VARCHAR"));
+    assert_eq!(lang_of(ed.syntax_registry(), "query.sql.txt"), Some("sql"));
+    assert!(keyword_in(ed.syntax_registry(), "query.sql.txt", "SELECT"));
+    assert!(type_in(ed.syntax_registry(), "query.sql.txt", "VARCHAR"));
 }
 
 #[test]
@@ -241,21 +257,21 @@ fn bundled_syntax_loaded_by_default() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let reg = ed.syntax_registry();
-    assert_eq!(reg.detect_lang("main.rs"), Some("rust"));
-    assert_eq!(reg.detect_lang("script.py"), Some("python"));
-    assert_eq!(reg.detect_lang("index.js"), Some("javascript"));
-    assert_eq!(reg.detect_lang("config.lua"), Some("lua"));
-    assert_eq!(reg.detect_lang("app.go"), Some("go"));
-    assert_eq!(reg.detect_lang("build.sh"), Some("shell"));
-    assert_eq!(reg.detect_lang("README.md"), Some("markdown"));
-    assert_eq!(reg.detect_lang("main.c"), Some("c"));
-    assert_eq!(reg.detect_lang("Makefile"), Some("makefile"));
-    assert_eq!(reg.detect_lang("Cargo.toml"), Some("toml"));
-    assert_eq!(reg.detect_lang("query.sql"), Some("sql"));
-    assert!(reg.is_type("rust", "i32"));
-    assert!(reg.is_keyword("sql", "SELECT"));
-    assert!(reg.is_type("sql", "VARCHAR"));
-    assert!(reg.is_keyword("shell", "if"));
+    assert_eq!(lang_of(reg, "main.rs"), Some("rust"));
+    assert_eq!(lang_of(reg, "script.py"), Some("python"));
+    assert_eq!(lang_of(reg, "index.js"), Some("javascript"));
+    assert_eq!(lang_of(reg, "config.lua"), Some("lua"));
+    assert_eq!(lang_of(reg, "app.go"), Some("go"));
+    assert_eq!(lang_of(reg, "build.sh"), Some("shell"));
+    assert_eq!(lang_of(reg, "README.md"), Some("markdown"));
+    assert_eq!(lang_of(reg, "main.c"), Some("c"));
+    assert_eq!(lang_of(reg, "Makefile"), Some("makefile"));
+    assert_eq!(lang_of(reg, "Cargo.toml"), Some("toml"));
+    assert_eq!(lang_of(reg, "query.sql"), Some("sql"));
+    assert!(type_in(reg, "main.rs", "i32"));
+    assert!(keyword_in(reg, "query.sql", "SELECT"));
+    assert!(type_in(reg, "query.sql", "VARCHAR"));
+    assert!(keyword_in(reg, "build.sh", "if"));
 }
 
 #[test]
@@ -595,7 +611,7 @@ fn comment_prefix_message_and_command_sync() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "main.rs",
-        crate::core::text::Text::new(),
+        crate::core::text::Text::default(),
         crate::core::file::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::editor::Window { buffer: id, ..w });
@@ -774,6 +790,50 @@ fn test_count_lines_ffi_removed() {
         "#,
     );
     res.unwrap();
+}
+
+#[test]
+fn undo_limit_applies_to_existing_buffers() {
+    use crate::core::undo::Edit;
+
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let (ed, result) = script(&lua, ed, r#"set("undo-limit", 0)"#);
+    result.unwrap();
+
+    // Two edits in two undo groups. With limit 0 the first group is dropped at once (I-35).
+    let (ed, _) = ed.apply(Edit::Insert {
+        pos: 0,
+        bytes: b"a".to_vec(),
+    });
+    let ed = ed.end_command();
+    let (ed, _) = ed.apply(Edit::Insert {
+        pos: 1,
+        bytes: b"b".to_vec(),
+    });
+    let ed = ed.end_command();
+
+    // Each undo is its own command, as in the event loop.
+    let (ed, _) = ed.begin_command().undo(Vec::new());
+    let (ed, _) = ed.begin_command().undo(Vec::new());
+    assert_eq!(ed.message(), "No further undo information");
+}
+
+#[test]
+fn edit_after_yank_invalidates_yank_pop() {
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let ed = ed.with_kill_ring(|kr| kr.push(b"hello".to_vec()));
+    let ed = handle(ed, Some(&lua), Event::Run("yank".to_owned()));
+
+    // An edit after the yank means the yank is no longer the last command (I-38).
+    let (ed, result) = script(&lua, ed, r#"buffer.insert(0, "  ")"#);
+    result.unwrap();
+    let before = ed.buffer().text().to_bytes();
+
+    let ed = handle(ed, Some(&lua), Event::Run("yank-pop".to_owned()));
+    assert_eq!(ed.buffer().text().to_bytes(), before);
+    assert_eq!(ed.message(), "Previous command was not a yank");
 }
 
 #[test]

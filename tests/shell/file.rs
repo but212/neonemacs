@@ -5,7 +5,7 @@ use neonemacs::core::commands::{confirmed, request_open};
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Confirm, Editor, Mode, Prefix, Window};
 use neonemacs::core::effect::{Effect, Event};
-use neonemacs::core::file::Backing;
+use neonemacs::core::file::{Backing, FilePath};
 use neonemacs::core::keymap::parse_keys;
 use neonemacs::core::step;
 use neonemacs::shell::file;
@@ -207,12 +207,16 @@ fn written_records_disk_and_reports_wrote() {
         ed,
         Event::Written {
             id,
+            path: path.clone(),
             result: Ok(disk),
         },
     );
     let buf = ed.buffer_by_id(id);
     assert!(!buf.modified());
-    assert_eq!(*buf.backing(), Backing::file(path.clone(), disk));
+    assert_eq!(
+        *buf.backing(),
+        Backing::file(FilePath::resolve(Path::new(""), &path), disk)
+    );
     assert!(fx.is_empty());
     assert_eq!(ed.message(), format!("Wrote {}", path.display()));
 }
@@ -230,6 +234,7 @@ fn write_failure_keeps_buffer_modified() {
         ed,
         Event::Written {
             id,
+            path: path.clone(),
             result: Err("disk full".to_owned()),
         },
     );

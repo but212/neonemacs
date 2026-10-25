@@ -8,7 +8,7 @@ use neonemacs::core::editor::Editor;
 use neonemacs::core::effect::Event;
 use neonemacs::core::keymap::parse_keys;
 use neonemacs::shell::lua;
-use neonemacs::shell::session::{ActiveShell, ShellNotice, ShellSession};
+use neonemacs::shell::session::{ActiveShell, ShellSession};
 use neonemacs::shell::{ShellOutcome, handle_interactive, spawn_shell};
 use std::time::{Duration, Instant};
 
@@ -142,7 +142,7 @@ fn active_shell_tracks_spinner_and_typed_notice() {
     assert!(s1.starts_with("[Running... /]"));
 
     // Set notice
-    active.set_notice(ShellNotice::AlreadyRunning);
+    active.set_already_running();
     let s2 = active.format_status();
     assert!(s2.starts_with("[Running... -] A shell command is already running"));
 }

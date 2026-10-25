@@ -51,16 +51,14 @@ pub struct UndoLog {
     groups: Vec<Vec<Edit>>,
     open: bool,
     size: usize,
-    limit: usize,
 }
 
 impl UndoLog {
-    pub const fn new(limit: usize) -> Self {
+    pub const fn new() -> Self {
         Self {
             groups: Vec::new(),
             open: false,
             size: 0,
-            limit,
         }
     }
 
@@ -68,13 +66,9 @@ impl UndoLog {
         &self.groups
     }
 
-    pub const fn limit(&self) -> usize {
-        self.limit
-    }
-
-    /// Appends `edit` to the open group, or starts a new group. Returns the
-    /// new log and the number of oldest groups dropped to respect the limit.
-    pub fn record(mut self, edit: Edit) -> (Self, usize) {
+    /// Appends `edit` to the open group, or starts a new group. `limit` is `Config.undo_limit`,
+    /// the only undo limit (I-35). Returns the new log and the number of oldest groups dropped.
+    pub fn record(mut self, edit: Edit, limit: usize) -> (Self, usize) {
         if !self.open {
             self.groups.push(Vec::new());
             self.open = true;
@@ -84,7 +78,7 @@ impl UndoLog {
             .last_mut()
             .expect("open group exists")
             .push(edit);
-        self.trim()
+        self.trim(limit)
     }
 
     pub const fn close(mut self) -> Self {
@@ -92,10 +86,10 @@ impl UndoLog {
         self
     }
 
-    fn trim(mut self) -> (Self, usize) {
+    fn trim(mut self, limit: usize) -> (Self, usize) {
         let keep_open = usize::from(self.open);
         let mut dropped = 0;
-        while self.size > self.limit && self.groups.len() > keep_open {
+        while self.size > limit && self.groups.len() > keep_open {
             let group = self.groups.remove(0);
             self.size -= group.iter().map(Edit::size).sum::<usize>();
             dropped += 1;
@@ -117,17 +111,17 @@ mod tests {
 
     #[test]
     fn groups_close_explicitly() {
-        let (log, _) = UndoLog::new(1 << 20).record(insert(0, "a"));
-        let (log, _) = log.record(insert(1, "b"));
+        let (log, _) = UndoLog::new().record(insert(0, "a"), 1 << 20);
+        let (log, _) = log.record(insert(1, "b"), 1 << 20);
         assert_eq!(log.groups().len(), 1);
-        let (log, _) = log.close().record(insert(2, "c"));
+        let (log, _) = log.close().record(insert(2, "c"), 1 << 20);
         assert_eq!(log.groups().len(), 2);
     }
 
     #[test]
     fn limit_drops_oldest_groups() {
-        let (log, _) = UndoLog::new(4).record(insert(0, "abc"));
-        let (log, dropped) = log.close().record(insert(0, "de"));
+        let (log, _) = UndoLog::new().record(insert(0, "abc"), 4);
+        let (log, dropped) = log.close().record(insert(0, "de"), 4);
         assert_eq!(dropped, 1);
         let log = log.close();
         assert_eq!(log.groups(), &[vec![insert(0, "de")]]);

@@ -273,10 +273,9 @@ fn show_output(ed: Editor, text: &str) -> Editor {
         Some(id) => (ed, id),
         None => ed.add_buffer(NAME, Text::default(), Backing::None),
     };
-    let mut ed = ed.with_buffer(id, |b| {
-        b.with_text(Text::from_bytes(text.as_bytes()))
-            .set_modified(false)
-    });
+    let mut ed = ed
+        .replace_text(id, Text::from_bytes(text.as_bytes()))
+        .with_buffer(id, |b| b.set_modified(false));
     if ed.leaf_count() == 1 {
         ed = split(ed, Dir::Below);
     }
@@ -302,6 +301,7 @@ pub fn lua_done(ed: Editor, result: Result<(), String>) -> Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::window::Window;
     use crate::test_support::{editor, keys, run_command, typ};
 
     #[test]
@@ -341,6 +341,49 @@ mod tests {
             .expect("output buffer");
         assert_eq!(out.text().to_bytes(), b"a\nb");
         assert_eq!(ed.leaf_count(), 2);
+    }
+
+    fn output_id(ed: &Editor) -> crate::core::editor::BufferId {
+        ed.buffers()
+            .iter()
+            .find(|b| b.name() == "*Shell Command Output*")
+            .map(Buffer::id)
+            .expect("output buffer")
+    }
+
+    #[test]
+    fn shell_output_replacement_resets_undo() {
+        let ed = run_command(editor(), |e, fx| (e, run_shell("echo a&& echo b", fx)));
+        let out = output_id(&ed);
+        let ed = switch_to(ed, out);
+        let ed = typ(ed, "X");
+
+        let ed = run_command(ed, |e, fx| (e, run_shell("echo c&& echo d", fx)));
+        let (ed, _) = ed.undo(Vec::new());
+        assert_eq!(ed.message(), "No further undo information");
+        assert_eq!(
+            ed.buffers().get_by_id(output_id(&ed)).text().to_bytes(),
+            b"c\nd"
+        );
+    }
+
+    #[test]
+    fn shell_output_replacement_snaps_windows() {
+        let ed = run_command(editor(), |e, fx| {
+            (e, run_shell("echo aaaaaaaaaaaa&& echo b", fx))
+        });
+        let out = output_id(&ed);
+        let ed = switch_to(ed, out);
+        let ed = ed.with_window(|w| Window {
+            point: 12,
+            top: 1,
+            ..w
+        });
+
+        let ed = run_command(ed, |e, fx| (e, run_shell("echo c&& echo d", fx)));
+        let len = ed.buffers().get_by_id(output_id(&ed)).text().len();
+        assert!(ed.window().point <= len);
+        assert_eq!(ed.window().top, 0);
     }
 
     #[test]

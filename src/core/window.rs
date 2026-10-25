@@ -133,14 +133,6 @@ impl WindowManager {
         }
     }
 
-    pub fn from_layout(layout: Layout, selected: usize) -> Self {
-        assert!(
-            selected < layout.leaf_count(),
-            "window index out of range (I-19)"
-        );
-        Self { layout, selected }
-    }
-
     pub const fn layout(&self) -> &Layout {
         &self.layout
     }
