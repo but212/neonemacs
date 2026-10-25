@@ -30,7 +30,7 @@ pub const fn from_terminal(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
 mod tests {
     use super::*;
     use crate::core::keymap::parse_keys;
-    use crossterm::event::KeyModifiers as M;
+    use crossterm::event::{KeyModifiers as M, MediaKeyCode, ModifierKeyCode};
 
     fn norm(c: KeyCode, m: M) -> Key {
         from_terminal(c, m).unwrap()
@@ -53,5 +53,180 @@ mod tests {
             parse_keys("M-x").unwrap()[0]
         );
         assert_eq!(norm(KeyCode::Left, M::NONE), parse_keys("left").unwrap()[0]);
+    }
+
+    #[test]
+    fn reject_unmapped_keys_under_hostile_modifiers() {
+        // Any unmapped KeyCode must return None regardless of modifier bitmask
+        let unmapped_codes = [
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Insert,
+            KeyCode::Delete,
+            KeyCode::BackTab,
+            KeyCode::Null,
+            KeyCode::CapsLock,
+            KeyCode::ScrollLock,
+            KeyCode::NumLock,
+            KeyCode::PrintScreen,
+            KeyCode::Pause,
+            KeyCode::Menu,
+            KeyCode::KeypadBegin,
+            KeyCode::F(0),
+            KeyCode::F(1),
+            KeyCode::F(12),
+            KeyCode::F(255),
+            KeyCode::Media(MediaKeyCode::Play),
+            KeyCode::Modifier(ModifierKeyCode::LeftControl),
+        ];
+
+        let hostile_modifiers = [
+            M::NONE,
+            M::CONTROL,
+            M::ALT,
+            M::SHIFT,
+            M::CONTROL | M::ALT,
+            M::CONTROL | M::ALT | M::SHIFT,
+            M::SUPER,
+            M::HYPER,
+            M::META,
+            M::all(),
+        ];
+
+        for &code in &unmapped_codes {
+            for &mods in &hostile_modifiers {
+                assert_eq!(
+                    from_terminal(code, mods),
+                    None,
+                    "Expected None for unmapped code {code:?} with mods {mods:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_supported_non_char_keys_and_modifiers() {
+        let cases = [
+            (KeyCode::Enter, Code::Enter),
+            (KeyCode::Tab, Code::Tab),
+            (KeyCode::Backspace, Code::Backspace),
+            (KeyCode::Esc, Code::Esc),
+            (KeyCode::Left, Code::Left),
+            (KeyCode::Right, Code::Right),
+            (KeyCode::Up, Code::Up),
+            (KeyCode::Down, Code::Down),
+            (KeyCode::Home, Code::Home),
+            (KeyCode::End, Code::End),
+        ];
+
+        for (key_code, expected_code) in cases {
+            // 1. Plain
+            let plain = from_terminal(key_code, M::NONE).expect("plain should be mapped");
+            assert_eq!(plain, Key::plain(expected_code));
+            assert!(!plain.ctrl);
+            assert!(!plain.meta);
+
+            // 2. Alt (Meta)
+            let meta = from_terminal(key_code, M::ALT).expect("alt should be mapped");
+            assert_eq!(meta, Key::plain(expected_code).with_meta());
+            assert!(!meta.ctrl);
+            assert!(meta.meta);
+
+            // 3. Control: non-char keys do not bind Control in from_terminal (ctrl remains false)
+            let ctrl = from_terminal(key_code, M::CONTROL).expect("control should be mapped");
+            assert_eq!(ctrl, Key::plain(expected_code));
+            assert!(!ctrl.ctrl);
+
+            // 4. Control + Alt: meta is preserved, ctrl remains false for non-char keys
+            let ctrl_alt =
+                from_terminal(key_code, M::CONTROL | M::ALT).expect("ctrl+alt should be mapped");
+            assert_eq!(ctrl_alt, Key::plain(expected_code).with_meta());
+            assert!(!ctrl_alt.ctrl);
+            assert!(ctrl_alt.meta);
+
+            // 5. Shift modifier alone should not set ctrl or meta
+            let shifted = from_terminal(key_code, M::SHIFT).expect("shift should be mapped");
+            assert_eq!(shifted, Key::plain(expected_code));
+            assert!(!shifted.ctrl);
+            assert!(!shifted.meta);
+        }
+    }
+
+    #[test]
+    fn character_keys_compound_modifiers_and_edge_unicodes() {
+        // C-M compound keys
+        let cm_f = from_terminal(KeyCode::Char('f'), M::CONTROL | M::ALT).unwrap();
+        assert_eq!(cm_f, parse_keys("C-M-f").unwrap()[0]);
+        assert!(cm_f.ctrl);
+        assert!(cm_f.meta);
+
+        // C-M on undo/mark aliases
+        let cm_undo = from_terminal(KeyCode::Char('7'), M::CONTROL | M::ALT).unwrap();
+        assert_eq!(cm_undo, parse_keys("C-M-_").unwrap()[0]);
+
+        let cm_mark = from_terminal(KeyCode::Char('2'), M::CONTROL | M::ALT).unwrap();
+        assert_eq!(cm_mark, parse_keys("C-M-SPC").unwrap()[0]);
+
+        // Case folding under Control: C-A should equal C-a
+        let ca_upper = from_terminal(KeyCode::Char('A'), M::CONTROL).unwrap();
+        let ca_lower = from_terminal(KeyCode::Char('a'), M::CONTROL).unwrap();
+        assert_eq!(ca_upper, ca_lower);
+        assert_eq!(ca_upper, parse_keys("C-a").unwrap()[0]);
+
+        // Multibyte Unicode characters
+        let hangul = from_terminal(KeyCode::Char('가'), M::NONE).unwrap();
+        assert_eq!(hangul, Key::plain(Code::Char('가')));
+
+        let hangul_meta = from_terminal(KeyCode::Char('가'), M::ALT).unwrap();
+        assert_eq!(hangul_meta, Key::plain(Code::Char('가')).with_meta());
+
+        let emoji = from_terminal(KeyCode::Char('🦀'), M::NONE).unwrap();
+        assert_eq!(emoji, Key::plain(Code::Char('🦀')));
+
+        // Boundary/control chars as Char
+        let nul = from_terminal(KeyCode::Char('\0'), M::NONE).unwrap();
+        assert_eq!(nul, Key::plain(Code::Char('\0')));
+
+        let max_unicode = from_terminal(KeyCode::Char('\u{10FFFF}'), M::NONE).unwrap();
+        assert_eq!(max_unicode, Key::plain(Code::Char('\u{10FFFF}')));
+
+        // Irrelevant flags (SUPER, HYPER, META) without CONTROL or ALT must remain plain
+        let super_x = from_terminal(KeyCode::Char('x'), M::SUPER).unwrap();
+        assert_eq!(super_x, Key::plain(Code::Char('x')));
+        assert!(!super_x.ctrl);
+        assert!(!super_x.meta);
+    }
+
+    #[test]
+    fn fuzz_ascii_and_modifiers_never_panics() {
+        let modifier_combinations = [
+            M::NONE,
+            M::CONTROL,
+            M::ALT,
+            M::SHIFT,
+            M::SUPER,
+            M::HYPER,
+            M::META,
+            M::CONTROL | M::ALT,
+            M::CONTROL | M::SHIFT,
+            M::ALT | M::SHIFT,
+            M::all(),
+        ];
+
+        // Sweep full ASCII character space
+        for b in 0..=127u8 {
+            let ch = b as char;
+            for &mods in &modifier_combinations {
+                let res = from_terminal(KeyCode::Char(ch), mods);
+                assert!(res.is_some(), "ASCII char '{ch:?}' must map to a Key");
+                let key = res.unwrap();
+                if mods.contains(M::ALT) {
+                    assert!(key.meta);
+                }
+                if mods.contains(M::CONTROL) {
+                    assert!(key.ctrl);
+                }
+            }
+        }
     }
 }

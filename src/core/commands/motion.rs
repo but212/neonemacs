@@ -1,35 +1,77 @@
 //! Cursor motion and mark setting commands (§3, §6).
+//!
+//! Separated into two layers:
+//! - Layer 1: Pure domain calculations operating on `Text` and positions.
+//! - Layer 2: Built-in command adapters operating on `Editor`.
 
-use crate::core::commands::util::{column, pos_at_column};
-use crate::core::editor::{Buffer, Editor, LastCommand};
+use crate::core::editor::{Editor, LastCommand};
 use crate::core::effect::Effects;
+use crate::core::text::Text;
+use crate::core::width::{column, pos_at_column};
+
+// --- Layer 1: Pure domain primitives ---
+
+/// Computes the target position and goal column for a vertical motion.
+/// Returns `(target_pos, goal_column)`.
+pub fn vertical_step(
+    text: &Text,
+    point: usize,
+    tab_width: usize,
+    prev_goal: Option<usize>,
+    down: bool,
+) -> (Option<usize>, usize) {
+    let goal = prev_goal.unwrap_or_else(|| column(text, point, tab_width));
+    let line = text.line_start(point);
+    let target = if down {
+        let nl = text.line_end(point);
+        (nl < text.len()).then_some(Ok(nl + 1))
+    } else {
+        (line > 0).then(|| Err(text.line_start(line - 1)))
+    };
+    let target_pos = match target {
+        Some(Ok(start) | Err(start)) => Some(pos_at_column(text, start, goal, tab_width)),
+        None => None,
+    };
+    (target_pos, goal)
+}
+
+/// Returns the region between point and mark as `start..end`.
+pub fn region_range(point: usize, mark: Option<usize>) -> Option<(usize, usize)> {
+    mark.map(|m| (point.min(m), point.max(m)))
+}
+
+/// Legacy helper for region lookup on `Editor`.
+pub(crate) fn region(ed: &Editor) -> Option<(usize, usize)> {
+    region_range(ed.window().point, ed.buffer().mark())
+}
+
+// --- Layer 2: Built-in command adapters ---
 
 pub(crate) fn forward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let next = ed.buffer().text.next_boundary(p);
+    let next = ed.buffer().text().next_boundary(p);
     (ed.move_point(next), fx)
 }
 
 pub(crate) fn backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let ed = if p > 0 {
-        let prev = ed.buffer().text.prev_boundary(p);
-        ed.move_point(prev)
+    let prev = if p > 0 {
+        ed.buffer().text().prev_boundary(p)
     } else {
-        ed
+        0
     };
-    (ed, fx)
+    (ed.move_point(prev), fx)
 }
 
 pub(crate) fn move_beginning_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let start = ed.buffer().text.line_start(p);
+    let start = ed.buffer().text().line_start(p);
     (ed.move_point(start), fx)
 }
 
 pub(crate) fn move_end_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let end = ed.buffer().text.line_end(p);
+    let end = ed.buffer().text().line_end(p);
     (ed.move_point(end), fx)
 }
 
@@ -41,27 +83,15 @@ pub(crate) fn previous_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (vertical(ed, false), fx)
 }
 
-/// Moves to the goal column on the next or previous line. The goal survives
-/// consecutive vertical moves.
+/// Moves to the goal column on the next or previous line.
 fn vertical(ed: Editor, down: bool) -> Editor {
     let tab = usize::from(ed.config().tab_width);
     let p = ed.window().point;
-    let text = &ed.buffer().text;
-    let goal = match ed.prev() {
-        LastCommand::Vertical { col } => col,
-        _ => column(text, p, tab),
+    let prev_goal = match ed.prev() {
+        LastCommand::Vertical { col } => Some(col),
+        _ => None,
     };
-    let line = text.line_start(p);
-    let target = if down {
-        let nl = text.line_end(p);
-        (nl < text.len()).then_some(Ok(nl + 1))
-    } else {
-        (line > 0).then(|| Err(text.line_start(line - 1)))
-    };
-    let target = match target {
-        Some(Ok(start) | Err(start)) => Some(pos_at_column(text, start, goal, tab)),
-        None => None,
-    };
+    let (target, goal) = vertical_step(ed.buffer().text(), p, tab, prev_goal, down);
     let ed = match target {
         Some(pos) => ed.move_point(pos),
         None => {
@@ -79,25 +109,18 @@ fn vertical(ed: Editor, down: bool) -> Editor {
 pub(crate) fn set_mark_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
     let ed = ed
-        .with_current_buffer(|b| Buffer { mark: Some(p), ..b })
+        .with_current_buffer(|b| b.set_mark(Some(p)))
         .set_message("Mark set");
     (ed, fx)
 }
 
 pub(crate) fn exchange_point_and_mark(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let Some(mark) = ed.buffer().mark else {
+    let Some(mark) = ed.buffer().mark() else {
         return (ed.set_message("No mark set in this buffer"), fx);
     };
     let p = ed.window().point;
-    let ed = ed.with_current_buffer(|b| Buffer { mark: Some(p), ..b });
+    let ed = ed.with_current_buffer(|b| b.set_mark(Some(p)));
     (ed.move_point(mark), fx)
-}
-
-/// The region between mark and point, as `start..end`.
-pub(crate) fn region(ed: &Editor) -> Option<(usize, usize)> {
-    let p = ed.window().point;
-    let m = ed.buffer().mark?;
-    Some((p.min(m), p.max(m)))
 }
 
 #[cfg(test)]
@@ -142,6 +165,6 @@ mod tests {
         let ed = keys(ed, "C-a C-SPC C-e");
         let ed = run_command(ed, exchange_point_and_mark);
         assert_eq!(point(&ed), 0);
-        assert_eq!(ed.buffer().mark, Some(3));
+        assert_eq!(ed.buffer().mark(), Some(3));
     }
 }

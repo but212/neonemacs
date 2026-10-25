@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-10-24
+- Spec: `docs/spec.md` §2, §7, §8
 
 ## Context
 

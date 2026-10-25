@@ -39,13 +39,13 @@ pub fn typ(mut ed: Editor, s: &str) -> Editor {
 
 /// Runs a command and performs its effects.
 pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Effects)) -> Editor {
-    let (ed, fx) = ed.command(Vec::new(), run);
+    let (ed, fx) = crate::core::dispatch::command(ed, Vec::new(), run);
     perform_all(ed, None, fx)
 }
 
 /// The text of the selected buffer.
 pub fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text.to_bytes()).into_owned()
+    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
 }
 
 /// Point of the selected window.

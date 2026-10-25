@@ -5,9 +5,11 @@
 //! which goes back to the core. A Lua command runs inside the event that started it: the `run`
 //! function in Lua calls back into the core synchronously, with no `RefCell` borrow held (I-17).
 
+pub mod atomic;
 pub mod file;
 pub mod lua;
 pub mod session;
+pub mod startup;
 pub mod terminal;
 pub mod wal;
 

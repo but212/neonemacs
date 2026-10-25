@@ -51,13 +51,31 @@ impl Text {
     }
 
     pub fn bytes(&self, range: std::ops::Range<usize>) -> Vec<u8> {
-        range.map(|i| self.byte_at(i)).collect()
+        let len = self.len();
+        let start = range.start.min(len);
+        let end = range.end.min(len).max(start);
+        let (left, right) = self.slices();
+        let left_len = left.len();
+        let mut out = Vec::with_capacity(end - start);
+        if start < left_len {
+            out.extend_from_slice(&left[start..end.min(left_len)]);
+        }
+        if end > left_len {
+            out.extend_from_slice(&right[start.saturating_sub(left_len)..end - left_len]);
+        }
+        out
+    }
+
+    /// Returns the two contiguous slices before and after the gap.
+    pub fn slices(&self) -> (&[u8], &[u8]) {
+        (&self.buf[..self.gap_start], &self.buf[self.gap_end..])
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.len());
-        out.extend_from_slice(&self.buf[..self.gap_start]);
-        out.extend_from_slice(&self.buf[self.gap_end..]);
+        let (left, right) = self.slices();
+        let mut out = Vec::with_capacity(left.len() + right.len());
+        out.extend_from_slice(left);
+        out.extend_from_slice(right);
         out
     }
 
@@ -173,34 +191,106 @@ impl Text {
 
     /// Start of line `n` (1-based). Past the last line, the start of the last line.
     pub fn nth_line_start(&self, n: usize) -> usize {
-        let mut pos = 0;
-        for _ in 1..n {
-            let end = self.line_end(pos);
-            if end >= self.len() {
-                break;
-            }
-            pos = end + 1;
+        if n <= 1 {
+            return 0;
         }
-        pos
+        let mut remaining = n - 1;
+        let mut last_pos = 0;
+        let (left, right) = self.slices();
+
+        for offset in memchr::memchr_iter(b'\n', left) {
+            remaining -= 1;
+            last_pos = offset + 1;
+            if remaining == 0 {
+                return last_pos;
+            }
+        }
+
+        for offset in memchr::memchr_iter(b'\n', right) {
+            remaining -= 1;
+            last_pos = left.len() + offset + 1;
+            if remaining == 0 {
+                return last_pos;
+            }
+        }
+
+        last_pos
     }
 
-    /// Start of the line containing `pos`.
+    /// Counts newline characters strictly within `start..end`.
+    pub fn count_lines(&self, start: usize, end: usize) -> usize {
+        let len = self.len();
+        let start = start.min(len);
+        let end = end.min(len);
+        if start >= end {
+            return 0;
+        }
+
+        let (left, right) = self.slices();
+        let left_len = left.len();
+
+        let left_count = if start < left_len {
+            let s = start;
+            let e = end.min(left_len);
+            memchr::memchr_iter(b'\n', &left[s..e]).count()
+        } else {
+            0
+        };
+
+        let right_count = if end > left_len {
+            let s = start.saturating_sub(left_len);
+            let e = end - left_len;
+            memchr::memchr_iter(b'\n', &right[s..e]).count()
+        } else {
+            0
+        };
+
+        left_count + right_count
+    }
+
+    /// Start of the line containing pos.
     pub fn line_start(&self, pos: usize) -> usize {
-        (0..pos)
-            .rev()
-            .find(|&i| self.byte_at(i) == b'\n')
-            .map_or(0, |i| i + 1)
+        let pos = pos.min(self.len());
+        let (left, right) = self.slices();
+        let left_len = left.len();
+
+        if pos <= left_len {
+            memchr::memrchr(b'\n', &left[..pos]).map_or(0, |i| i + 1)
+        } else {
+            let right_offset = pos - left_len;
+            if let Some(i) = memchr::memrchr(b'\n', &right[..right_offset]) {
+                left_len + i + 1
+            } else {
+                memchr::memrchr(b'\n', left).map_or(0, |i| i + 1)
+            }
+        }
     }
 
-    /// Position of the `\n` ending the line containing `pos`, or the end of text.
+    /// Position of the \n ending the line containing pos, or the end of text.
     pub fn line_end(&self, pos: usize) -> usize {
         let len = self.len();
-        (pos..len)
-            .find(|&i| self.byte_at(i) == b'\n')
-            .unwrap_or(len)
+        let pos = pos.min(len);
+        let (left, right) = self.slices();
+        let left_len = left.len();
+
+        if pos < left_len {
+            if let Some(i) = memchr::memchr(b'\n', &left[pos..]) {
+                pos + i
+            } else if let Some(i) = memchr::memchr(b'\n', right) {
+                left_len + i
+            } else {
+                len
+            }
+        } else {
+            let right_offset = pos - left_len;
+            if let Some(i) = memchr::memchr(b'\n', &right[right_offset..]) {
+                pos + i
+            } else {
+                len
+            }
+        }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

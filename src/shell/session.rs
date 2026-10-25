@@ -2,7 +2,6 @@
 
 use crate::core::editor::{Editor, Mode};
 use crate::core::effect::Event as CoreEvent;
-use crate::core::file::Backing;
 use crate::core::render;
 use crate::core::step;
 use crate::core::syntax::TokenKind;
@@ -69,6 +68,11 @@ pub struct ShellSession {
 
 impl ShellSession {
     pub fn new(ed: Editor, lua: Lua) -> Self {
+        let ed = if ed.syntax_registry().is_empty() {
+            crate::shell::lua::bootstrap(ed, &lua)
+        } else {
+            ed
+        };
         Self {
             ed,
             lua,
@@ -84,11 +88,11 @@ impl ShellSession {
         self.ed.quit()
     }
 
-    fn has_modified_file_buffer(&self) -> bool {
+    fn has_wal_dirty_file_buffer(&self) -> bool {
         self.ed
             .buffers()
             .iter()
-            .any(|b| b.modified && matches!(b.backing, Backing::File { .. }))
+            .any(crate::core::buffer::Buffer::is_wal_dirty)
     }
 
     /// Handles a terminal event (e.g. key press).
@@ -102,6 +106,7 @@ impl ShellSession {
             && k.kind == KeyEventKind::Press
             && let Some(key) = from_terminal(k.code, k.modifiers)
         {
+            let prev_seq = self.ed.edit_seq();
             let ed = std::mem::take(&mut self.ed);
             let shell_busy = self.active_shell.is_some();
             let (new_ed, outcome) =
@@ -118,10 +123,10 @@ impl ShellSession {
                 }
                 ShellOutcome::None => {}
             }
-            if self.has_modified_file_buffer() {
+            if self.ed.edit_seq() != prev_seq && self.has_wal_dirty_file_buffer() {
                 self.last_edit_time = now;
                 self.needs_wal_flush = true;
-            } else {
+            } else if !self.has_wal_dirty_file_buffer() {
                 self.needs_wal_flush = false;
             }
         }
@@ -171,13 +176,20 @@ impl ShellSession {
         if self.needs_wal_flush
             && now.saturating_duration_since(self.last_edit_time) >= Duration::from_secs(1)
         {
+            let mut flushed_ids = Vec::new();
             for buf in self.ed.buffers() {
-                if buf.modified
-                    && let Backing::File { path, disk, .. } = &buf.backing
+                if buf.is_wal_dirty()
+                    && let Some(path) = buf.file_path()
+                    && wal::write_wal(path, buf.backing().disk(), &buf.text().to_bytes()).is_ok()
                 {
-                    let _ = wal::write_wal(path, *disk, &buf.text.to_bytes());
+                    flushed_ids.push(buf.id());
                 }
             }
+            let mut ed = std::mem::take(&mut self.ed);
+            for id in flushed_ids {
+                ed = ed.clear_wal_dirty(id);
+            }
+            self.ed = ed;
             self.needs_wal_flush = false;
         }
     }
@@ -255,6 +267,7 @@ fn print_styled_row(out: &mut impl Write, cells: &[crate::core::render::Cell]) -
             current = cell.style;
             match current {
                 TokenKind::Keyword => queue!(out, SetForegroundColor(Color::Cyan))?,
+                TokenKind::Type => queue!(out, SetForegroundColor(Color::Magenta))?,
                 TokenKind::String => queue!(out, SetForegroundColor(Color::Green))?,
                 TokenKind::Comment => queue!(out, SetForegroundColor(Color::DarkGrey))?,
                 TokenKind::Number => queue!(out, SetForegroundColor(Color::Yellow))?,
@@ -275,7 +288,6 @@ mod tests {
     use super::*;
     use crate::core::commands::request_open;
     use crate::core::config::Config;
-    use crate::core::editor::Buffer;
     use crate::core::text::Text;
     use crate::shell::lua;
     use crossterm::event::{
@@ -333,8 +345,8 @@ mod tests {
             session.handle_event_at(ev, t0 + Duration::from_secs(i as u64 + 1));
         }
 
-        assert_eq!(session.ed.buffer().text.to_bytes(), b"");
-        assert!(!session.ed.buffer().modified);
+        assert_eq!(session.ed.buffer().text().to_bytes(), b"");
+        assert!(!session.ed.buffer().modified());
         assert!(!session.needs_wal_flush);
         assert_eq!(session.last_edit_time, t0);
         assert!(!session.is_quit());
@@ -344,7 +356,7 @@ mod tests {
             press(KeyCode::Char('x'), KeyModifiers::NONE),
             t0 + Duration::from_secs(10),
         );
-        assert_eq!(session.ed.buffer().text.to_bytes(), b"x");
+        assert_eq!(session.ed.buffer().text().to_bytes(), b"x");
     }
 
     #[test]
@@ -434,13 +446,9 @@ mod tests {
         tx.send(Ok("line1\nline2\n".to_owned())).unwrap();
         session.tick_at(t0 + Duration::from_millis(100));
         assert!(session.active_shell.is_none());
-        assert!(
-            session
-                .ed
-                .buffers()
-                .iter()
-                .any(|b| b.name == "*Shell Command Output*" && b.text.to_bytes() == b"line1\nline2")
-        );
+        assert!(session.ed.buffers().iter().any(
+            |b| b.name() == "*Shell Command Output*" && b.text().to_bytes() == b"line1\nline2"
+        ));
     }
 
     #[test]
@@ -504,6 +512,44 @@ mod tests {
         // Even after 2 seconds pass, tick_at must NOT recreate .wal for saved buffer
         session.tick_at(t_edit3 + Duration::from_secs(5));
         assert!(!wal::has_wal(&file_a));
+    }
+
+    #[test]
+    fn cursor_motion_does_not_retrigger_or_delay_wal_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("cursor_test.txt");
+        fs::write(&file_a, "init_text").unwrap();
+
+        let mut session = make_session();
+        let fx = request_open(&session.ed, file_a.clone(), None, true, Vec::new());
+        session.ed = perform_all(session.ed, Some(&session.lua), fx);
+
+        let t0 = Instant::now();
+        // 1. Edit buffer at t0
+        session.handle_event_at(press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
+        assert!(session.needs_wal_flush);
+
+        // 2. Move cursor at t0 + 500ms: must NOT postpone the 1s flush timeout!
+        session.handle_event_at(
+            press(KeyCode::Right, KeyModifiers::NONE),
+            t0 + Duration::from_millis(500),
+        );
+        assert!(session.needs_wal_flush);
+
+        // At t0 + 1000ms: flush must happen (not delayed by Right arrow!)
+        session.tick_at(t0 + Duration::from_millis(1000));
+        assert!(wal::has_wal(&file_a));
+        assert!(!session.needs_wal_flush);
+
+        // 3. Move cursor at t0 + 2000ms: must NOT re-arm needs_wal_flush or re-write WAL!
+        session.handle_event_at(
+            press(KeyCode::Right, KeyModifiers::NONE),
+            t0 + Duration::from_millis(2000),
+        );
+        assert!(
+            !session.needs_wal_flush,
+            "cursor movement on already-flushed buffer re-armed WAL flush!"
+        );
     }
 
     #[test]
@@ -600,10 +646,9 @@ mod tests {
     #[test]
     fn render_sized_caches_unchanged_rows_redraws_style_changes_and_handles_resize() {
         let mut session = make_session();
-        session.ed = session.ed.with_current_buffer(|b| Buffer {
-            name: "plain.txt".to_owned(),
-            text: Text::from_bytes(b"let x = 42;"),
-            ..b
+        session.ed = session.ed.with_current_buffer(|b| {
+            b.set_name("plain.txt")
+                .with_text(Text::from_bytes(b"let x = 42;"))
         });
 
         // 1. Initial render draws all rows
@@ -625,10 +670,7 @@ mod tests {
 
         // 3. Rename buffer to `code.rs` while keeping row 0 text identical ("let x = 42;")
         // Row 0 must be redrawn because `styles[0]` changed from Normal to Keyword/Number!
-        session.ed = session.ed.with_current_buffer(|b| Buffer {
-            name: "code.rs".to_owned(),
-            ..b
-        });
+        session.ed = session.ed.with_current_buffer(|b| b.set_name("code.rs"));
         let mut out3 = Vec::new();
         session.render_sized(&mut out3, 20, 3).unwrap();
         let s3 = String::from_utf8(out3).unwrap();

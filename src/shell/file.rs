@@ -2,8 +2,8 @@
 
 use crate::core::effect::{self, RawFile};
 use crate::core::file::DiskState;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::Path;
 
 fn state_of(meta: &fs::Metadata) -> DiskState {
@@ -53,29 +53,9 @@ pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
     } else {
         path.to_path_buf()
     };
-    let dir = target
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = target.file_name().unwrap_or_default().to_string_lossy();
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
-
-    let result = write_tmp(&tmp, bytes, &target).and_then(|()| fs::rename(&tmp, &target));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result?;
+    let permissions = fs::metadata(&target).ok().map(|m| m.permissions());
+    crate::shell::atomic::atomic_write(&target, ".", ".tmp", bytes, permissions)?;
     Ok(disk_state(&target))
-}
-
-fn write_tmp(tmp: &Path, bytes: &[u8], target: &Path) -> io::Result<()> {
-    let mut f = OpenOptions::new().write(true).create_new(true).open(tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    if let Ok(meta) = fs::metadata(target) {
-        fs::set_permissions(tmp, meta.permissions())?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

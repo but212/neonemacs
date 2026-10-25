@@ -1,27 +1,65 @@
 //! Text modification, kill ring, and formatting commands (§6).
+//!
+//! Separated into two layers:
+//! - Layer 1: Pure domain calculations on `Text` and positions.
+//! - Layer 2: Built-in command adapters operating on `Editor`.
 
 use crate::core::commands::motion::region;
-use crate::core::commands::util::{delete_range, insert_at, is_space, paragraph_at, span_width};
-use crate::core::editor::{Buffer, Editor, LastCommand};
+use crate::core::editor::{Editor, LastCommand};
 use crate::core::effect::Effects;
-use crate::core::undo::Edit;
+use crate::core::text::Text;
+
+// --- Layer 1: Pure domain primitives ---
+
+/// Computes the delete range for backward deletion from `point`.
+pub fn delete_backward_char_range(text: &Text, point: usize) -> Option<(usize, usize)> {
+    if point == 0 {
+        None
+    } else {
+        Some((text.prev_boundary(point), point))
+    }
+}
+
+/// Computes the delete range for forward deletion from `point`.
+pub fn delete_char_range(text: &Text, point: usize) -> Option<(usize, usize)> {
+    if point >= text.len() {
+        None
+    } else {
+        Some((point, text.next_boundary(point)))
+    }
+}
+
+/// Computes the range to kill from `point` to the end of the line (or newline).
+pub fn kill_line_range(text: &Text, point: usize) -> Option<(usize, usize)> {
+    let line_end = text.line_end(point);
+    let end = if line_end == point && point < text.len() {
+        point + 1
+    } else {
+        line_end
+    };
+    if point >= end {
+        None
+    } else {
+        Some((point, end))
+    }
+}
+
+// --- Layer 2: Built-in command adapters ---
 
 pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    if p == 0 {
+    let Some((start, end)) = delete_backward_char_range(ed.buffer().text(), p) else {
         return (ed, fx);
-    }
-    let start = ed.buffer().text.prev_boundary(p);
-    (delete_range(ed, start, p).0, fx)
+    };
+    (ed.delete_range(start, end).0, fx)
 }
 
 pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    if p >= ed.buffer().text.len() {
+    let Some((start, end)) = delete_char_range(ed.buffer().text(), p) else {
         return (ed, fx);
-    }
-    let end = ed.buffer().text.next_boundary(p);
-    (delete_range(ed, p, end).0, fx)
+    };
+    (ed.delete_range(start, end).0, fx)
 }
 
 pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -31,16 +69,16 @@ pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
     if start >= end {
         return (ed, fx);
     }
-    let (ed, bytes) = delete_range(ed, start, end);
-    let ed = ed.with_current_buffer(|b| Buffer { mark: None, ..b });
-    (push_kill(ed, bytes), fx)
+    let ed = ed.kill_range(start, end);
+    let ed = ed.with_current_buffer(|b| b.set_mark(None));
+    (ed, fx)
 }
 
 pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let Some((start, end)) = region(&ed) else {
         return (ed.set_message("The mark is not set now"), fx);
     };
-    let bytes = ed.buffer().text.bytes(start..end);
+    let bytes = ed.buffer().text().bytes(start..end);
     let ed = ed.with_kill_ring(|kr| kr.push(bytes));
     (ed, fx)
 }
@@ -48,28 +86,10 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
 /// Kills to the end of the line, or the newline when already at the end.
 pub(crate) fn kill_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
-    let text = &ed.buffer().text;
-    let line_end = text.line_end(p);
-    let end = if line_end == p && p < text.len() {
-        p + 1
-    } else {
-        line_end
-    };
-    if p >= end {
+    let Some((start, end)) = kill_line_range(ed.buffer().text(), p) else {
         return (ed, fx);
-    }
-    let (ed, bytes) = delete_range(ed, p, end);
-    (push_kill(ed, bytes), fx)
-}
-
-/// Adds killed bytes to the kill ring. Consecutive kills append to one entry (I-09).
-fn push_kill(ed: Editor, bytes: Vec<u8>) -> Editor {
-    let ed = if ed.prev() == LastCommand::Kill {
-        ed.with_kill_ring(|kr| kr.append_last(&bytes))
-    } else {
-        ed.with_kill_ring(|kr| kr.push(bytes))
     };
-    ed.set_last(LastCommand::Kill)
+    (ed.kill_range(start, end), fx)
 }
 
 pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -77,7 +97,7 @@ pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
         return (ed.set_message("Kill ring is empty"), fx);
     };
     let p = ed.window().point;
-    let ed = insert_at(ed, p, &bytes);
+    let ed = ed.insert_at(p, &bytes);
     let ed = ed.set_last(LastCommand::Yank {
         start: p,
         end: p + bytes.len(),
@@ -90,14 +110,14 @@ pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let LastCommand::Yank { start, end } = ed.prev() else {
         return (ed.set_message("Previous command was not a yank"), fx);
     };
-    let (ed, _) = delete_range(ed, start, end);
+    let (ed, _) = ed.delete_range(start, end);
     let ed = ed.with_kill_ring(|kr| kr.rotate_right(1));
     let bytes = ed
         .kill_ring()
         .last()
         .map(<[u8]>::to_vec)
         .unwrap_or_default();
-    let ed = insert_at(ed, start, &bytes);
+    let ed = ed.insert_at(start, &bytes);
     let ed = ed.set_last(LastCommand::Yank {
         start,
         end: start + bytes.len(),
@@ -105,71 +125,9 @@ pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
-pub(crate) fn fill_paragraph(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
-    let fill = usize::from(ed.config().fill_column);
-    let tab = usize::from(ed.config().tab_width);
-    let text = &ed.buffer().text;
-    let Some((start, end)) = paragraph_at(text, p) else {
-        return (ed.set_message("No paragraph at point"), fx);
-    };
-    // The first line's indent is repeated on every line (A10).
-    let mut indent_end = start;
-    while indent_end < text.line_end(start) && matches!(text.byte_at(indent_end), b' ' | b'\t') {
-        indent_end += 1;
-    }
-    let indent = text.bytes(start..indent_end);
-    let indent_width = span_width(text, start, indent_end, tab);
-
-    let mut words = Vec::new();
-    let mut i = start;
-    while i < end {
-        if is_space(text.byte_at(i)) {
-            i += 1;
-            continue;
-        }
-        let word_start = i;
-        while i < end && !is_space(text.byte_at(i)) {
-            i += 1;
-        }
-        words.push((word_start, i));
-    }
-
-    let mut out = indent.clone();
-    let mut line_width = indent_width;
-    let mut line_has_word = false;
-    for (s, e) in words {
-        let w = span_width(text, s, e, tab);
-        if line_has_word && line_width + 1 + w > fill {
-            out.push(b'\n');
-            out.extend_from_slice(&indent);
-            line_width = indent_width;
-            line_has_word = false;
-        }
-        if line_has_word {
-            out.push(b' ');
-            line_width += 1;
-        }
-        out.extend(text.bytes(s..e));
-        line_width += w;
-        line_has_word = true;
-    }
-
-    let old = text.bytes(start..end);
-    let (ed, _) = ed.apply(Edit::Delete {
-        pos: start,
-        bytes: old,
-    });
-    let (ed, _) = ed.apply(Edit::Insert {
-        pos: start,
-        bytes: out,
-    });
-    (ed.move_point(start), fx)
-}
-
 pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let on = !ed.buffer().view_only;
-    let ed = ed.with_current_buffer(|b| Buffer { view_only: on, ..b });
+    let on = !ed.buffer().view_only();
+    let ed = ed.with_current_buffer(|b| b.set_view_only(on));
     let ed = ed.set_message(if on { "View mode on" } else { "View mode off" });
     (ed, fx)
 }
@@ -177,14 +135,13 @@ pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::Config;
-    use crate::core::editor::{KillRing, Window};
+    use crate::core::editor::KillRing;
     use crate::test_support::{editor, keys, point, run_command, text, typ};
 
     #[test]
     fn insert_hangul_saves_utf8() {
         let ed = typ(editor(), "한");
-        assert_eq!(ed.buffer().text.to_bytes(), "한".as_bytes());
+        assert_eq!(ed.buffer().text().to_bytes(), "한".as_bytes());
     }
 
     #[test]
@@ -230,36 +187,5 @@ mod tests {
         assert_eq!(text(&ed), "A");
         let ed = run_command(ed, yank_pop);
         assert_eq!(text(&ed), "B");
-    }
-
-    #[test]
-    fn fill_paragraph_breaks_at_spaces_by_width() {
-        let ed = editor().set_config(Config {
-            fill_column: 20,
-            ..*editor().config()
-        });
-        let ed = typ(ed, "가나다 라마바 사아자 차카타 파하");
-        let ed = run_command(ed, fill_paragraph);
-        assert_eq!(text(&ed), "가나다 라마바 사아자\n차카타 파하");
-    }
-
-    #[test]
-    fn fill_paragraph_keeps_indent_and_stops_at_blank_lines() {
-        let ed = editor().set_config(Config {
-            fill_column: 10,
-            ..*editor().config()
-        });
-        let ed = typ(ed, "  hello world foo");
-        let ed = run_command(ed, fill_paragraph);
-        assert_eq!(text(&ed), "  hello\n  world\n  foo");
-
-        let ed = editor().set_config(Config {
-            fill_column: 8,
-            ..*editor().config()
-        });
-        let ed = typ(ed, "aa bb cc dd ee ff\n\ndd ee");
-        let ed = ed.with_window(|w| Window { point: 0, ..w });
-        let ed = run_command(ed, fill_paragraph);
-        assert_eq!(text(&ed), "aa bb cc\ndd ee ff\n\ndd ee");
     }
 }

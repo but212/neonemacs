@@ -3,38 +3,44 @@
 use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use neonemacs::core::config::Config;
-use neonemacs::core::editor::{Buffer, Editor, Window};
+use neonemacs::core::editor::{Editor, Window};
 use neonemacs::core::file::Backing;
 use neonemacs::core::render;
-use neonemacs::core::syntax::{TokenKind, detect_lang, highlight_line};
+use neonemacs::core::syntax::{TokenKind, highlight_line};
 use neonemacs::core::text::Text;
 use neonemacs::shell::lua;
 use neonemacs::shell::session::ShellSession;
 
 #[test]
 fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let reg = ed.syntax_registry();
+
     // Rust
-    assert_eq!(detect_lang("lib.rs"), Some("rust"));
-    let rust_tokens = highlight_line(Some("rust"), "let x = 10; // assign");
+    assert_eq!(reg.detect_lang("lib.rs"), Some("rust"));
+    let rust_tokens = highlight_line(reg.find("rust"), "let x = 10; // assign");
     assert_eq!(rust_tokens[0], TokenKind::Keyword); // "let"
     assert_eq!(rust_tokens[8], TokenKind::Number); // "10"
     assert_eq!(rust_tokens[13], TokenKind::Comment); // "// assign"
 
     // Python
-    assert_eq!(detect_lang("script.py"), Some("python"));
-    let py_tokens = highlight_line(Some("python"), "def foo(): # comment");
+    assert_eq!(reg.detect_lang("script.py"), Some("python"));
+    let py_tokens = highlight_line(reg.find("python"), "def foo(): # comment");
     assert_eq!(py_tokens[0], TokenKind::Keyword); // "def"
     assert_eq!(py_tokens[11], TokenKind::Comment); // "# comment"
 
     // C
-    assert_eq!(detect_lang("main.c"), Some("c"));
-    let c_tokens = highlight_line(Some("c"), "int a = 0;");
-    assert_eq!(c_tokens[0], TokenKind::Keyword); // "int"
+    assert_eq!(reg.detect_lang("main.c"), Some("c"));
+    let c_tokens = highlight_line(reg.find("c"), "int a = 0; return a;");
+    assert_eq!(c_tokens[0], TokenKind::Type); // "int"
     assert_eq!(c_tokens[8], TokenKind::Number); // "0"
+    let ret_idx = "int a = 0; return a;".find("return").unwrap();
+    assert_eq!(c_tokens[ret_idx], TokenKind::Keyword); // "return"
 
     // Lua
-    assert_eq!(detect_lang("init.lua"), Some("lua"));
-    let lua_tokens = highlight_line(Some("lua"), "local v = 'str' -- comment");
+    assert_eq!(reg.detect_lang("init.lua"), Some("lua"));
+    let lua_tokens = highlight_line(reg.find("lua"), "local v = 'str' -- comment");
     assert_eq!(lua_tokens[0], TokenKind::Keyword); // "local"
     assert_eq!(lua_tokens[10], TokenKind::String); // 'str'
     assert_eq!(lua_tokens[16], TokenKind::Comment); // -- comment
@@ -42,11 +48,11 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
 
 #[test]
 fn styled_render_preserves_column_and_cursor_positions() {
-    let ed = Editor::new(Config::default()).with_current_buffer(|b| Buffer {
-        name: "test.rs".to_owned(),
-        text: Text::from_bytes(b"fn main() {\n    let x = 42;\n}\n"),
-        backing: Backing::None,
-        ..b
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua).with_current_buffer(|b| {
+        b.set_name("test.rs")
+            .with_text(Text::from_bytes(b"fn main() {\n    let x = 42;\n}\n"))
+            .set_backing(Backing::None)
     });
 
     let (cols, rows) = (40, 10);
@@ -81,11 +87,10 @@ fn styled_render_preserves_column_and_cursor_positions() {
 fn shell_session_render_sized_wide_hangul_and_scroll_writeback() {
     let src = "let s = \"가나다\"; let n = 7; // 주석\nline2\nline3\nline4\n";
     let ed = Editor::new(Config::default())
-        .with_current_buffer(|b| Buffer {
-            name: "hangul.rs".to_owned(),
-            text: Text::from_bytes(src.as_bytes()),
-            backing: Backing::None,
-            ..b
+        .with_current_buffer(|b| {
+            b.set_name("hangul.rs")
+                .with_text(Text::from_bytes(src.as_bytes()))
+                .set_backing(Backing::None)
         })
         // Place point on line 4 so `render::scroll` must scroll `window().top`
         .with_window(|w| Window {
@@ -133,4 +138,38 @@ fn shell_session_render_sized_wide_hangul_and_scroll_writeback() {
             .any(|w| w == expected_fragment.as_slice()),
         "ANSI colors after wide Hangul string must not shift"
     );
+}
+
+#[test]
+fn raw_non_utf8_bytes_do_not_shift_syntax_highlighting() {
+    let lua = lua::new_state().unwrap();
+    // Raw invalid UTF-8 bytes: \xe4\xb8 inside string literal on the same line
+    let src = b"let a = \"\xe4\xb8\"; let x = 7;\n";
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua).with_current_buffer(|b| {
+        b.set_name("test.rs")
+            .with_text(Text::from_bytes(src))
+            .set_backing(Backing::None)
+    });
+
+    let (cols, rows) = (40, 5);
+    let frame = render::frame(&ed, cols, rows);
+    let row0 = &frame.rows[0];
+
+    // Find "let x = 7;" in row0
+    let _row_str: String = row0.iter().map(|c| c.glyph.as_str()).collect();
+    // 'l', 'e', 't' of second let are at cells 14, 15, 16
+    assert_eq!(row0[14].glyph, "l");
+    assert_eq!(
+        row0[14].style,
+        TokenKind::Keyword,
+        "second 'let' keyword style was shifted or corrupted by raw bytes!"
+    );
+    assert_eq!(row0[15].glyph, "e");
+    assert_eq!(row0[15].style, TokenKind::Keyword);
+    assert_eq!(row0[16].glyph, "t");
+    assert_eq!(row0[16].style, TokenKind::Keyword);
+
+    // '7' is at cell 22
+    assert_eq!(row0[22].glyph, "7");
+    assert_eq!(row0[22].style, TokenKind::Number);
 }

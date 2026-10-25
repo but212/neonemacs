@@ -3,22 +3,31 @@
 //! Every transition takes the editor by value and returns the new one.
 
 use crate::core::buffer::BufferPool;
-use crate::core::commands;
+use crate::core::commands::CommandRegistry;
 use crate::core::config::Config;
-use crate::core::effect::{Effect, Effects};
+use crate::core::effect::Effects;
 use crate::core::file::Backing;
-use crate::core::keymap::{Code, Key, Keymap};
+use crate::core::keymap::Keymap;
+use crate::core::syntax::SyntaxRegistry;
 use crate::core::text::Text;
 use crate::core::undo::Edit;
 use crate::core::window::WindowManager;
 
-pub use crate::core::buffer::{Buffer, BufferId, BufferPool as _BufferPool};
+pub use crate::core::buffer::{Buffer, BufferId};
 pub use crate::core::mode::{
     Confirm, Isearch, LastCommand, Mode, Prefix, Prompt, Purpose, QueryReplace,
 };
-pub use crate::core::window::{
-    Dir, Layout, Window, WindowManager as _WindowManager, snap_point as snap,
-};
+pub use crate::core::window::{Dir, Layout, Window, snap_point as snap};
+
+/// Snaps an end-of-range offset to a unit boundary (moves to end of unit if mid-unit).
+pub fn snap_end(text: &Text, a: usize) -> usize {
+    let a = a.min(text.len());
+    if text.is_boundary(a) {
+        a
+    } else {
+        text.next_boundary(a)
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KillRing {
@@ -88,7 +97,10 @@ pub struct Editor {
     prev: LastCommand,
     message: String,
     config: Config,
+    syntax_registry: SyntaxRegistry,
+    commands: CommandRegistry,
     quit: bool,
+    edit_seq: u64,
 }
 
 /// Typed characters that share one undo group.
@@ -121,8 +133,19 @@ impl Editor {
             prev: LastCommand::Other,
             message: String::new(),
             config,
+            syntax_registry: SyntaxRegistry::new(),
+            commands: CommandRegistry::new(),
             quit: false,
+            edit_seq: 0,
         }
+    }
+
+    pub const fn edit_seq(&self) -> u64 {
+        self.edit_seq
+    }
+
+    pub fn clear_wal_dirty(self, id: BufferId) -> Self {
+        self.with_buffer(id, Buffer::clear_wal_dirty)
     }
 
     pub fn message(&self) -> &str {
@@ -148,6 +171,10 @@ impl Editor {
         self
     }
 
+    pub fn confirm(self, question: Confirm, message: impl Into<String>) -> Self {
+        self.set_mode(Mode::Confirm(question)).set_message(message)
+    }
+
     pub const fn buffers(&self) -> &BufferPool {
         &self.buffers
     }
@@ -161,8 +188,8 @@ impl Editor {
         &self.windows
     }
 
-    pub fn set_windows(mut self, windows: WindowManager) -> Self {
-        self.windows = windows;
+    pub fn with_windows(mut self, f: impl FnOnce(WindowManager) -> WindowManager) -> Self {
+        self.windows = f(self.windows);
         self
     }
 
@@ -172,6 +199,27 @@ impl Editor {
 
     pub const fn set_config(mut self, config: Config) -> Self {
         self.config = config;
+        self
+    }
+
+    pub const fn syntax_registry(&self) -> &SyntaxRegistry {
+        &self.syntax_registry
+    }
+
+    pub fn with_syntax_registry(
+        mut self,
+        f: impl FnOnce(SyntaxRegistry) -> SyntaxRegistry,
+    ) -> Self {
+        self.syntax_registry = f(self.syntax_registry);
+        self
+    }
+
+    pub const fn commands(&self) -> &CommandRegistry {
+        &self.commands
+    }
+
+    pub fn register_command(mut self, name: impl Into<String>) -> Self {
+        self.commands = self.commands.insert(name);
         self
     }
 
@@ -220,6 +268,11 @@ impl Editor {
         self
     }
 
+    pub fn with_keymap(mut self, f: impl FnOnce(Keymap) -> Keymap) -> Self {
+        self.keymap = f(self.keymap);
+        self
+    }
+
     pub fn window(&self) -> &Window {
         self.windows.current()
     }
@@ -229,15 +282,15 @@ impl Editor {
     pub fn kill_buffer_id(mut self, id: BufferId) -> Self {
         let (buffers, replacement) = self.buffers.kill(id, self.config.undo_limit);
         self.buffers = buffers;
-        let saved = self.buffer_by_id(replacement).saved_point;
+        let saved = self.buffer_by_id(replacement).saved_point();
         self.windows = self.windows.retarget(id, replacement, saved);
         self
     }
 
     /// Replaces the selected window with `f` applied to it (I-19).
     pub fn with_window(mut self, f: impl FnOnce(Window) -> Window) -> Self {
-        let w = f(self.window().clone());
-        let text = &self.buffer_by_id(w.buffer).text;
+        let w = f(*self.window());
+        let text = self.buffer_by_id(w.buffer).text();
         let w = Window {
             point: snap(text, w.point),
             top: snap(text, w.top),
@@ -268,10 +321,36 @@ impl Editor {
         self.with_buffer(id, f)
     }
 
-    /// Restores the content of the buffer visiting `path` from WAL bytes (I-23).
-    pub fn restore_buffer_content(mut self, path: &std::path::Path, bytes: &[u8]) -> Self {
-        self.buffers = self.buffers.restore_content(path, bytes);
+    /// Snaps `point` and resets `top` for every window displaying buffer `id` (I-01).
+    pub fn snap_windows_for_buffer(mut self, id: BufferId) -> Self {
+        let text = self.buffers.get_by_id(id).text();
+        self.windows = self.windows.map_windows(&|w| {
+            if w.buffer == id {
+                Window {
+                    point: snap(text, w.point),
+                    top: 0,
+                    ..w
+                }
+            } else {
+                w
+            }
+        });
         self
+    }
+
+    /// Restores the content of the buffer visiting `path` from WAL bytes (I-23).
+    pub fn restore_buffer_content(
+        mut self,
+        path: &std::path::Path,
+        bytes: &[u8],
+        line: Option<usize>,
+    ) -> Self {
+        let (buffers, id) = self.buffers.restore_content(path, bytes, line);
+        self.buffers = buffers;
+        match id {
+            Some(id) => self.snap_windows_for_buffer(id),
+            None => self,
+        }
     }
 
     /// Adds a buffer and returns its id. Ids are never reused.
@@ -287,25 +366,20 @@ impl Editor {
     /// the number of undo groups dropped to respect the limit, or `None` when refused.
     pub fn apply(mut self, edit: Edit) -> (Self, Option<usize>) {
         let id = self.window().buffer;
-        if self.buffer_by_id(id).view_only {
+        if self.buffer_by_id(id).view_only() {
             self.message = "Buffer is read-only".to_owned();
             return (self, None);
         }
 
         let mut dropped_res = None;
-        self.buffers = self.buffers.with_buffer(id, |mut buf| {
-            buf.text = edited(buf.text, &edit);
-            buf.modified = true;
-            let anchor = |a| snap(&buf.text, remap(&edit, a));
-            buf.mark = buf.mark.map(anchor);
-            buf.saved_point = anchor(buf.saved_point);
-            let (undo, dropped) = buf.undo.record(edit.clone());
-            buf.undo = undo;
+        self.edit_seq = self.edit_seq.wrapping_add(1);
+        self.buffers = self.buffers.with_buffer(id, |buf| {
+            let (buf, dropped) = buf.apply_edit(edit.clone(), |a| remap(&edit, a));
             dropped_res = Some(dropped);
             buf
         });
 
-        let text = &self.buffers.get_by_id(id).text;
+        let text = self.buffers.get_by_id(id).text();
         let anchor = |a| snap(text, remap(&edit, a));
         self.windows = self.windows.map_windows(&|w| {
             if w.buffer == id {
@@ -322,31 +396,64 @@ impl Editor {
         (self, dropped_res)
     }
 
+    /// Deletes `start..end`. Returns the editor and the removed bytes.
+    pub fn delete_range(self, start: usize, end: usize) -> (Self, Vec<u8>) {
+        let text = self.buffer().text();
+        let len = text.len();
+        let start = snap(text, start.min(len));
+        let end = snap_end(text, end.min(len));
+        if start >= end {
+            return (self, Vec::new());
+        }
+        let bytes = self.buffer().text().bytes(start..end);
+        let (ed, _) = self.apply(Edit::Delete {
+            pos: start,
+            bytes: bytes.clone(),
+        });
+        (ed, bytes)
+    }
+
+    /// Deletes `start..end` and pushes the removed bytes to the kill ring.
+    /// Consecutive kills append to one entry (I-09).
+    pub fn kill_range(self, start: usize, end: usize) -> Self {
+        let (ed, bytes) = self.delete_range(start, end);
+        if bytes.is_empty() {
+            return ed;
+        }
+        let ed = if ed.prev == LastCommand::Kill || ed.last == LastCommand::Kill {
+            ed.with_kill_ring(|kr| kr.append_last(&bytes))
+        } else {
+            ed.with_kill_ring(|kr| kr.push(bytes))
+        };
+        ed.set_last(LastCommand::Kill)
+    }
+
+    /// Inserts `bytes` at `pos` and moves point after them.
+    pub fn insert_at(self, pos: usize, bytes: &[u8]) -> Self {
+        let pos = snap(self.buffer().text(), pos.min(self.buffer().text().len()));
+        let (ed, applied) = self.apply(Edit::Insert {
+            pos,
+            bytes: bytes.to_vec(),
+        });
+        if applied.is_some() {
+            ed.move_point(pos + bytes.len())
+        } else {
+            ed
+        }
+    }
+
     /// Moves point to `pos`, snapped to a unit boundary (I-01).
     pub fn move_point(self, pos: usize) -> Self {
-        let pos = snap(&self.buffer().text, pos);
+        let pos = snap(self.buffer().text(), pos);
         self.with_window(|w| Window { point: pos, ..w })
     }
 
     /// Ends the current undo group.
     pub fn boundary(self) -> Self {
-        self.with_current_buffer(|b| Buffer {
-            undo: b.undo.close(),
-            ..b
-        })
+        self.with_current_buffer(Buffer::close_undo)
     }
 
-    /// Runs one command. The undo group ends after every command that is not an insert.
-    pub fn command(
-        self,
-        fx: Effects,
-        run: impl FnOnce(Editor, Effects) -> (Editor, Effects),
-    ) -> (Editor, Effects) {
-        let (ed, fx) = run(self.begin_command(), fx);
-        (ed.end_command(), fx)
-    }
-
-    const fn begin_command(mut self) -> Self {
+    pub const fn begin_command(mut self) -> Self {
         self.prev = self.last;
         self.last = LastCommand::Other;
         self
@@ -358,91 +465,6 @@ impl Editor {
             self
         } else {
             self.boundary()
-        }
-    }
-
-    /// Handles one key press: resolves prefixes, then runs a bound command or inserts text.
-    pub fn handle_key(self, key: Key, fx: Effects) -> (Editor, Effects) {
-        match &self.mode {
-            Mode::Normal { prefix } => {
-                let prefix = *prefix;
-                self.handle_normal_key(prefix, key, fx)
-            }
-            Mode::Confirm(question) => {
-                let question = *question;
-                self.answer(question, key, fx)
-            }
-            Mode::Isearch(_) => commands::isearch_key(self, key, fx),
-            Mode::QueryReplace(_) => (commands::query_key(self, key), fx),
-            Mode::Prompt(_) => commands::prompt_key(self, key, fx),
-        }
-    }
-
-    /// Answers a yes-or-no question. `y` confirms, `n` and `C-g` cancel, other keys wait.
-    fn answer(mut self, question: Confirm, key: Key, fx: Effects) -> (Editor, Effects) {
-        let yes = key.text() == Some('y');
-        if yes || key.text() == Some('n') || key == Key::ctrl('g') {
-            self.mode = Mode::Normal {
-                prefix: Prefix::None,
-            };
-            if yes {
-                return commands::confirmed(self, question, fx);
-            }
-            self.message = "Cancelled".to_owned();
-        }
-        (self, fx)
-    }
-
-    pub fn handle_normal_key(mut self, prefix: Prefix, key: Key, fx: Effects) -> (Editor, Effects) {
-        self.mode = Mode::Normal {
-            prefix: Prefix::None,
-        };
-        if key == Key::ctrl('g') {
-            self.message = "Quit".to_owned();
-            return (self, fx);
-        }
-        let keys = match prefix {
-            Prefix::None => {
-                if key == Key::plain(Code::Esc) {
-                    self.mode = Mode::Normal {
-                        prefix: Prefix::Meta,
-                    };
-                    return (self, fx);
-                }
-                if key == Key::ctrl('x') {
-                    self.mode = Mode::Normal {
-                        prefix: Prefix::CtlX,
-                    };
-                    return (self, fx);
-                }
-                vec![key]
-            }
-            Prefix::CtlX => vec![Key::ctrl('x'), key],
-            Prefix::Meta => vec![key.with_meta()],
-        };
-        if let Some(name) = self.keymap.lookup(&keys).map(str::to_owned) {
-            self.run_named(&name, fx)
-        } else if let (Prefix::None, Some(c)) = (prefix, key.text()) {
-            self.command(fx, |e, fx| (e.self_insert(c), fx))
-        } else {
-            let seq: Vec<String> = keys.iter().map(|k| k.describe()).collect();
-            self.message = format!("{} is undefined", seq.join(" "));
-            (self, fx)
-        }
-    }
-
-    /// Runs the command `name`. A built-in runs now. Any other name is sent to Lua as `RunLua`;
-    /// its result comes back as `LuaDone`.
-    pub fn run_named(self, name: &str, mut fx: Effects) -> (Editor, Effects) {
-        match commands::find(name) {
-            Some(run) => self.command(fx, run),
-            None => {
-                let ed = self.begin_command();
-                fx.push(Effect::RunLua {
-                    name: name.to_owned(),
-                });
-                (ed, fx)
-            }
         }
     }
 
@@ -461,7 +483,7 @@ impl Editor {
         };
         let bytes = c.to_string().into_bytes();
         let len = bytes.len();
-        let at = snap(&self.buffer().text, self.window().point);
+        let at = snap(self.buffer().text(), self.window().point);
         let (ed, applied) = self.apply(Edit::Insert { pos: at, bytes });
         if applied.is_none() {
             return ed;
@@ -479,7 +501,7 @@ impl Editor {
     pub fn undo(self, fx: Effects) -> (Editor, Effects) {
         let mut ed = self.boundary();
         let id = ed.window().buffer;
-        let groups = ed.buffer_by_id(id).undo.groups().len();
+        let groups = ed.buffer_by_id(id).undo().groups().len();
         let idx = match ed.prev {
             LastCommand::Undo { next } => next.checked_sub(1),
             _ => groups.checked_sub(1),
@@ -488,7 +510,7 @@ impl Editor {
             ed.message = "No further undo information".to_owned();
             return (ed, fx);
         };
-        let group = ed.buffer_by_id(id).undo.groups()[idx].clone();
+        let group = ed.buffer_by_id(id).undo().groups()[idx].clone();
         let mut dropped = 0;
         for edit in group.iter().rev() {
             let (next, applied) = ed.apply(edit.inverse());
@@ -503,14 +525,6 @@ impl Editor {
             next: idx.saturating_sub(dropped),
         };
         (ed, fx)
-    }
-}
-
-/// The text after `edit`.
-fn edited(text: Text, edit: &Edit) -> Text {
-    match edit {
-        Edit::Insert { pos, bytes } => text.insert(*pos, bytes),
-        Edit::Delete { pos, bytes } => text.delete(*pos..*pos + bytes.len()),
     }
 }
 
@@ -540,14 +554,12 @@ fn remap(edit: &Edit, a: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::core::keymap::{Code, Key};
     use crate::test_support::{press, run_command, text};
 
     fn editor_with(s: &str) -> Editor {
-        Editor::new(Config::default()).with_current_buffer(|b| Buffer {
-            text: Text::from_bytes(s.as_bytes()),
-            ..b
-        })
+        Editor::new(Config::default())
+            .with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
     }
 
     fn type_char(ed: Editor, c: char) -> Editor {
@@ -556,6 +568,47 @@ mod tests {
 
     fn undo(ed: Editor) -> Editor {
         run_command(ed, |e, fx| e.undo(fx))
+    }
+
+    #[test]
+    fn insert_at_and_delete_range_snap_to_unit_boundaries() {
+        // "가" is 3 bytes: 0..3
+        let ed = editor_with("가");
+        assert_eq!(ed.buffer().text().len(), 3);
+
+        // insert_at pos 1 (mid-character) should snap to boundary (0)
+        let ed_ins = ed.clone().insert_at(1, b"a");
+        assert_eq!(text(&ed_ins), "a가");
+
+        // delete_range 1..2 should snap boundaries (0..3)
+        let (ed_del, removed) = ed.clone().delete_range(1, 2);
+        assert_eq!(text(&ed_del), "");
+        assert_eq!(removed, "가".as_bytes());
+
+        // insert_at on view_only buffer must NOT move point (I-06)
+        let ed_ro = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
+        let ed_ro = ed_ro.insert_at(0, b"x");
+        assert_eq!(ed_ro.window().point, 0);
+        assert_eq!(text(&ed_ro), "hello");
+    }
+
+    #[test]
+    fn non_insert_command_closes_typing_undo_group() {
+        // Typing 'hello', then DEL, then undo should restore 'hello'
+        let ed = editor_with("");
+        let ed = press(ed, Key::plain(Code::Char('h')));
+        let ed = press(ed, Key::plain(Code::Char('e')));
+        let ed = press(ed, Key::plain(Code::Char('l')));
+        let ed = press(ed, Key::plain(Code::Char('l')));
+        let ed = press(ed, Key::plain(Code::Char('o')));
+        assert_eq!(text(&ed), "hello");
+
+        let ed = press(ed, Key::plain(Code::Backspace));
+        assert_eq!(text(&ed), "hell");
+
+        // Undo should undo only DEL (restoring 'hello')
+        let ed = press(ed, Key::ctrl('/'));
+        assert_eq!(text(&ed), "hello");
     }
 
     #[test]
@@ -626,10 +679,7 @@ mod tests {
 
     #[test]
     fn view_mode_blocks_edits() {
-        let ed = editor_with("hello").with_current_buffer(|b| Buffer {
-            view_only: true,
-            ..b
-        });
+        let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
         let (ed, applied) = ed.apply(Edit::Insert {
             pos: 0,
             bytes: b"x".to_vec(),
@@ -642,18 +692,14 @@ mod tests {
     fn anchors_follow_edit() {
         let ed = editor_with("abcdef")
             .with_window(|w| Window { point: 4, ..w })
-            .with_current_buffer(|b| Buffer {
-                mark: Some(2),
-                saved_point: 5,
-                ..b
-            });
+            .with_current_buffer(|b| b.set_mark(Some(2)).set_saved_point(5));
         let (ed, _) = ed.apply(Edit::Insert {
             pos: 1,
             bytes: b"XYZ".to_vec(),
         });
         assert_eq!(ed.window().point, 7);
-        assert_eq!(ed.buffer().mark, Some(5));
-        assert_eq!(ed.buffer().saved_point, 8);
+        assert_eq!(ed.buffer().mark(), Some(5));
+        assert_eq!(ed.buffer().saved_point(), 8);
     }
 
     #[test]
@@ -670,12 +716,9 @@ mod tests {
     fn with_buffer_updates_only_target() {
         let (ed, b2) =
             editor_with("first").add_buffer("b2", Text::from_bytes(b"second"), Backing::None);
-        let ed = ed.with_buffer(b2, |b| Buffer {
-            modified: true,
-            ..b
-        });
-        assert!(!ed.buffer_by_id(BufferId(0)).modified);
-        assert!(ed.buffer_by_id(b2).modified);
+        let ed = ed.with_buffer(b2, |b| b.set_modified(true));
+        assert!(!ed.buffer_by_id(BufferId(0)).modified());
+        assert!(ed.buffer_by_id(b2).modified());
     }
 
     #[test]
@@ -717,5 +760,52 @@ mod tests {
 
         let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec()));
         assert_eq!(ed.kill_ring().last(), Some(&b"sample"[..]));
+
+        let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());
+        let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
+        assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
+    }
+
+    #[test]
+    fn editor_delete_and_kill_range_appends_consecutive() {
+        let ed = Editor::new(Config::default());
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"hello wonderful world"),
+            crate::core::editor::Backing::None,
+        );
+        let ed = ed.with_window(|w| Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+
+        // Kill "hello "
+        let ed = ed.kill_range(0, 6);
+        assert_eq!(ed.buffer().text().to_bytes(), b"wonderful world");
+        assert_eq!(ed.kill_ring().entries(), &[b"hello ".to_vec()]);
+
+        // Consecutive kill "wonderful " -> should append to the same kill ring entry (I-09)
+        let ed = ed.kill_range(0, 10);
+        assert_eq!(ed.buffer().text().to_bytes(), b"world");
+        assert_eq!(ed.kill_ring().entries(), &[b"hello wonderful ".to_vec()]);
+    }
+
+    #[test]
+    fn with_windows_and_snap_windows_for_buffer() {
+        let ed = Editor::new(Config::default())
+            .with_current_buffer(|b| b.with_text(Text::from_bytes("가나다라".as_bytes())))
+            .with_window(|w| Window {
+                point: 9,
+                top: 6,
+                ..w
+            })
+            .with_windows(|wm| wm.split(Dir::Below));
+        let id = ed.window().buffer;
+        let ed = ed
+            .with_buffer(id, |b| b.with_text(Text::from_bytes("가".as_bytes())))
+            .snap_windows_for_buffer(id);
+        assert_eq!(ed.window().point, 3);
+        assert_eq!(ed.window().top, 0);
     }
 }

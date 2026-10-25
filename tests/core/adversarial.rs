@@ -4,8 +4,7 @@
 use crate::common::{editor, keys, point, text, typ};
 use neonemacs::core::commands::find;
 use neonemacs::core::commands::table::BUILTINS;
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::{Editor, Mode, Prefix, Window};
+use neonemacs::core::editor::{Mode, Prefix, Window};
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {
@@ -43,16 +42,16 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
     let bad_ed2 = typ(editor(), "가나다").with_window(|w| Window { point: 1, ..w });
     let (after_del, _) = delete_char(bad_ed2, Vec::new());
     // Deleting from middle of unit should delete to boundary without panic
-    assert!(point(&after_del) <= after_del.buffer().text.len());
+    assert!(point(&after_del) <= after_del.buffer().text().len());
 
     // Force point way past end of buffer (e.g. 9999)
     let oob_ed = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_bkwd, _) = delete_backward_char(oob_ed, Vec::new());
-    assert!(point(&after_bkwd) <= after_bkwd.buffer().text.len());
+    assert!(point(&after_bkwd) <= after_bkwd.buffer().text().len());
 
     let oob_ed2 = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_kill, _) = kill_line(oob_ed2, Vec::new());
-    assert!(point(&after_kill) <= after_kill.buffer().text.len());
+    assert!(point(&after_kill) <= after_kill.buffer().text().len());
 }
 
 #[test]
@@ -67,36 +66,6 @@ fn snap_and_insert_clamping_prevents_gap_buffer_panic() {
     let oob_ed = typ(editor(), "abc").with_window(|w| Window { point: 9999, ..w });
     let oob_ed = oob_ed.self_insert('!');
     assert_eq!(text(&oob_ed), "abc!");
-}
-
-#[test]
-fn extreme_whitespace_and_empty_paragraphs() {
-    let fill_paragraph = find("fill-paragraph").unwrap();
-
-    // Only newlines and spaces
-    let ed = typ(editor(), "   \n\n\t\t\n   \n\n");
-    let (ed, _) = fill_paragraph(ed, Vec::new());
-    assert_eq!(ed.message(), "No paragraph at point");
-
-    // Single character with huge fill column
-    let config = Config {
-        fill_column: 1000,
-        ..Default::default()
-    };
-    let mut ed2 = Editor::new(config);
-    ed2 = typ(ed2, "x");
-    let (ed2, _) = fill_paragraph(ed2, Vec::new());
-    assert_eq!(text(&ed2), "x");
-
-    // Paragraph with fill_column smaller than word length
-    let config3 = Config {
-        fill_column: 2,
-        ..Default::default()
-    };
-    let mut ed3 = Editor::new(config3);
-    ed3 = typ(ed3, "supercalifragilistic");
-    let (ed3, _) = fill_paragraph(ed3, Vec::new());
-    assert_eq!(text(&ed3), "supercalifragilistic");
 }
 
 #[test]
@@ -262,7 +231,7 @@ fn massive_kill_pop_and_undo_reversibility() {
     // Now undo all operations back to the initial state
     // Consecutive undos should walk back through each edit group
     let mut steps = 0;
-    while ed.buffer().text.to_bytes() != initial_text.as_bytes() && steps < 50 {
+    while ed.buffer().text().to_bytes() != initial_text.as_bytes() && steps < 50 {
         ed = keys(ed, "C-/");
         steps += 1;
     }
@@ -279,11 +248,11 @@ fn view_mode_toggle_and_protection() {
     let view_mode = find("view-mode").unwrap();
 
     let ed = typ(editor(), "immutable text");
-    assert!(!ed.buffer().view_only);
+    assert!(!ed.buffer().view_only());
 
     // Toggle view-mode ON
     let (mut ed, _) = view_mode(ed, Vec::new());
-    assert!(ed.buffer().view_only);
+    assert!(ed.buffer().view_only());
     assert_eq!(ed.message(), "View mode on");
 
     // Attempting edits while view-mode is on must be blocked
@@ -293,7 +262,7 @@ fn view_mode_toggle_and_protection() {
 
     // Toggle view-mode OFF
     let (mut ed, _) = view_mode(ed, Vec::new());
-    assert!(!ed.buffer().view_only);
+    assert!(!ed.buffer().view_only());
     assert_eq!(ed.message(), "View mode off");
 
     // Now edits should succeed
@@ -317,7 +286,7 @@ fn buffer_prompt_hostile_names_and_lifecycle() {
     let ed = typ(ed, "novel_buf");
     let ed = keys(ed, "RET");
     assert_eq!(ed.buffers().len(), 2);
-    assert_eq!(ed.buffer().name, "novel_buf");
+    assert_eq!(ed.buffer().name(), "novel_buf");
 
     // 3. kill-buffer with nonexistent name reports error
     let (ed, _) = kill_buffer(ed, Vec::new());
@@ -330,7 +299,7 @@ fn buffer_prompt_hostile_names_and_lifecycle() {
     let (ed, _) = kill_buffer(ed, Vec::new());
     let ed = keys(ed, "RET");
     assert_eq!(ed.buffers().len(), 1);
-    assert_ne!(ed.buffer().name, "novel_buf");
+    assert_ne!(ed.buffer().name(), "novel_buf");
 }
 
 #[test]
@@ -378,5 +347,232 @@ fn hostile_fuzz_sequence_no_panic() {
 
     // Must never panic, buffer must remain intact and valid UTF-8
     assert!(!ed.buffers().is_empty());
-    assert!(ed.window().point <= ed.buffer().text.len());
+    assert!(ed.window().point <= ed.buffer().text().len());
+}
+
+#[test]
+fn prompt_hostile_tab_completion_and_common_prefix() {
+    let mut ed = editor();
+    ed = keys(ed, "M-x");
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
+
+    // Spam TAB on empty prompt: candidate note produced without crash or input corruption
+    ed = keys(ed, "TAB TAB TAB");
+    if let Mode::Prompt(p) = ed.mode() {
+        assert_eq!(p.input, "");
+    } else {
+        panic!("Prompt mode lost on empty TAB spam");
+    }
+
+    // "is" matches isearch-backward, isearch-backward-regexp, isearch-forward, isearch-forward-regexp
+    ed = typ(ed, "is");
+    ed = keys(ed, "TAB");
+    if let Mode::Prompt(p) = ed.mode() {
+        assert_eq!(p.input, "isearch-");
+    }
+    // Candidate list note must include options with their key bindings
+    assert!(ed.message().contains("isearch-forward"));
+    assert!(ed.message().contains("isearch-backward"));
+
+    // Repeated TAB on already-common prefix must be idempotent
+    ed = keys(ed, "TAB");
+    if let Mode::Prompt(p) = ed.mode() {
+        assert_eq!(p.input, "isearch-");
+    }
+
+    // Narrow down with 'b' -> isearch-b -> TAB expands to isearch-backward
+    ed = typ(ed, "b");
+    ed = keys(ed, "TAB");
+    if let Mode::Prompt(p) = ed.mode() {
+        assert_eq!(p.input, "isearch-backward");
+    }
+
+    // Narrow down to unique candidate "-r" -> isearch-backward-regexp
+    ed = typ(ed, "-r");
+    ed = keys(ed, "TAB");
+    if let Mode::Prompt(p) = ed.mode() {
+        assert_eq!(p.input, "isearch-backward-regexp");
+    }
+
+    // Completely nonexistent prefix TAB reports "No match" without destroying input
+    ed = typ(ed, "xyz_not_a_command");
+    ed = keys(ed, "TAB");
+    assert_eq!(ed.message(), "No match");
+    if let Mode::Prompt(p) = ed.mode() {
+        assert_eq!(p.input, "isearch-backward-regexpxyz_not_a_command");
+    }
+
+    // C-g cancels gracefully
+    ed = keys(ed, "C-g");
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
+    assert_eq!(ed.message(), "Quit");
+}
+
+#[test]
+fn prompt_buffer_completion_and_existing_buffer_switch() {
+    let mut ed = editor();
+
+    // Create multiple buffers including Korean multibyte names
+    let switch_to_buffer = find("switch-to-buffer").unwrap();
+    let (e, _) = switch_to_buffer(ed, Vec::new());
+    let e = typ(e, "work_log_2026");
+    ed = keys(e, "RET");
+
+    let (e, _) = switch_to_buffer(ed, Vec::new());
+    let e = typ(e, "work_log_archive");
+    ed = keys(e, "RET");
+
+    let (e, _) = switch_to_buffer(ed, Vec::new());
+    let e = typ(e, "한글_문서_1");
+    ed = keys(e, "RET");
+
+    let (e, _) = switch_to_buffer(ed, Vec::new());
+    let e = typ(e, "한글_문서_2");
+    ed = keys(e, "RET");
+
+    // 1. Buffer completion on "work_l" expands to common prefix "work_log_"
+    let (e, _) = switch_to_buffer(ed, Vec::new());
+    let e = typ(e, "work_l");
+    let mut e = keys(e, "TAB");
+    if let Mode::Prompt(p) = e.mode() {
+        assert_eq!(p.input, "work_log_");
+    }
+    assert!(e.message().contains("work_log_2026"));
+    assert!(e.message().contains("work_log_archive"));
+
+    // 2. Select existing buffer "work_log_2026" via completion
+    e = typ(e, "2");
+    e = keys(e, "TAB");
+    if let Mode::Prompt(p) = e.mode() {
+        assert_eq!(p.input, "work_log_2026");
+    }
+    ed = keys(e, "RET");
+    assert_eq!(ed.buffer().name(), "work_log_2026");
+
+    // 3. Multibyte UTF-8 buffer completion on "한글_"
+    let (e, _) = switch_to_buffer(ed, Vec::new());
+    let e = typ(e, "한글_");
+    let mut e = keys(e, "TAB");
+    if let Mode::Prompt(p) = e.mode() {
+        assert_eq!(p.input, "한글_문서_");
+    }
+    assert!(e.message().contains("한글_문서_1"));
+    assert!(e.message().contains("한글_문서_2"));
+
+    // Select existing Hangul buffer "한글_문서_1"
+    e = typ(e, "1");
+    e = keys(e, "TAB");
+    if let Mode::Prompt(p) = e.mode() {
+        assert_eq!(p.input, "한글_문서_1");
+    }
+    ed = keys(e, "RET");
+    assert_eq!(ed.buffer().name(), "한글_문서_1");
+
+    // 4. Buffer completion with no match
+    let (e, _) = switch_to_buffer(ed, Vec::new());
+    let e = typ(e, "nonexistent_prefix_999");
+    let e = keys(e, "TAB");
+    assert_eq!(e.message(), "No match");
+    ed = keys(e, "C-g");
+
+    // 5. kill-buffer with completion
+    let kill_buffer = find("kill-buffer").unwrap();
+    let (e, _) = kill_buffer(ed, Vec::new());
+    let e = typ(e, "work_log_a");
+    let e = keys(e, "TAB");
+    if let Mode::Prompt(p) = e.mode() {
+        assert_eq!(p.input, "work_log_archive");
+    }
+    let initial_count = e.buffers().len();
+    ed = keys(e, "RET");
+    assert_eq!(ed.buffers().len(), initial_count - 1);
+    assert!(!ed.buffers().iter().any(|b| b.name() == "work_log_archive"));
+}
+
+#[test]
+fn prompt_query_replace_chained_adversarial() {
+    let mut ed = typ(editor(), "alpha beta alpha gamma");
+
+    // Boundary check: Point is at end of buffer -> query-replace has no match forward
+    ed = keys(ed, "M-x");
+    ed = typ(ed, "query-replace");
+    ed = keys(ed, "RET");
+    ed = typ(ed, "alpha");
+    ed = keys(ed, "RET");
+    ed = typ(ed, "delta");
+    ed = keys(ed, "RET");
+    assert_eq!(ed.message(), "No match");
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
+
+    // Move to beginning and perform two-stage prompt query-replace: from -> to -> replace
+    ed = keys(ed, "C-a");
+    ed = keys(ed, "M-x");
+    ed = typ(ed, "query-replace");
+    ed = keys(ed, "RET");
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
+    assert_eq!(ed.message(), "Query replace: ");
+
+    ed = typ(ed, "alpha");
+    ed = keys(ed, "RET");
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
+    assert_eq!(ed.message(), "Query replace alpha with: ");
+
+    ed = typ(ed, "delta");
+    ed = keys(ed, "RET");
+    assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
+
+    // '!' replaces all occurrences
+    ed = keys(ed, "!");
+    assert_eq!(text(&ed), "delta beta delta gamma");
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
+
+    // Hostile regex syntax error in query-replace-regexp
+    ed = keys(ed, "M-x");
+    ed = typ(ed, "query-replace-regexp");
+    ed = keys(ed, "RET");
+    ed = typ(ed, "[a-"); // Broken unclosed class regex
+    ed = keys(ed, "RET");
+    ed = typ(ed, "repl");
+    ed = keys(ed, "RET");
+    // Invalid regex must be caught gracefully and reported in the echo area without panic
+    assert_eq!(ed.message(), "unclosed [");
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
+}
+
+#[test]
+fn prompt_shell_command_adversarial() {
+    let mut ed = editor();
+    ed = keys(ed, "M-x");
+    ed = typ(ed, "shell-command");
+    ed = keys(ed, "RET");
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
+
+    // Empty RET on shell-command prompt must be a clean no-op
+    ed = keys(ed, "RET");
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
 }

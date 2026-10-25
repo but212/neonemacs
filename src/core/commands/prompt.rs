@@ -42,12 +42,19 @@ pub(crate) fn prompt(ed: Editor, label: &str, purpose: Purpose) -> Editor {
     }))
 }
 
-/// Every built-in command name with the keys bound to it, for `M-x` completion (§4).
+/// Every built-in command name and registered Lua command with the keys bound to it,
+/// for `M-x` completion (§4, §12).
 pub fn completions(ed: &Editor, prefix: &str) -> Vec<(String, String)> {
-    BUILTINS
+    let names: std::collections::BTreeSet<&str> = BUILTINS
         .iter()
-        .filter(|(n, _)| n.starts_with(prefix))
-        .map(|(n, _)| (n.to_string(), ed.keymap().keys_for(n).join(", ")))
+        .map(|(n, _)| *n)
+        .filter(|n| n.starts_with(prefix))
+        .chain(ed.commands().completions(prefix))
+        .collect();
+
+    names
+        .into_iter()
+        .map(|n| (n.to_string(), ed.keymap().keys_for(n).join(", ")))
         .collect()
 }
 
@@ -57,8 +64,8 @@ fn candidates(ed: &Editor, purpose: &Purpose, input: &str) -> Vec<(String, Strin
         Purpose::SwitchBuffer | Purpose::KillBuffer => ed
             .buffers()
             .iter()
-            .filter(|b| b.name.starts_with(input))
-            .map(|b| (b.name.clone(), String::new()))
+            .filter(|b| b.name().starts_with(input))
+            .map(|b| (b.name().to_owned(), String::new()))
             .collect(),
         _ => Vec::new(),
     }
@@ -150,7 +157,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
     let input = p.input;
     match p.purpose {
-        Purpose::ExecuteCommand => ed.run_named(&input, fx),
+        Purpose::ExecuteCommand => crate::core::dispatch::run_named(ed, &input, fx),
         Purpose::FindFile => find_file(ed, &input, fx),
         Purpose::WriteFile => write_file(ed, &input, fx),
         Purpose::SwitchBuffer => (switch_to_named(ed, &input), fx),
@@ -171,7 +178,7 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
                 )
             }
         }
-        Purpose::QueryTo { regex, from } => ed.command(fx, |e, fx| {
+        Purpose::QueryTo { regex, from } => crate::core::dispatch::command(ed, fx, |e, fx| {
             let (e, result) = start_query_replace(e, &from, &input, regex);
             let e = match result {
                 Ok(()) => e,
@@ -186,7 +193,11 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     if name.is_empty() {
         return ed;
     }
-    let found = ed.buffers().iter().find(|b| b.name == name).map(|b| b.id);
+    let found = ed
+        .buffers()
+        .iter()
+        .find(|b| b.name() == name)
+        .map(Buffer::id);
     match found {
         Some(id) => switch_to(ed, id),
         None => {
@@ -200,7 +211,10 @@ fn kill_named(ed: Editor, name: &str, fx: Effects) -> (Editor, Effects) {
     let id = if name.is_empty() {
         Some(ed.window().buffer)
     } else {
-        ed.buffers().iter().find(|b| b.name == name).map(|b| b.id)
+        ed.buffers()
+            .iter()
+            .find(|b| b.name() == name)
+            .map(Buffer::id)
     };
     match id {
         Some(id) => kill_buffer(ed, id, fx),
@@ -212,7 +226,7 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
     let Ok(n) = input.trim().parse::<usize>() else {
         return ed.set_message(format!("Not a line number: {input}"));
     };
-    let pos = ed.buffer().text.nth_line_start(n);
+    let pos = ed.buffer().text().nth_line_start(n);
     ed.move_point(pos)
 }
 
@@ -250,15 +264,18 @@ pub fn shell_done(ed: Editor, result: Result<String, String>) -> Editor {
 /// Puts `text` in the output buffer and shows it in the other window.
 fn show_output(ed: Editor, text: &str) -> Editor {
     const NAME: &str = "*Shell Command Output*";
-    let found = ed.buffers().iter().find(|b| b.name == NAME).map(|b| b.id);
+    let found = ed
+        .buffers()
+        .iter()
+        .find(|b| b.name() == NAME)
+        .map(Buffer::id);
     let (ed, id) = match found {
         Some(id) => (ed, id),
         None => ed.add_buffer(NAME, Text::default(), Backing::None),
     };
-    let mut ed = ed.with_buffer(id, |b| Buffer {
-        text: Text::from_bytes(text.as_bytes()),
-        modified: false,
-        ..b
+    let mut ed = ed.with_buffer(id, |b| {
+        b.with_text(Text::from_bytes(text.as_bytes()))
+            .set_modified(false)
     });
     if ed.leaf_count() == 1 {
         ed = split(ed, Dir::Below);
@@ -269,10 +286,8 @@ fn show_output(ed: Editor, text: &str) -> Editor {
     } else {
         orig - 1
     };
-    let windows = ed.windows().clone().set_selected(other);
-    let ed = switch_to(ed.set_windows(windows), id);
-    let windows = ed.windows().clone().set_selected(orig);
-    ed.set_windows(windows)
+    let ed = switch_to(ed.with_windows(|wm| wm.set_selected(other)), id);
+    ed.with_windows(|wm| wm.set_selected(orig))
 }
 
 /// Ends a Lua command: shows the first line of its error, then closes its undo group like any command.
@@ -322,9 +337,148 @@ mod tests {
         let out = ed
             .buffers()
             .iter()
-            .find(|b| b.name == "*Shell Command Output*")
+            .find(|b| b.name() == "*Shell Command Output*")
             .expect("output buffer");
-        assert_eq!(out.text.to_bytes(), b"a\nb");
+        assert_eq!(out.text().to_bytes(), b"a\nb");
         assert_eq!(ed.leaf_count(), 2);
+    }
+
+    #[test]
+    fn common_prefix_edge_cases() {
+        assert_eq!(common_prefix(&[]), "");
+        assert_eq!(common_prefix(&["only"]), "only");
+        assert_eq!(common_prefix(&["abc", "xyz"]), "");
+        assert_eq!(
+            common_prefix(&["prefix_a", "prefix_b", "prefix_c"]),
+            "prefix_"
+        );
+        assert_eq!(common_prefix(&["short", "shorthand"]), "short");
+        // UTF-8 multibyte characters and emojis
+        assert_eq!(common_prefix(&["가나다라", "가나다마"]), "가나다");
+        assert_eq!(common_prefix(&["가나", "각"]), "");
+        assert_eq!(common_prefix(&["🦀rust", "🦀ruby"]), "🦀ru");
+    }
+
+    #[test]
+    fn completion_multi_candidate_and_no_match() {
+        let ed = editor();
+        // Multi candidate expands to common prefix and formats candidate notes
+        let p = Prompt {
+            label: "M-x ".into(),
+            input: "is".into(),
+            purpose: Purpose::ExecuteCommand,
+        };
+        let (p, note) = complete(&ed, p);
+        assert_eq!(p.input, "isearch-");
+        let note = note.expect("should produce candidates note");
+        assert!(note.contains("isearch-forward"));
+        assert!(note.contains("isearch-backward"));
+
+        // No match candidate
+        let p_none = Prompt {
+            label: "M-x ".into(),
+            input: "nonexistent_command_prefix".into(),
+            purpose: Purpose::ExecuteCommand,
+        };
+        let (p_none, note_none) = complete(&ed, p_none);
+        assert_eq!(p_none.input, "nonexistent_command_prefix");
+        assert_eq!(note_none.as_deref(), Some("No match"));
+
+        // Buffer candidates completion
+        let (ed, _) = ed.add_buffer("alpha_1", Text::default(), Backing::None);
+        let (ed, _) = ed.add_buffer("alpha_2", Text::default(), Backing::None);
+        let p_buf = Prompt {
+            label: "Switch to buffer: ".into(),
+            input: "alph".into(),
+            purpose: Purpose::SwitchBuffer,
+        };
+        let (p_buf, note_buf) = complete(&ed, p_buf);
+        assert_eq!(p_buf.input, "alpha_");
+        let note_buf = note_buf.expect("should produce buffer candidates note");
+        assert!(note_buf.contains("alpha_1"));
+        assert!(note_buf.contains("alpha_2"));
+    }
+
+    #[test]
+    fn prompt_key_non_prompt_mode_is_noop() {
+        let ed = editor();
+        assert_eq!(
+            ed.mode(),
+            &Mode::Normal {
+                prefix: Prefix::None
+            }
+        );
+        let (same_ed, same_fx) = prompt_key(ed.clone(), Key::plain(Code::Char('a')), Vec::new());
+        assert_eq!(same_ed.mode(), ed.mode());
+        assert!(same_fx.is_empty());
+    }
+
+    #[test]
+    fn shell_done_and_lua_done_hostile_and_edge_branches() {
+        let ed = editor();
+
+        // Empty shell output
+        let ed_empty = shell_done(ed.clone(), Ok(String::new()));
+        assert_eq!(ed_empty.message(), "(no output)");
+        let ed_crlf = shell_done(ed.clone(), Ok("\r\n\r\n".into()));
+        assert_eq!(ed_crlf.message(), "(no output)");
+
+        // Shell error output
+        let ed_err = shell_done(ed.clone(), Err("command failed: 127".into()));
+        assert_eq!(ed_err.message(), "command failed: 127");
+
+        // Shell command with empty string produces no effects
+        let fx = run_shell("", Vec::new());
+        assert!(fx.is_empty());
+
+        // Multi-line shell output when windows are already split
+        let ed_split = split(ed.clone(), Dir::Below);
+        assert_eq!(ed_split.leaf_count(), 2);
+        let ed_out1 = shell_done(ed_split, Ok("line 1\r\nline 2".into()));
+        assert_eq!(ed_out1.leaf_count(), 2);
+        assert_eq!(
+            ed_out1
+                .buffers()
+                .iter()
+                .find(|b| b.name() == "*Shell Command Output*")
+                .map(|b| b.text().to_bytes()),
+            Some(b"line 1\nline 2".to_vec())
+        );
+
+        // Re-running reuses the existing *Shell Command Output* buffer and selects other window from leaf
+        let ed_out2 = shell_done(ed_out1, Ok("new 1\nnew 2\nnew 3".into()));
+        assert_eq!(ed_out2.leaf_count(), 2);
+        assert_eq!(
+            ed_out2
+                .buffers()
+                .iter()
+                .filter(|b| b.name() == "*Shell Command Output*")
+                .count(),
+            1
+        );
+
+        // lua_done success and multi-line error
+        let ed_lua_ok = lua_done(ed.clone(), Ok(()));
+        assert!(ed_lua_ok.message().is_empty());
+
+        let ed_lua_err = lua_done(
+            ed,
+            Err("first error line\nsecond traceback line\nthird line".into()),
+        );
+        assert_eq!(ed_lua_err.message(), "first error line");
+    }
+
+    #[test]
+    fn completions_includes_registered_lua_commands() {
+        let ed = editor()
+            .register_command("forward-word")
+            .register_command("fill-paragraph");
+        let cands = completions(&ed, "fill-");
+        assert_eq!(cands, vec![("fill-paragraph".to_string(), String::new())]);
+
+        let all = completions(&ed, "");
+        assert!(all.iter().any(|(name, _)| name == "forward-word"));
+        assert!(all.iter().any(|(name, _)| name == "fill-paragraph"));
+        assert!(all.iter().any(|(name, _)| name == "kill-line"));
     }
 }

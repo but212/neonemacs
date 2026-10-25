@@ -172,6 +172,16 @@ impl Keymap {
         Ok(self.bind(parse_key_seq(keys)?, name))
     }
 
+    pub fn unbind(mut self, keys: &[Key]) -> Self {
+        self.bindings.remove(keys);
+        self
+    }
+
+    pub fn unbind_str(self, keys: &str) -> Result<Self, KeyError> {
+        let seq = parse_key_seq(keys)?;
+        Ok(self.unbind(&seq))
+    }
+
     /// Key sequences bound to `name`, for display.
     pub fn keys_for(&self, name: &str) -> Vec<String> {
         let mut keys: Vec<String> = self
@@ -270,5 +280,25 @@ mod tests {
             map.lookup(&parse_keys("C-SPC").unwrap()),
             Some("set-mark-command")
         );
+    }
+
+    #[test]
+    fn unbind_removes_existing_binding() {
+        let map = Keymap::survival();
+        let key = parse_key_seq("C-x C-s").unwrap();
+        assert_eq!(map.lookup(&key), Some("save-buffer"));
+
+        let unmapped = map.unbind_str("C-x C-s").unwrap();
+        assert_eq!(unmapped.lookup(&key), None);
+    }
+
+    #[test]
+    fn unbind_nonexistent_is_noop() {
+        let map = Keymap::survival();
+        let key = parse_key_seq("C-k").unwrap();
+        assert_eq!(map.lookup(&key), None);
+
+        let map2 = map.clone().unbind(&key);
+        assert_eq!(map2.lookup(&key), None);
     }
 }

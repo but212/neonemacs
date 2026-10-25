@@ -76,7 +76,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
         let ed = ed.set_mode(Mode::Normal {
             prefix: Prefix::None,
         });
-        return ed.handle_normal_key(Prefix::None, key, fx);
+        return crate::core::dispatch::handle_normal_key(ed, Prefix::None, key, fx);
     };
     (ed.set_mode(Mode::Isearch(s)), fx)
 }
@@ -104,7 +104,11 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     let mut wrapped = false;
     let mut found = find_in_direction(&ed, &pattern, s.forward, from, fold);
     if found.is_none() && wrap {
-        let other_end = if s.forward { 0 } else { ed.buffer().text.len() };
+        let other_end = if s.forward {
+            0
+        } else {
+            ed.buffer().text().len()
+        };
         found = find_in_direction(&ed, &pattern, s.forward, other_end, fold);
         wrapped = found.is_some();
     }
@@ -128,7 +132,7 @@ fn find_in_direction(
     from: usize,
     fold: bool,
 ) -> Option<(usize, usize)> {
-    let text = &ed.buffer().text;
+    let text = ed.buffer().text();
     if forward {
         search::find_forward(text, pattern, from, fold)
     } else {
@@ -174,10 +178,10 @@ pub fn start_query_replace(
 }
 
 fn next_match(ed: &Editor, q: &QueryReplace, from: usize) -> Option<(usize, usize)> {
-    if from > ed.buffer().text.len() {
+    if from > ed.buffer().text().len() {
         return None;
     }
-    search::find_forward(&ed.buffer().text, &q.pattern, from, q.fold)
+    search::find_forward(ed.buffer().text(), &q.pattern, from, q.fold)
 }
 
 /// Answers for query-replace: `y`/SPC replace, `n`/DEL skip, `!` replace the rest,
@@ -234,7 +238,7 @@ fn replace_match(
     start: usize,
     end: usize,
 ) -> (Editor, Option<usize>) {
-    let matched = ed.buffer().text.bytes(start..end);
+    let matched = ed.buffer().text().bytes(start..end);
     let replacement = if q.regex {
         search::expand_replacement(&q.replacement, &matched)
     } else {
@@ -263,7 +267,7 @@ fn replace_match(
 /// Next search start after a match ending at `after`. An empty match must move
 /// past one unit, or the search would find it again forever.
 fn resume(ed: &Editor, after: usize, matched_empty: bool) -> usize {
-    let text = &ed.buffer().text;
+    let text = ed.buffer().text();
     if !matched_empty {
         after
     } else if after >= text.len() {

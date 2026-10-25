@@ -24,7 +24,6 @@ enum Node {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[repr(transparent)]
 pub struct Pattern {
     nodes: Vec<Node>,
 }
