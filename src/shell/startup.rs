@@ -59,10 +59,11 @@ pub fn open_and_recover_single(
     let fx = request_open(&ed, arg.path.clone(), arg.line, false, Vec::new());
     let mut ed = perform_all(ed, lua, fx);
 
-    if has_wal {
+    // A refused open (over `max-file-size`) leaves no buffer, so there is nothing to recover into.
+    if has_wal && ed.buffers().find_by_path(&arg.path).is_some() {
         let cur_disk = buffer_disk_state(&ed, &arg.path);
-        if let Ok(wal_bytes) = wal::read_wal(&arg.path, cur_disk) {
-            ed = ed.restore_buffer_content(&arg.path, &wal_bytes, arg.line);
+        if let Ok(recovered) = wal::read_wal(&arg.path, cur_disk) {
+            ed = ed.restore_buffer_content(&arg.path, &recovered.bytes, recovered.eol, arg.line);
             let name = arg
                 .path
                 .file_name()
@@ -134,6 +135,7 @@ pub fn load_init(ed: Editor, lua: &mlua::Lua) -> Editor {
 mod tests {
     use super::*;
     use crate::core::config::Config;
+    use crate::core::eol::Eol;
 
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_owned()).collect()
@@ -221,8 +223,8 @@ mod tests {
         let disk_a = crate::shell::file::disk_state(&path_a);
         let disk_b = crate::shell::file::disk_state(&path_b);
 
-        wal::write_wal(&path_a, disk_a, b"recovered a").unwrap();
-        wal::write_wal(&path_b, disk_b, b"recovered b").unwrap();
+        wal::write_wal(&path_a, disk_a, Eol::Lf, b"recovered a").unwrap();
+        wal::write_wal(&path_b, disk_b, Eol::Lf, b"recovered b").unwrap();
 
         let files = vec![
             FileArg {
@@ -254,7 +256,7 @@ mod tests {
         fs::write(&path, "original content").unwrap();
 
         let disk = crate::shell::file::disk_state(&path);
-        wal::write_wal(&path, disk, b"wal draft").unwrap();
+        wal::write_wal(&path, disk, Eol::Lf, b"wal draft").unwrap();
 
         // 1. External change after WAL: modified on disk
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -274,7 +276,7 @@ mod tests {
         let corrupt_path = dir.path().join("bad_wal.txt");
         fs::write(&corrupt_path, "good disk").unwrap();
         let cur_disk = crate::shell::file::disk_state(&corrupt_path);
-        wal::write_wal(&corrupt_path, cur_disk, b"wal draft").unwrap();
+        wal::write_wal(&corrupt_path, cur_disk, Eol::Lf, b"wal draft").unwrap();
         let wal_file = wal::wal_path(&corrupt_path);
         // Overwrite WAL with garbage
         fs::write(&wal_file, b"GARBAGE_NOT_A_VALID_WAL_FORMAT").unwrap();
@@ -362,7 +364,7 @@ mod tests {
 
         // With WAL: returns (ed, Some("single.txt")) and recovers text
         let cur_disk = buffer_disk_state(&ed, &path);
-        wal::write_wal(&path, cur_disk, b"wal draft").unwrap();
+        wal::write_wal(&path, cur_disk, Eol::Lf, b"wal draft").unwrap();
         let (ed2, rec2) = open_and_recover_single(Editor::new(Config::default()), None, &arg);
         assert_eq!(rec2, Some("single.txt".to_string()));
         let buf2 = ed2
@@ -372,5 +374,53 @@ mod tests {
             .unwrap();
         assert_eq!(buf2.text().to_bytes(), b"wal draft");
         assert!(buf2.modified());
+    }
+
+    #[test]
+    fn oversized_file_is_not_recovered_from_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        fs::write(&path, "0123456789").unwrap();
+        wal::write_wal(
+            &path,
+            crate::shell::file::disk_state(&path),
+            Eol::Lf,
+            b"wal draft",
+        )
+        .unwrap();
+
+        let ed = Editor::new(Config {
+            max_file_size: 4,
+            ..Config::default()
+        });
+        let arg = FileArg {
+            path: path.clone(),
+            line: None,
+        };
+        let (ed, rec) = open_and_recover_single(ed, None, &arg);
+
+        // The open is refused, so there is no buffer to recover into and no `[Recovered]` notice.
+        assert_eq!(rec, None);
+        assert!(ed.buffers().find_by_path(&path).is_none());
+    }
+
+    #[test]
+    fn wal_recovery_restores_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eol.txt");
+        fs::write(&path, "a\nb\n").unwrap();
+        let disk = crate::shell::file::disk_state(&path);
+        wal::write_wal(&path, disk, Eol::Crlf, b"a\nb\nc\n").unwrap();
+
+        let arg = FileArg {
+            path: path.clone(),
+            line: None,
+        };
+        let (ed, rec) = open_and_recover_single(Editor::new(Config::default()), None, &arg);
+
+        assert!(rec.is_some());
+        let buf = ed.buffers().find_by_path(&path).unwrap();
+        assert_eq!(buf.eol(), Eol::Crlf);
+        assert_eq!(buf.text().to_bytes(), b"a\nb\nc\n");
     }
 }

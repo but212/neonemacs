@@ -209,7 +209,9 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
     assert!(!wal::has_wal(&file_b));
     assert!(!session.needs_wal_flush);
     assert_eq!(
-        wal::read_wal(&file_a, crate::shell::file::disk_state(&file_a)).unwrap(),
+        wal::read_wal(&file_a, crate::shell::file::disk_state(&file_a))
+            .unwrap()
+            .bytes,
         b"i!?nit_a"
     );
 

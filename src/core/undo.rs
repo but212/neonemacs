@@ -1,9 +1,22 @@
 //! Undo log in groups, kept in memory.
 
+use crate::core::eol::Eol;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
-    Insert { pos: usize, bytes: Vec<u8> },
-    Delete { pos: usize, bytes: Vec<u8> },
+    Insert {
+        pos: usize,
+        bytes: Vec<u8>,
+    },
+    Delete {
+        pos: usize,
+        bytes: Vec<u8>,
+    },
+    /// Changes the save encoding only. The text is unchanged.
+    SetEol {
+        from: Eol,
+        to: Eol,
+    },
 }
 
 impl Edit {
@@ -17,12 +30,17 @@ impl Edit {
                 pos: *pos,
                 bytes: bytes.clone(),
             },
+            Edit::SetEol { from, to } => Edit::SetEol {
+                from: *to,
+                to: *from,
+            },
         }
     }
 
     const fn size(&self) -> usize {
         match self {
             Edit::Insert { bytes, .. } | Edit::Delete { bytes, .. } => bytes.len(),
+            Edit::SetEol { .. } => 0,
         }
     }
 }

@@ -20,7 +20,7 @@ Five functions, global in Lua:
 | `get` | `get(name: string) -> integer \| boolean` | Reads a setting by its spec name, such as `"fill-column"`. |
 | `set` | `set(name: string, value: integer \| boolean)` | Writes a setting. Type and range are checked. |
 
-Settings: `fill-column` (1–65535), `tab-width` (1–16), `case-fold-search` (boolean), `max-file-size` (bytes, at least 1), `undo-limit` (bytes, at least 0).
+Settings: `fill-column` (1–65535), `tab-width` (1–16), `case-fold-search` (boolean), `max-file-size` (bytes, at least 1; a file longer than this is refused on open, ADR 0009), `undo-limit` (bytes, at least 0).
 
 ## Error contract
 

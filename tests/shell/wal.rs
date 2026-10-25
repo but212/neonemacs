@@ -10,6 +10,7 @@ use neonemacs::core::commands::request_open;
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::Editor;
 use neonemacs::core::effect::Event;
+use neonemacs::core::eol::Eol;
 use neonemacs::core::keymap::parse_keys;
 use neonemacs::shell::file;
 use neonemacs::shell::lua;
@@ -26,7 +27,7 @@ fn regular_save_cleans_up_existing_wal() {
     fs::write(&file_path, "initial text").unwrap();
 
     let disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, disk, b"unsaved draft").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"unsaved draft").unwrap();
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
@@ -52,7 +53,7 @@ fn recovery_from_wal_restores_unsaved_content() {
     fs::write(&file_path, "fn old() {}").unwrap();
 
     let disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, disk, b"fn new() { // recovered }\n").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"fn new() { // recovered }\n").unwrap();
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
@@ -60,7 +61,7 @@ fn recovery_from_wal_restores_unsaved_content() {
     let mut ed = perform_all(ed, None, fx);
 
     if wal::has_wal(&file_path) {
-        let wal_bytes = wal::read_wal(&file_path, disk).unwrap();
+        let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
         ed = ed.with_current_buffer(|buf| {
             buf.with_text(neonemacs::core::text::Text::from_bytes(&wal_bytes))
                 .set_modified(true)
@@ -82,13 +83,13 @@ fn wal_recovers_empty_zero_byte_file() {
 
     let disk = file::disk_state(&file_path);
     // Persist 0-byte (all text deleted) to WAL
-    wal::write_wal(&file_path, disk, b"").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"").unwrap();
     assert!(
         wal::has_wal(&file_path),
         "0-byte WAL must be recognized via NEONWAL1 header"
     );
 
-    let wal_bytes = wal::read_wal(&file_path, disk).unwrap();
+    let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
     assert_eq!(wal_bytes, b"");
 }
 
@@ -99,7 +100,7 @@ fn wal_rejects_recovery_if_original_file_modified_externally() {
     fs::write(&file_path, "original text").unwrap();
 
     let original_disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, original_disk, b"unsaved edits").unwrap();
+    wal::write_wal(&file_path, original_disk, Eol::Lf, b"unsaved edits").unwrap();
     assert!(wal::has_wal(&file_path));
 
     // External process modifies file (simulating git pull or another editor)
@@ -120,7 +121,7 @@ fn revert_buffer_cleans_up_wal() {
     fs::write(&file_path, "disk content").unwrap();
 
     let disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, disk, b"unwanted edits").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"unwanted edits").unwrap();
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
@@ -172,7 +173,7 @@ fn typing_and_idle_wal_recording() {
     assert!(wal::has_wal(&file_path));
 
     let disk = file::disk_state(&file_path);
-    let recovered = wal::read_wal(&file_path, disk).unwrap();
+    let recovered = wal::read_wal(&file_path, disk).unwrap().bytes;
     assert_eq!(recovered, b"new textline1\n");
 }
 
@@ -335,7 +336,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
 #[test]
 fn wal_decode_wal_rejects_when_new_buffer_but_external_file_appeared() {
     // New buffer created (DiskState::Unknown, tag == 0)
-    let raw_wal = wal::encode_wal(DiskState::Unknown, b"wal draft for new file");
+    let raw_wal = wal::encode_wal(DiskState::Unknown, Eol::Lf, b"wal draft for new file");
 
     // However, an external file was created on disk before recovery
     let external_disk = DiskState::Known {
@@ -357,7 +358,7 @@ fn wal_decode_wal_rejects_when_existing_file_was_deleted_externally() {
         mtime: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
         size: 512,
     };
-    let raw_wal = wal::encode_wal(original_disk, b"wal draft for existing file");
+    let raw_wal = wal::encode_wal(original_disk, Eol::Lf, b"wal draft for existing file");
 
     // Original file was deleted externally (DiskState::Unknown)
     assert!(
@@ -372,7 +373,7 @@ fn wal_decode_wal_rejects_overflowing_nanos() {
         mtime: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
         size: 512,
     };
-    let mut raw_wal = wal::encode_wal(disk, b"valid payload");
+    let mut raw_wal = wal::encode_wal(disk, Eol::Lf, b"valid payload");
 
     // Overwrite secs with u64::MAX and nanos with 1_000_000_000
     // In Rust std, Duration::new(u64::MAX, 1_000_000_000) causes an arithmetic overflow panic!
@@ -393,7 +394,7 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
     fs::write(&old_path, "initial content").unwrap();
 
     let disk = file::disk_state(&old_path);
-    wal::write_wal(&old_path, disk, b"modified content").unwrap();
+    wal::write_wal(&old_path, disk, Eol::Lf, b"modified content").unwrap();
     assert!(
         wal::has_wal(&old_path),
         "Old WAL must exist before write-file"
@@ -472,7 +473,7 @@ fn wal_concurrent_write_wal_does_not_collide_on_fixed_tmp() {
             std::thread::spawn(move || {
                 for iter in 0..10 {
                     let payload = format!("worker {i} iter {iter}").into_bytes();
-                    wal::write_wal(&p, disk, &payload)?;
+                    wal::write_wal(&p, disk, Eol::Lf, &payload)?;
                 }
                 std::io::Result::Ok(())
             })
@@ -486,7 +487,9 @@ fn wal_concurrent_write_wal_does_not_collide_on_fixed_tmp() {
     }
 
     assert!(wal::has_wal(&target));
-    let recovered = wal::read_wal(&target, disk).expect("recovered WAL must be intact");
+    let recovered = wal::read_wal(&target, disk)
+        .expect("recovered WAL must be intact")
+        .bytes;
     assert!(
         recovered.starts_with(b"worker "),
         "WAL content must not be corrupted"

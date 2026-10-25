@@ -22,7 +22,7 @@ pub enum Effect {
         path: PathBuf,
         bytes: Vec<u8>,
     },
-    /// Reads at most `max_size` bytes of `path`.
+    /// Reads `path`. A file longer than `max_size` is not read: the result carries only its length.
     ReadFile {
         target: ReadTarget,
         path: PathBuf,
@@ -69,7 +69,7 @@ pub struct RawFile {
     /// Length on disk, which can exceed `bytes.len()`.
     pub len: u64,
     pub disk: DiskState,
-    /// The first `min(len, max_size)` bytes.
+    /// The whole file, or empty when `len` exceeds `max_size`.
     pub bytes: Vec<u8>,
 }
 

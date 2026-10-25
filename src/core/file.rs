@@ -12,30 +12,21 @@ pub enum DiskState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoadExtent {
-    Whole,
-    Truncated,
-    TruncatedConfirmed,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backing {
     None,
     File {
         path: PathBuf,
         disk: DiskState,
-        extent: LoadExtent,
         wal_dirty: bool,
     },
 }
 
 impl Backing {
-    pub const fn file(path: PathBuf, disk: DiskState, extent: LoadExtent) -> Self {
+    pub const fn file(path: PathBuf, disk: DiskState) -> Self {
         Self::File {
             path,
             disk,
-            extent,
             wal_dirty: false,
         }
     }
@@ -63,12 +54,9 @@ impl Backing {
 
     pub fn set_wal_dirty(self, dirty: bool) -> Self {
         match self {
-            Self::File {
-                path, disk, extent, ..
-            } => Self::File {
+            Self::File { path, disk, .. } => Self::File {
                 path,
                 disk,
-                extent,
                 wal_dirty: dirty,
             },
             Self::None => Self::None,
@@ -78,31 +66,10 @@ impl Backing {
     pub fn with_disk(self, disk: DiskState) -> Self {
         match self {
             Self::File {
-                path,
-                extent,
-                wal_dirty,
-                ..
+                path, wal_dirty, ..
             } => Self::File {
                 path,
                 disk,
-                extent,
-                wal_dirty,
-            },
-            Self::None => Self::None,
-        }
-    }
-
-    pub fn confirm_truncated(self) -> Self {
-        match self {
-            Self::File {
-                path,
-                disk,
-                wal_dirty,
-                ..
-            } => Self::File {
-                path,
-                disk,
-                extent: LoadExtent::TruncatedConfirmed,
                 wal_dirty,
             },
             Self::None => Self::None,
@@ -116,30 +83,45 @@ pub struct Loaded {
     pub eol: Eol,
 }
 
-/// Builds the buffer for a file read. A file longer than `max_size` is `Truncated` (I-04).
+/// A file longer than `max-file-size`. It is refused, never loaded in part (I-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TooLarge {
+    pub len: u64,
+    pub max: u64,
+}
+
+impl TooLarge {
+    /// The echo-area message for a refused file.
+    pub fn message(self) -> String {
+        format!(
+            "File too large: {} bytes (max-file-size {})",
+            self.len, self.max
+        )
+    }
+}
+
+/// Builds the buffer for a file read. A file longer than `max_size` is refused (I-04).
 /// A missing file is an empty buffer with unknown disk state.
-pub fn loaded_from(path: &Path, read: Read, max_size: u64) -> Loaded {
+pub fn loaded_from(path: &Path, read: Read, max_size: u64) -> Result<Loaded, TooLarge> {
     match read {
-        Read::Missing => Loaded {
+        Read::Missing => Ok(Loaded {
             text: Text::default(),
-            backing: Backing::file(path.to_path_buf(), DiskState::Unknown, LoadExtent::Whole),
+            backing: Backing::file(path.to_path_buf(), DiskState::Unknown),
             eol: Eol::default(),
-        },
+        }),
         Read::Found(raw) => {
-            let truncated = raw.len > max_size;
-            let extent = if truncated {
-                LoadExtent::Truncated
-            } else {
-                LoadExtent::Whole
-            };
-
-            let (eol, text) = Eol::from_raw(raw.bytes);
-
-            Loaded {
-                text: Text::from_vec(text),
-                backing: Backing::file(path.to_path_buf(), raw.disk, extent),
-                eol,
+            if raw.len > max_size {
+                return Err(TooLarge {
+                    len: raw.len,
+                    max: max_size,
+                });
             }
+            let (eol, text) = Eol::from_raw(raw.bytes);
+            Ok(Loaded {
+                text: Text::from_vec(text),
+                backing: Backing::file(path.to_path_buf(), raw.disk),
+                eol,
+            })
         }
     }
 }
@@ -157,48 +139,36 @@ mod tests {
         })
     }
 
-    #[test]
-    fn oversized_file_is_truncated() {
-        let loaded = loaded_from(Path::new("big.txt"), found(10, b"0123"), 4);
-        assert_eq!(loaded.text.to_bytes(), b"0123");
-        assert!(matches!(
-            loaded.backing,
-            Backing::File {
-                extent: LoadExtent::Truncated,
-                ..
-            }
-        ));
+    fn load(read: Read, max_size: u64) -> Loaded {
+        loaded_from(Path::new("f"), read, max_size).unwrap()
     }
 
     #[test]
-    fn rawfile_truncation_is_derived_in_core() {
-        let at_limit = loaded_from(Path::new("f"), found(4, b"0123"), 4);
-        assert!(matches!(
-            at_limit.backing,
-            Backing::File {
-                extent: LoadExtent::Whole,
-                ..
-            }
-        ));
-        let over = loaded_from(Path::new("f"), found(5, b"0123"), 4);
-        assert!(matches!(
-            over.backing,
-            Backing::File {
-                extent: LoadExtent::Truncated,
-                ..
-            }
-        ));
+    fn oversized_file_is_refused() {
+        let err = loaded_from(Path::new("big.txt"), found(10, b"0123"), 4).err();
+        assert_eq!(err, Some(TooLarge { len: 10, max: 4 }));
+    }
+
+    #[test]
+    fn file_at_size_limit_is_loaded_whole() {
+        let loaded = load(found(4, b"0123"), 4);
+        assert_eq!(loaded.text.to_bytes(), b"0123");
+    }
+
+    #[test]
+    fn too_large_message_names_the_limit() {
+        let err = TooLarge { len: 10, max: 4 };
+        assert_eq!(err.message(), "File too large: 10 bytes (max-file-size 4)");
     }
 
     #[test]
     fn missing_file_has_unknown_disk_state() {
-        let loaded = loaded_from(Path::new("new.txt"), Read::Missing, 1 << 20);
+        let loaded = load(Read::Missing, 1 << 20);
         assert_eq!(loaded.text.len(), 0);
         assert!(matches!(
             loaded.backing,
             Backing::File {
                 disk: DiskState::Unknown,
-                extent: LoadExtent::Whole,
                 ..
             }
         ));
@@ -206,93 +176,57 @@ mod tests {
 
     #[test]
     fn crlf_file_loads_as_normalized_text() {
-        let loaded = loaded_from(Path::new("f"), found(6, b"a\r\nb\r\n"), 1 << 20);
+        let loaded = load(found(6, b"a\r\nb\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
         assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
-    }
-
-    #[test]
-    fn truncated_file_normalizes_and_detects_eol() {
-        let loaded = loaded_from(Path::new("f"), found(10, b"a\r\nb\r\n"), 6);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
-        assert!(matches!(
-            loaded.backing,
-            Backing::File {
-                extent: LoadExtent::Truncated,
-                ..
-            }
-        ));
     }
 
     #[test]
     fn missing_file_is_lf() {
-        let loaded = loaded_from(Path::new("new.txt"), Read::Missing, 1 << 20);
+        let loaded = load(Read::Missing, 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
     }
 
     #[test]
     fn mixed_file_is_normalized_with_majority_mode() {
-        let loaded = loaded_from(Path::new("f"), found(5, b"a\r\nb\n"), 1 << 20);
+        let loaded = load(found(5, b"a\r\nb\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
         assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
     }
 
     #[test]
     fn lone_cr_is_not_a_line_ending() {
-        let loaded = loaded_from(Path::new("f"), found(3, b"a\rb"), 1 << 20);
+        let loaded = load(found(3, b"a\rb"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
         assert_eq!(loaded.text.to_bytes(), b"a\rb");
     }
 
     #[test]
     fn crlf_only_file_becomes_one_newline() {
-        let loaded = loaded_from(Path::new("f"), found(2, b"\r\n"), 1 << 20);
+        let loaded = load(found(2, b"\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
         assert_eq!(loaded.text.to_bytes(), b"\n");
     }
 
     #[test]
     fn double_cr_before_lf_keeps_one_cr_in_text() {
-        let loaded = loaded_from(Path::new("f"), found(4, b"a\r\r\n"), 1 << 20);
+        let loaded = load(found(4, b"a\r\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
         assert_eq!(loaded.text.to_bytes(), b"a\r\n");
     }
 
     #[test]
     fn empty_file_is_lf_and_empty() {
-        let loaded = loaded_from(Path::new("f"), found(0, b""), 1 << 20);
+        let loaded = load(found(0, b""), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
         assert!(loaded.text.is_empty());
     }
 
     #[test]
-    fn crlf_at_size_limit_is_whole_and_normalized() {
-        let loaded = loaded_from(Path::new("f"), found(6, b"a\r\nb\r\n"), 6);
+    fn crlf_at_size_limit_is_loaded_and_normalized() {
+        let loaded = load(found(6, b"a\r\nb\r\n"), 6);
         assert_eq!(loaded.eol, Eol::Crlf);
         assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
-        assert!(matches!(
-            loaded.backing,
-            Backing::File {
-                extent: LoadExtent::Whole,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn truncated_crlf_normalizes_pair_and_keeps_cut_cr() {
-        // The cut falls between \r and \n. The leading CRLF is normalized, the lone \r is kept.
-        let loaded = loaded_from(Path::new("f"), found(6, b"a\r\nb\r"), 5);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\r");
-        assert!(matches!(
-            loaded.backing,
-            Backing::File {
-                extent: LoadExtent::Truncated,
-                ..
-            }
-        ));
     }
 
     #[test]
@@ -306,7 +240,7 @@ mod tests {
             disk,
             bytes: b"a\r\n".to_vec(),
         });
-        let loaded = loaded_from(Path::new("f"), read, 1 << 20);
+        let loaded = load(read, 1 << 20);
         assert_eq!(loaded.text.len(), 2);
         assert!(matches!(
             loaded.backing,
@@ -322,30 +256,21 @@ mod tests {
                 let raw: Vec<u8> = (0..len)
                     .map(|i| ALPHA[(n / 4usize.pow(i as u32)) % 4])
                     .collect();
-                for max in [1u64 << 20, (len / 2) as u64] {
-                    let head = &raw[..raw.len().min(max as usize)];
-                    let lf = head.iter().filter(|&&b| b == b'\n').count();
-                    let crlf = head
-                        .windows(2)
-                        .filter(|w| w[0] == b'\r' && w[1] == b'\n')
-                        .count();
-                    // Pure files (pure CRLF or pure LF) must round trip exactly.
-                    let is_pure = crlf == 0 || crlf == lf;
-                    if !is_pure {
-                        continue;
-                    }
-                    let read = Read::Found(RawFile {
-                        len: raw.len() as u64,
-                        disk: DiskState::Unknown,
-                        bytes: head.to_vec(),
-                    });
-                    let loaded = loaded_from(Path::new("f"), read, max);
-                    assert_eq!(
-                        loaded.eol.encode(&loaded.text.to_bytes()),
-                        head,
-                        "raw={raw:?} head={head:?} max={max}"
-                    );
+                let lf = raw.iter().filter(|&&b| b == b'\n').count();
+                let crlf = raw
+                    .windows(2)
+                    .filter(|w| w[0] == b'\r' && w[1] == b'\n')
+                    .count();
+                // Pure files (pure CRLF or pure LF) must round trip exactly.
+                if crlf != 0 && crlf != lf {
+                    continue;
                 }
+                let loaded = load(found(raw.len() as u64, &raw), 1 << 20);
+                assert_eq!(
+                    loaded.eol.encode(&loaded.text.to_bytes()),
+                    raw,
+                    "raw={raw:?}"
+                );
             }
         }
     }

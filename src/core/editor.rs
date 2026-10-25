@@ -2,10 +2,15 @@
 //! flag (I-06), records undo (§7), and moves every anchor to a boundary (I-01).
 //! Every transition takes the editor by value and returns the new one.
 
+mod documents;
+mod interaction;
+mod settings;
+
 use crate::core::buffer::BufferPool;
 use crate::core::commands::CommandRegistry;
 use crate::core::config::Config;
 use crate::core::effect::Effects;
+use crate::core::eol::Eol;
 use crate::core::file::Backing;
 use crate::core::keymap::Keymap;
 pub use crate::core::kill_ring::KillRing;
@@ -13,6 +18,9 @@ use crate::core::syntax::SyntaxRegistry;
 use crate::core::text::Text;
 use crate::core::undo::Edit;
 use crate::core::window::WindowManager;
+use documents::Documents;
+use interaction::Interaction;
+use settings::Settings;
 
 pub use crate::core::buffer::{Buffer, BufferId};
 pub use crate::core::mode::{
@@ -32,21 +40,9 @@ pub fn snap_end(text: &Text, a: usize) -> usize {
 
 #[derive(Debug, Clone)]
 pub struct Editor {
-    buffers: BufferPool,
-    windows: WindowManager,
-    kill_ring: KillRing,
-    mode: Mode,
-    keymap: Keymap,
-    /// Kind of the command that just ran. The running command sets it.
-    last: LastCommand,
-    /// Kind of the command before the running one. Chaining commands read it.
-    prev: LastCommand,
-    message: String,
-    config: Config,
-    syntax_registry: SyntaxRegistry,
-    commands: CommandRegistry,
-    quit: bool,
-    edit_seq: u64,
+    documents: Documents,
+    interaction: Interaction,
+    settings: Settings,
 }
 
 /// Typed characters that share one undo group.
@@ -60,7 +56,6 @@ impl Default for Editor {
 
 impl Editor {
     pub fn new(config: Config) -> Self {
-        let buffers = BufferPool::new(config.undo_limit);
         let initial_window = Window {
             buffer: BufferId(0),
             point: 0,
@@ -68,26 +63,14 @@ impl Editor {
             left_col: 0,
         };
         Self {
-            buffers,
-            windows: WindowManager::new(initial_window),
-            kill_ring: KillRing::new(),
-            mode: Mode::Normal {
-                prefix: Prefix::None,
-            },
-            keymap: Keymap::survival(),
-            last: LastCommand::Other,
-            prev: LastCommand::Other,
-            message: String::new(),
-            config,
-            syntax_registry: SyntaxRegistry::new(),
-            commands: CommandRegistry::new(),
-            quit: false,
-            edit_seq: 0,
+            documents: Documents::new(config.undo_limit, initial_window),
+            interaction: Interaction::new(),
+            settings: Settings::new(config),
         }
     }
 
     pub const fn edit_seq(&self) -> u64 {
-        self.edit_seq
+        self.documents.edit_seq
     }
 
     pub fn clear_wal_dirty(self, id: BufferId) -> Self {
@@ -95,25 +78,25 @@ impl Editor {
     }
 
     pub fn message(&self) -> &str {
-        &self.message
+        &self.interaction.message
     }
 
     pub fn set_message(mut self, message: impl Into<String>) -> Self {
-        self.message = message.into();
+        self.interaction.message = message.into();
         self
     }
 
     pub fn clear_message(mut self) -> Self {
-        self.message.clear();
+        self.interaction.message.clear();
         self
     }
 
     pub const fn mode(&self) -> &Mode {
-        &self.mode
+        &self.interaction.mode
     }
 
     pub fn set_mode(mut self, mode: Mode) -> Self {
-        self.mode = mode;
+        self.interaction.mode = mode;
         self
     }
 
@@ -122,114 +105,117 @@ impl Editor {
     }
 
     pub const fn buffers(&self) -> &BufferPool {
-        &self.buffers
+        &self.documents.buffers
     }
 
     pub fn set_buffers(mut self, buffers: BufferPool) -> Self {
-        self.buffers = buffers;
+        self.documents.buffers = buffers;
         self
     }
 
     pub const fn windows(&self) -> &WindowManager {
-        &self.windows
+        &self.documents.windows
     }
 
     pub fn with_windows(mut self, f: impl FnOnce(WindowManager) -> WindowManager) -> Self {
-        self.windows = f(self.windows);
+        self.documents.windows = f(self.documents.windows);
         self
     }
 
     pub const fn config(&self) -> &Config {
-        &self.config
+        &self.settings.config
     }
 
     pub const fn set_config(mut self, config: Config) -> Self {
-        self.config = config;
+        self.settings.config = config;
         self
     }
 
     pub const fn syntax_registry(&self) -> &SyntaxRegistry {
-        &self.syntax_registry
+        &self.settings.syntax_registry
     }
 
     pub fn with_syntax_registry(
         mut self,
         f: impl FnOnce(SyntaxRegistry) -> SyntaxRegistry,
     ) -> Self {
-        self.syntax_registry = f(self.syntax_registry);
+        self.settings.syntax_registry = f(self.settings.syntax_registry);
         self
     }
 
     pub const fn commands(&self) -> &CommandRegistry {
-        &self.commands
+        &self.settings.commands
     }
 
     pub fn register_command(mut self, name: impl Into<String>) -> Self {
-        self.commands = self.commands.insert(name);
+        self.settings.commands = self.settings.commands.insert(name);
         self
     }
 
     pub const fn quit(&self) -> bool {
-        self.quit
+        self.interaction.quit
     }
 
     pub const fn set_quit(mut self, quit: bool) -> Self {
-        self.quit = quit;
+        self.interaction.quit = quit;
         self
     }
 
     pub const fn kill_ring(&self) -> &KillRing {
-        &self.kill_ring
+        &self.documents.kill_ring
     }
 
     pub fn with_kill_ring(mut self, f: impl FnOnce(KillRing) -> KillRing) -> Self {
-        self.kill_ring = f(self.kill_ring);
+        self.documents.kill_ring = f(self.documents.kill_ring);
         self
     }
 
     pub const fn last(&self) -> LastCommand {
-        self.last
+        self.interaction.last
     }
 
     pub const fn set_last(mut self, last: LastCommand) -> Self {
-        self.last = last;
+        self.interaction.last = last;
         self
     }
 
     pub const fn prev(&self) -> LastCommand {
-        self.prev
+        self.interaction.prev
     }
 
     pub const fn set_prev(mut self, prev: LastCommand) -> Self {
-        self.prev = prev;
+        self.interaction.prev = prev;
         self
     }
 
     pub const fn keymap(&self) -> &Keymap {
-        &self.keymap
+        &self.settings.keymap
     }
 
     pub fn set_keymap(mut self, keymap: Keymap) -> Self {
-        self.keymap = keymap;
+        self.settings.keymap = keymap;
         self
     }
 
     pub fn with_keymap(mut self, f: impl FnOnce(Keymap) -> Keymap) -> Self {
-        self.keymap = f(self.keymap);
+        self.settings.keymap = f(self.settings.keymap);
         self
     }
 
     pub fn window(&self) -> &Window {
-        self.windows.current()
+        self.documents.windows.current()
     }
 
     /// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
     /// Killing the last buffer leaves an empty `*scratch*` (A4).
     pub fn kill_buffer_id(mut self, id: BufferId) -> Self {
-        let (buffers, replacement) = self.buffers.kill(id, self.config.undo_limit);
-        self.buffers = buffers;
+        let (buffers, replacement) = self
+            .documents
+            .buffers
+            .kill(id, self.settings.config.undo_limit);
+        self.documents.buffers = buffers;
         let saved = self.buffer_by_id(replacement).saved_point();
-        self.windows = self.windows.retarget(id, replacement, saved);
+        self.documents.windows = self.documents.windows.retarget(id, replacement, saved);
         self
     }
 
@@ -242,22 +228,22 @@ impl Editor {
             top: snap(text, w.top),
             ..w
         };
-        let sel = self.windows.selected();
-        self.windows = self.windows.set_leaf(sel, w);
+        let sel = self.documents.windows.selected();
+        self.documents.windows = self.documents.windows.set_leaf(sel, w);
         self
     }
 
     pub const fn leaf_count(&self) -> usize {
-        self.windows.leaf_count()
+        self.documents.windows.leaf_count()
     }
 
     pub fn buffer(&self) -> &Buffer {
-        self.buffers.get_by_id(self.window().buffer)
+        self.documents.buffers.get_by_id(self.window().buffer)
     }
 
     /// Replaces the buffer with `id` by `f` applied to it. Panics when `id` is unknown (I-20).
     pub fn with_buffer(mut self, id: BufferId, f: impl FnOnce(Buffer) -> Buffer) -> Self {
-        self.buffers = self.buffers.with_buffer(id, f);
+        self.documents.buffers = self.documents.buffers.with_buffer(id, f);
         self
     }
 
@@ -269,8 +255,8 @@ impl Editor {
 
     /// Snaps `point` and resets `top` for every window displaying buffer `id` (I-01).
     pub fn snap_windows_for_buffer(mut self, id: BufferId) -> Self {
-        let text = self.buffers.get_by_id(id).text();
-        self.windows = self.windows.map_windows(&|w| {
+        let text = self.documents.buffers.get_by_id(id).text();
+        self.documents.windows = self.documents.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
                     point: snap(text, w.point),
@@ -284,15 +270,19 @@ impl Editor {
         self
     }
 
-    /// Restores the content of the buffer visiting `path` from WAL bytes (I-23).
+    /// Restores the content of the buffer visiting `path` from WAL bytes and EOL (I-23).
     pub fn restore_buffer_content(
         mut self,
         path: &std::path::Path,
         bytes: &[u8],
+        eol: Eol,
         line: Option<usize>,
     ) -> Self {
-        let (buffers, id) = self.buffers.restore_content(path, bytes, line);
-        self.buffers = buffers;
+        let (buffers, id) = self
+            .documents
+            .buffers
+            .restore_content(path, bytes, eol, line);
+        self.documents.buffers = buffers;
         match id {
             Some(id) => self.snap_windows_for_buffer(id),
             None => self,
@@ -301,10 +291,11 @@ impl Editor {
 
     /// Adds a buffer and returns its id. Ids are never reused.
     pub fn add_buffer(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
-        let (buffers, id) = self
-            .buffers
-            .add(name, text, backing, self.config.undo_limit);
-        self.buffers = buffers;
+        let (buffers, id) =
+            self.documents
+                .buffers
+                .add(name, text, backing, self.settings.config.undo_limit);
+        self.documents.buffers = buffers;
         (self, id)
     }
 
@@ -313,21 +304,21 @@ impl Editor {
     pub fn apply(mut self, edit: Edit) -> (Self, Option<usize>) {
         let id = self.window().buffer;
         if self.buffer_by_id(id).view_only() {
-            self.message = "Buffer is read-only".to_owned();
+            self.interaction.message = "Buffer is read-only".to_owned();
             return (self, None);
         }
 
         let mut dropped_res = None;
-        self.edit_seq = self.edit_seq.wrapping_add(1);
-        self.buffers = self.buffers.with_buffer(id, |buf| {
+        self.documents.edit_seq = self.documents.edit_seq.wrapping_add(1);
+        self.documents.buffers = self.documents.buffers.with_buffer(id, |buf| {
             let (buf, dropped) = buf.apply_edit(edit.clone(), |a| remap(&edit, a));
             dropped_res = Some(dropped);
             buf
         });
 
-        let text = self.buffers.get_by_id(id).text();
+        let text = self.documents.buffers.get_by_id(id).text();
         let anchor = |a| snap(text, remap(&edit, a));
-        self.windows = self.windows.map_windows(&|w| {
+        self.documents.windows = self.documents.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
                     point: anchor(w.point),
@@ -366,7 +357,9 @@ impl Editor {
         if bytes.is_empty() {
             return ed;
         }
-        let ed = if ed.prev == LastCommand::Kill || ed.last == LastCommand::Kill {
+        let ed = if ed.interaction.prev == LastCommand::Kill
+            || ed.interaction.last == LastCommand::Kill
+        {
             ed.with_kill_ring(|kr| kr.append_last(&bytes))
         } else {
             ed.with_kill_ring(|kr| kr.push(bytes))
@@ -400,14 +393,14 @@ impl Editor {
     }
 
     pub const fn begin_command(mut self) -> Self {
-        self.prev = self.last;
-        self.last = LastCommand::Other;
+        self.interaction.prev = self.interaction.last;
+        self.interaction.last = LastCommand::Other;
         self
     }
 
     /// Closes the undo group after a command, unless the command was an insert.
     pub fn end_command(self) -> Self {
-        if matches!(self.last, LastCommand::Insert { .. }) {
+        if matches!(self.interaction.last, LastCommand::Insert { .. }) {
             self
         } else {
             self.boundary()
@@ -415,12 +408,12 @@ impl Editor {
     }
 
     pub fn buffer_by_id(&self, id: BufferId) -> &Buffer {
-        self.buffers.get_by_id(id)
+        self.documents.buffers.get_by_id(id)
     }
 
     /// Inserts a typed character at point. Up to `TYPED_GROUP` characters share an undo group.
     pub fn self_insert(mut self, c: char) -> Self {
-        let count = match self.prev {
+        let count = match self.interaction.prev {
             LastCommand::Insert { count } if count < TYPED_GROUP => count + 1,
             _ => {
                 self = self.boundary();
@@ -438,7 +431,7 @@ impl Editor {
             point: at + len,
             ..w
         });
-        ed.last = LastCommand::Insert { count };
+        ed.interaction.last = LastCommand::Insert { count };
         ed
     }
 
@@ -448,12 +441,12 @@ impl Editor {
         let mut ed = self.boundary();
         let id = ed.window().buffer;
         let groups = ed.buffer_by_id(id).undo().groups().len();
-        let idx = match ed.prev {
+        let idx = match ed.interaction.prev {
             LastCommand::Undo { next } => next.checked_sub(1),
             _ => groups.checked_sub(1),
         };
         let Some(idx) = idx else {
-            ed.message = "No further undo information".to_owned();
+            ed.interaction.message = "No further undo information".to_owned();
             return (ed, fx);
         };
         let group = ed.buffer_by_id(id).undo().groups()[idx].clone();
@@ -467,7 +460,7 @@ impl Editor {
             }
         }
         let mut ed = ed.boundary();
-        ed.last = LastCommand::Undo {
+        ed.interaction.last = LastCommand::Undo {
             next: idx.saturating_sub(dropped),
         };
         (ed, fx)
@@ -494,6 +487,7 @@ fn remap(edit: &Edit, a: usize) -> usize {
                 a - bytes.len()
             }
         }
+        Edit::SetEol { .. } => a,
     }
 }
 
@@ -608,19 +602,19 @@ mod tests {
     fn keys_route_through_prefixes() {
         let ed = press(editor_with(""), Key::ctrl('x'));
         assert_eq!(
-            ed.mode,
+            ed.interaction.mode,
             Mode::Normal {
                 prefix: Prefix::CtlX
             }
         );
         let ed = press(ed, Key::ctrl('g'));
         assert_eq!(
-            ed.mode,
+            ed.interaction.mode,
             Mode::Normal {
                 prefix: Prefix::None
             }
         );
-        assert_eq!(ed.message, "Quit");
+        assert_eq!(ed.interaction.message, "Quit");
     }
 
     #[test]
@@ -631,7 +625,7 @@ mod tests {
             bytes: b"x".to_vec(),
         });
         assert!(applied.is_none());
-        assert_eq!(ed.message, "Buffer is read-only");
+        assert_eq!(ed.interaction.message, "Buffer is read-only");
     }
 
     #[test]

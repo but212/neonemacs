@@ -147,6 +147,11 @@ pub fn start_query_replace(
     replacement: &str,
     regex: bool,
 ) -> (Editor, Result<(), String>) {
+    // Checked once here: `view_only` cannot change during a session, and every replacement
+    // is a Delete then an Insert, so `replace_match` never sees a refused half-edit (I-06).
+    if ed.buffer().view_only() {
+        return (ed, Err("Buffer is read-only".to_owned()));
+    }
     if pattern.is_empty() {
         return (ed, Err("empty pattern".to_owned()));
     }
@@ -245,6 +250,8 @@ fn replace_match(
         q.replacement.as_bytes().to_vec()
     };
     let after = start + replacement.len();
+    // `apply` refuses only on `view_only`, which `start_query_replace` already rejected, so a
+    // Delete is never left without its Insert. The `None` arms are defensive.
     let (ed, applied) = ed.apply(Edit::Delete {
         pos: start,
         bytes: matched,
@@ -430,5 +437,32 @@ mod tests {
         let esc = run_command(esc, |e, fx| (start_query(e, "a[0-9]", "\\&", true), fx));
         let esc = keys(esc, "!");
         assert_eq!(text(&esc), "& &");
+    }
+
+    #[test]
+    fn query_replace_refuses_view_only() {
+        let ed = typ(editor(), "foo");
+        let ed = ed.with_current_buffer(|b| b.set_view_only(true));
+        let (ed, result) = start_query_replace(ed, "foo", "bar", false);
+        assert_eq!(result, Err("Buffer is read-only".to_owned()));
+        assert_eq!(text(&ed), "foo");
+        assert_eq!(
+            ed.mode(),
+            &Mode::Normal {
+                prefix: Prefix::None
+            }
+        );
+    }
+
+    #[test]
+    fn query_replace_ctrl_g_keeps_one_group() {
+        let ed = typ(editor(), "foo foo foo");
+        let ed = keys(ed, "C-a");
+        let ed = run_command(ed, |e, fx| (start_query(e, "foo", "qux", false), fx));
+        let ed = keys(ed, "y y C-g");
+        assert_eq!(text(&ed), "qux qux foo");
+        // Replacements made before C-g stay, and one undo restores them all.
+        let ed = keys(ed, "C-/");
+        assert_eq!(text(&ed), "foo foo foo");
     }
 }

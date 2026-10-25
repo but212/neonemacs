@@ -142,7 +142,13 @@ impl ShellSession {
             for buf in self.ed.buffers() {
                 if buf.is_wal_dirty()
                     && let Some(path) = buf.file_path()
-                    && wal::write_wal(path, buf.backing().disk(), &buf.text().to_bytes()).is_ok()
+                    && wal::write_wal(
+                        path,
+                        buf.backing().disk(),
+                        buf.eol(),
+                        &buf.text().to_bytes(),
+                    )
+                    .is_ok()
                 {
                     flushed_ids.push(buf.id());
                 }

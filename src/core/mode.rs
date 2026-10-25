@@ -58,7 +58,6 @@ pub enum Purpose {
 /// A yes-or-no question that must be answered before the command continues (I-04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confirm {
-    SaveTruncated(BufferId),
     SaveExternal(BufferId),
     QuitUnsaved,
     KillModified(BufferId),

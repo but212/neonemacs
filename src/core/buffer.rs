@@ -150,11 +150,6 @@ impl Buffer {
         self
     }
 
-    pub fn confirm_truncated(mut self) -> Self {
-        self.backing = self.backing.confirm_truncated();
-        self
-    }
-
     pub fn record_saved(mut self, new_disk: DiskState) -> Self {
         self.backing = self.backing.with_disk(new_disk).set_wal_dirty(false);
         self.modified = false;
@@ -178,10 +173,13 @@ impl Buffer {
     }
 
     pub fn apply_edit(mut self, edit: Edit, remap_fn: impl Fn(usize) -> usize) -> (Self, usize) {
-        self.text = match &edit {
-            Edit::Insert { pos, bytes } => self.text.insert(*pos, bytes),
-            Edit::Delete { pos, bytes } => self.text.delete(*pos..*pos + bytes.len()),
-        };
+        match &edit {
+            Edit::Insert { pos, bytes } => self.text = self.text.insert(*pos, bytes),
+            Edit::Delete { pos, bytes } => {
+                self.text = self.text.delete(*pos..*pos + bytes.len());
+            }
+            Edit::SetEol { to, .. } => self.eol = *to,
+        }
         self.modified = true;
         self.backing = self.backing.set_wal_dirty(true);
         let anchor = |a| snap(&self.text, remap_fn(a));
@@ -284,11 +282,12 @@ impl BufferPool {
         self
     }
 
-    /// Restores the content of the buffer visiting `path` from WAL bytes (I-23).
+    /// Restores the content of the buffer visiting `path` from WAL bytes and EOL (I-23).
     pub fn restore_content(
         self,
         path: &Path,
         bytes: &[u8],
+        eol: Eol,
         line: Option<usize>,
     ) -> (Self, Option<BufferId>) {
         let found = self.find_by_path(path).map(|b| b.id);
@@ -297,6 +296,7 @@ impl BufferPool {
                 let limit = buf.undo.limit();
                 let mut buf = buf
                     .with_text(Text::from_bytes(bytes))
+                    .set_eol(eol)
                     .set_modified(true)
                     .clear_wal_dirty()
                     .with_undo(UndoLog::new(limit));

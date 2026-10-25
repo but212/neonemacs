@@ -5,7 +5,7 @@ use neonemacs::core::commands::{confirmed, request_open};
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Confirm, Editor, Mode, Prefix, Window};
 use neonemacs::core::effect::{Effect, Event};
-use neonemacs::core::file::{Backing, LoadExtent};
+use neonemacs::core::file::Backing;
 use neonemacs::core::keymap::parse_keys;
 use neonemacs::core::step;
 use neonemacs::shell::file;
@@ -21,7 +21,7 @@ fn visit(ed: Editor, path: &Path) -> Editor {
 }
 
 #[test]
-fn truncated_save_confirms_once() {
+fn oversized_file_is_refused_and_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big.txt");
     fs::write(&path, b"0123456789").unwrap();
@@ -29,26 +29,12 @@ fn truncated_save_confirms_once() {
         max_file_size: 4,
         ..*editor().config()
     });
-    let mut ed = visit(ed, &path);
+    let count = ed.buffers().iter().count();
+    let ed = visit(ed, &path);
 
-    ed = keys(ed, "C-x C-s");
-    assert!(matches!(
-        ed.mode(),
-        Mode::Confirm(Confirm::SaveTruncated(_))
-    ));
+    assert_eq!(ed.buffers().iter().count(), count);
+    assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
     assert_eq!(fs::read(&path).unwrap(), b"0123456789");
-    ed = keys(ed, "y");
-    assert_eq!(fs::read(&path).unwrap(), b"0123");
-
-    ed = typ(ed, "x");
-    ed = keys(ed, "C-x C-s");
-    assert_eq!(
-        ed.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-    assert_eq!(fs::read(&path).unwrap(), b"x0123");
 }
 
 #[test]
@@ -226,10 +212,7 @@ fn written_records_disk_and_reports_wrote() {
     );
     let buf = ed.buffer_by_id(id);
     assert!(!buf.modified());
-    assert_eq!(
-        *buf.backing(),
-        Backing::file(path.clone(), disk, LoadExtent::Whole)
-    );
+    assert_eq!(*buf.backing(), Backing::file(path.clone(), disk));
     assert!(fx.is_empty());
     assert_eq!(ed.message(), format!("Wrote {}", path.display()));
 }

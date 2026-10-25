@@ -19,7 +19,7 @@ pub fn disk_state(path: &Path) -> DiskState {
 }
 
 /// Reads `path` as bytes without decoding it. A missing file is `Read::Missing`.
-/// Reads at most `max_size` bytes; `len` reports the full length on disk.
+/// A file longer than `max_size` is not read: `bytes` is empty and `len` reports its size.
 pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -27,7 +27,11 @@ pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
         Err(e) => return Err(e),
     };
     let meta = file.metadata()?;
-    let bytes = read_capped(&mut file, meta.len().min(max_size))?;
+    let bytes = if meta.len() > max_size {
+        Vec::new()
+    } else {
+        read_capped(&mut file, meta.len())?
+    };
     Ok(effect::Read::Found(RawFile {
         len: meta.len(),
         disk: state_of(&meta),
@@ -71,10 +75,24 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         let read = read_raw(&path, 1 << 20).unwrap();
-        let loaded = loaded_from(&path, read, 1 << 20);
+        let loaded = loaded_from(&path, read, 1 << 20).unwrap();
         assert_eq!(loaded.text.to_bytes(), bytes);
         save(&path, &loaded.text.to_bytes()).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn oversized_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        fs::write(&path, b"0123456789").unwrap();
+
+        let read = read_raw(&path, 4).unwrap();
+        let effect::Read::Found(raw) = read else {
+            panic!("expected Found");
+        };
+        assert_eq!(raw.len, 10);
+        assert!(raw.bytes.is_empty());
     }
 
     #[test]

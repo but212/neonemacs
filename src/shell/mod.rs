@@ -158,9 +158,6 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             path,
             max_size,
         } => {
-            if matches!(target, crate::core::effect::ReadTarget::Revert(_)) {
-                wal::remove_wal(&path);
-            }
             let result = file::read_raw(&path, max_size).map_err(|e| e.to_string());
             Event::FileRead {
                 target,

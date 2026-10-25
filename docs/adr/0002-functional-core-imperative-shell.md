@@ -22,7 +22,7 @@ Command functions performed file, process, and Lua I/O directly. Tests therefore
 
 ### Save sequence
 
-1. `Key` → `save_buffer` emits `StatDisk`. A truncated file asks first and emits nothing (I-04).
+1. `Key` → `save_buffer` emits `StatDisk`. A file over `max-file-size` is never open, so there is nothing to save (I-04, ADR 0009).
 2. `Disk` → if the disk state changed since the read, ask; otherwise emit `WriteFile` (I-04, I-13).
 3. `Written` → record the new disk state (I-05) and show `Wrote <path>`. No further effect.
 
@@ -30,7 +30,7 @@ Command functions performed file, process, and Lua I/O directly. Tests therefore
 
 | ID | Invariant | Location |
 | --- | --- | --- |
-| I-04 | Save checks: truncated, then external change | `core::commands::save_buffer`, `disk_checked` (runtime) |
+| I-04 | Save checks external change; oversized files are refused at open | `core::commands::save_buffer`, `disk_checked` (runtime), `core::file::loaded_from` (type) |
 | I-05 | A successful write records the new disk state | `Event::Written` carries `DiskState` (type) |
 | I-13 | `WriteFile` is emitted only after I-04 or a confirmation | `save_buffer`, `confirmed` (runtime) |
 | I-14 | `core` imports no I/O crate | grep check (runtime) |

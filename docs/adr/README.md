@@ -16,6 +16,7 @@
 | [0006](0006-lua-buffer-api-and-text-commands.md) | Lua Buffer API and Pareto Core Text Editing Commands | Accepted | 2026-10-25 | §6, §12 | Minimal `buffer` FFI, bundled `text.lua` Pareto core (`forward/backward-word`, `kill-word`, `beginning/end-of-buffer`, `fill-paragraph`, `comment-dwim`, `mark-whole-buffer`) |
 | [0007](0007-lua-extended-text-operations-and-inspection.md) | Lua Extended Text Operations and Inspection (Historical) | Superseded | 2026-10-25 | §6, §12 | Superseded by ADR 0006 Pareto Spec Normalization (Consolidates former ADRs 0007, 0008, 0010, 0011) |
 | [0008](0008-lua-comment-dwim-and-mx-completion.md) | Lua Comment DWIM and M-x Command Completion Integration | Accepted | 2026-10-25 | §4, §6, §12 | Unified `M-x` completion for Lua commands, `buffer.comment_prefix`, echo `message`, indent-aware `comment-dwim` (`M-;`) |
+| [0009](0009-oversized-files-and-eol-edit.md) | Refuse Oversized Files, Undoable EOL Toggle, and Query-Replace Read-Only Check | Accepted | 2026-10-26 | §7, §8, §9, §10 | Oversized files refused at open (I-04), `toggle-eol` as `Edit::SetEol` (I-31), WAL v2 stores EOL (I-23) |
 
 ---
 
@@ -70,14 +71,14 @@
 
 ---
 
-## 3. System Invariant Matrix (`I-01` ~ `I-30`)
+## 3. System Invariant Matrix (`I-01` ~ `I-33`)
 
 | ID | Invariant Summary | Enforcement Layer | Governed By |
 | :--- | :--- | :---: | :--- |
 | **I-01** | Cursor and mark are always snapped to valid UTF-8 boundaries in `0..=len` | Runtime (`snap_anchors`) | ADR 0002, ADR 0006 |
 | **I-02** | Gap buffer byte boundaries are strictly local and continuous | Data structure | `src/core/text.rs` |
 | **I-03** | Buffer clean state tracks disk synchronization accuracy | Type / Runtime | `src/core/buffer.rs` |
-| **I-04** | Save sequence strictly checks truncation first, then external disk change | Runtime | ADR 0002 |
+| **I-04** | Save sequence checks external disk change; files over `max-file-size` are refused at open, so no partial buffer exists | Type (`loaded_from` → `Result`) / Runtime | ADR 0002, ADR 0009 |
 | **I-05** | Successful disk write records fresh metadata (`DiskState`) | Type (`Event::Written`) | ADR 0002 |
 | **I-06** | Modified flag accurately reflects buffer changes vs saved state | Runtime | `src/core/buffer.rs` |
 | **I-07** | Read-only buffers reject mutations and EOL toggling | Runtime (`view_mode`) | Spec §10 |
@@ -96,7 +97,7 @@
 | **I-20** | Any buffer id passed to `with_buffer` exists in the buffer pool | Runtime | ADR 0002 |
 | **I-21** | Shell's `RefCell<Option<Editor>>` is `None` only during `step` evaluation | Runtime (`take`/`put`) | ADR 0002 |
 | **I-22** | ANSI color escapes never distort text display width, coordinates, or diff | Type / Render queue | ADR 0003 |
-| **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure | Runtime (`wal.rs`) | ADR 0003 |
+| **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. The header records the EOL (`NEONWAL2`) | Runtime (`wal.rs`) | ADR 0003, ADR 0009 |
 | **I-24** | Background shell execution is non-blocking with active spinner feedback | Runtime / Thread | ADR 0003 |
 | **I-25** | Regular save, revert, or close immediately deletes sibling WAL file | Runtime (`wal.rs`) | ADR 0003 |
 | **I-26** | Kill ring history is encapsulated in `KillRing` with ring rotation invariants | Data structure | ADR 0006, Spec §6 |
@@ -104,6 +105,9 @@
 | **I-28** | [Pruned] Line counting semantics (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
 | **I-29** | [Pruned] UTF-8 inspection slicing (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
 | **I-30** | [Pruned] Cursor inspection coordinates (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
+| **I-31** | Text and EOL change only through `Editor::apply(Edit)`, which updates undo, `modified`, and `wal_dirty` | Runtime (`Editor::apply`) | ADR 0009 |
+| **I-32** | `Editor` groups (Documents, Interaction, Settings) are private to `editor`; a group never writes another group's fields, and cross-group operations are composed in `Editor` methods | Module privacy (`src/core/editor/`) | ADR 0002 |
+| **I-33** | `edit_seq` is owned by Documents and changed only by `Editor::apply` | Runtime (`Editor::apply`) | ADR 0002 |
 
 ---
 
