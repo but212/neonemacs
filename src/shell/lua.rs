@@ -920,6 +920,94 @@ mod tests {
     }
 
     #[test]
+    fn text_word_backward_stops_at_line_start() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test_multiline",
+            crate::core::text::Text::from_bytes(b"hello\nworld"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 11, // at end of "world"
+            ..w
+        });
+
+        // backward-word: 11 -> 6 (start of "world", must not merge with "hello")
+        let (ed, res) = script(&lua, ed, r#"run("backward-word")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 6);
+    }
+
+    #[test]
+    fn text_kill_word_backward_at_line_start() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test_kill_multiline",
+            crate::core::text::Text::from_bytes(b"hello\nworld"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 11, // at end of "world"
+            ..w
+        });
+
+        // backward-kill-word: should kill only "world", leaving "hello\n"
+        let (ed, res) = script(&lua, ed, r#"run("backward-kill-word")"#);
+        res.unwrap();
+        assert_eq!(ed.buffer().text().to_bytes(), b"hello\n");
+        assert_eq!(ed.window().point, 6);
+    }
+
+    #[test]
+    fn text_word_forward_across_empty_lines() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, id) = ed.add_buffer(
+            "test_empty_lines",
+            crate::core::text::Text::from_bytes(b"hello\n\n\nworld"),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: 5, // at end of "hello"
+            ..w
+        });
+
+        // forward-word: 5 -> 13 (end of "world")
+        let (ed, res) = script(&lua, ed, r#"run("forward-word")"#);
+        res.unwrap();
+        assert_eq!(ed.window().point, 13);
+    }
+
+    #[test]
+    fn text_word_multibyte_backward_at_line_start() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let text_bytes = "안녕\n세상".as_bytes();
+        let len = text_bytes.len();
+        let (ed, id) = ed.add_buffer(
+            "test_multibyte",
+            crate::core::text::Text::from_bytes(text_bytes),
+            crate::core::file::Backing::None,
+        );
+        let ed = ed.with_window(|w| crate::core::editor::Window {
+            buffer: id,
+            point: len, // at end of "세상"
+            ..w
+        });
+
+        // backward-word: should stop at start of "세상" (after "안녕\n")
+        let (ed, res) = script(&lua, ed, r#"run("backward-word")"#);
+        res.unwrap();
+        let start_of_sesang = "안녕\n".len();
+        assert_eq!(ed.window().point, start_of_sesang);
+    }
+
+    #[test]
     fn comment_prefix_message_and_command_sync() {
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
