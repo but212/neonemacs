@@ -16,10 +16,8 @@ pub mod wal;
 use crate::core::editor::Editor;
 use crate::core::effect::{Effect, Effects, Event};
 use crate::core::step;
-use crate::core::undo;
 use mlua::Lua;
 use std::cell::RefCell;
-use std::fs;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
@@ -155,12 +153,6 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             }
             Event::Written { id, result }
         }
-        Effect::WriteUndo { id, path, bytes } => Event::UndoWritten {
-            id,
-            result: file::save(&undo::undo_path(&path), &bytes)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        },
         Effect::ReadFile {
             target,
             path,
@@ -176,10 +168,6 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
                 result,
             }
         }
-        Effect::ReadUndo { id, path } => Event::UndoRead {
-            id,
-            bytes: fs::read(undo::undo_path(&path)).ok(),
-        },
         Effect::RemoveWal { path } => {
             wal::remove_wal(&path);
             Event::WalRemoved
@@ -251,15 +239,6 @@ mod tests {
                 ..
             }
         ));
-        let undo = perform(
-            Effect::WriteUndo {
-                id,
-                path: path.clone(),
-                bytes: b"u".to_vec(),
-            },
-            None,
-        );
-        assert!(matches!(undo, Event::UndoWritten { result: Ok(()), .. }));
         let read = perform(
             Effect::ReadFile {
                 target: ReadTarget::Revert(id),
@@ -275,20 +254,6 @@ mod tests {
                 ..
             }
         ));
-        let undo_read = perform(
-            Effect::ReadUndo {
-                id,
-                path: path.clone(),
-            },
-            None,
-        );
-        assert_eq!(
-            undo_read,
-            Event::UndoRead {
-                id,
-                bytes: Some(b"u".to_vec())
-            }
-        );
         let shell = perform(
             Effect::RunShell {
                 command: "echo hi".to_owned(),

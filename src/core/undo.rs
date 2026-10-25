@@ -1,14 +1,4 @@
-//! Undo log in groups, and its persistent format v1 (§7, I-10).
-
-use crate::core::file::DiskState;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
-
-const MAGIC: &[u8; 8] = b"NEONUNDO";
-const VERSION: u8 = 1;
-const TAG_BOUNDARY: u8 = 0;
-const TAG_INSERT: u8 = 1;
-const TAG_DELETE: u8 = 2;
+//! Undo log in groups, kept in memory.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
@@ -94,138 +84,6 @@ impl UndoLog {
         }
         (self, dropped)
     }
-
-    /// Serializes the log as format v1, stamped with the file state it applies to.
-    /// Returns `None` when the disk state is unknown, since such a log cannot be verified later.
-    pub fn encode(&self, disk: DiskState) -> Option<Vec<u8>> {
-        let DiskState::Known { mtime, size } = disk else {
-            return None;
-        };
-        let since = mtime.duration_since(UNIX_EPOCH).ok()?;
-        let mut out = Vec::new();
-        out.extend_from_slice(MAGIC);
-        out.push(VERSION);
-        out.extend_from_slice(&since.as_secs().to_le_bytes());
-        out.extend_from_slice(&since.subsec_nanos().to_le_bytes());
-        out.extend_from_slice(&size.to_le_bytes());
-        let out = self.groups.iter().fold(out, |out, group| {
-            let mut out = group.iter().fold(out, put_edit);
-            out.push(TAG_BOUNDARY);
-            out
-        });
-        Some(out)
-    }
-
-    /// Parses format v1. Returns `None` on any mismatch with `disk`, bad
-    /// magic or version, or malformed entries (I-10).
-    pub fn decode(bytes: &[u8], disk: DiskState, limit: usize) -> Option<UndoLog> {
-        let (magic, pos) = take_at(bytes, 0, MAGIC.len())?;
-        let (version, pos) = u8_at(bytes, pos)?;
-        if magic != MAGIC || version != VERSION {
-            return None;
-        }
-        let (secs, pos) = u64_at(bytes, pos)?;
-        let (nanos, pos) = u32_at(bytes, pos)?;
-        if nanos >= 1_000_000_000 {
-            return None;
-        }
-        let stamp = Duration::new(secs, nanos);
-        let (file_size, mut pos) = u64_at(bytes, pos)?;
-        let DiskState::Known { mtime, size } = disk else {
-            return None;
-        };
-        if mtime.duration_since(UNIX_EPOCH).ok()? != stamp || size != file_size {
-            return None;
-        }
-
-        let mut groups = Vec::new();
-        let mut current = Vec::new();
-        while pos < bytes.len() {
-            let (tag, next) = u8_at(bytes, pos)?;
-            pos = next;
-            match tag {
-                TAG_BOUNDARY => {
-                    groups.push(current);
-                    current = Vec::new();
-                }
-                TAG_INSERT | TAG_DELETE => {
-                    let (at, next) = u64_at(bytes, pos)?;
-                    let (n, next) = u64_at(bytes, next)?;
-                    let (data, next) = take_at(bytes, next, usize::try_from(n).ok()?)?;
-                    pos = next;
-                    let edit_pos = usize::try_from(at).ok()?;
-                    let data = data.to_vec();
-                    current.push(if tag == TAG_INSERT {
-                        Edit::Insert {
-                            pos: edit_pos,
-                            bytes: data,
-                        }
-                    } else {
-                        Edit::Delete {
-                            pos: edit_pos,
-                            bytes: data,
-                        }
-                    });
-                }
-                _ => return None,
-            }
-        }
-        if !current.is_empty() {
-            return None;
-        }
-
-        let size = groups.iter().flatten().map(Edit::size).sum();
-        let log = UndoLog {
-            groups,
-            open: false,
-            size,
-            limit,
-        };
-        Some(log.trim().0)
-    }
-}
-
-fn put_edit(mut out: Vec<u8>, edit: &Edit) -> Vec<u8> {
-    let (tag, pos, bytes) = match edit {
-        Edit::Insert { pos, bytes } => (TAG_INSERT, pos, bytes),
-        Edit::Delete { pos, bytes } => (TAG_DELETE, pos, bytes),
-    };
-    out.push(tag);
-    out.extend_from_slice(&(*pos as u64).to_le_bytes());
-    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-    out.extend_from_slice(bytes);
-    out
-}
-
-/// Reads `n` bytes at `pos`. Returns them with the position after them.
-fn take_at(bytes: &[u8], pos: usize, n: usize) -> Option<(&[u8], usize)> {
-    let end = pos.checked_add(n)?;
-    Some((bytes.get(pos..end)?, end))
-}
-
-fn u8_at(bytes: &[u8], pos: usize) -> Option<(u8, usize)> {
-    let (s, end) = take_at(bytes, pos, 1)?;
-    Some((s[0], end))
-}
-
-fn u32_at(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
-    let (s, end) = take_at(bytes, pos, 4)?;
-    Some((u32::from_le_bytes(s.try_into().ok()?), end))
-}
-
-fn u64_at(bytes: &[u8], pos: usize) -> Option<(u64, usize)> {
-    let (s, end) = take_at(bytes, pos, 8)?;
-    Some((u64::from_le_bytes(s.try_into().ok()?), end))
-}
-
-/// `.<name>.undo` beside the file.
-pub fn undo_path(path: &Path) -> PathBuf {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    dir.join(format!(".{name}.undo"))
 }
 
 #[cfg(test)]
@@ -255,13 +113,5 @@ mod tests {
         assert_eq!(dropped, 1);
         let log = log.close();
         assert_eq!(log.groups(), &[vec![insert(0, "de")]]);
-    }
-
-    #[test]
-    fn undo_path_is_hidden_sibling() {
-        assert_eq!(
-            undo_path(Path::new("dir/a.txt")),
-            Path::new("dir/.a.txt.undo")
-        );
     }
 }

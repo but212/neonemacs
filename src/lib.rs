@@ -7,5 +7,6 @@
 pub mod core;
 pub mod shell;
 
-#[cfg(test)]
-mod test_support;
+/// Helpers that drive the editor in tests. Unit tests always see them; integration tests need `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

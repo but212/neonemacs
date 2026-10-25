@@ -85,9 +85,9 @@ mod tests {
         assert_eq!(c.get("case-fold-search"), Ok(Value::Bool(true)));
         let c = c.set("fill-column", Value::Int(33)).unwrap();
         assert_eq!(c.fill_column, 33);
-        assert!(c.clone().set("tab-width", Value::Int(0)).is_err());
-        assert!(c.clone().set("fill-column", Value::Bool(true)).is_err());
-        assert!(c.clone().set("nope", Value::Int(1)).is_err());
+        assert!(c.set("tab-width", Value::Int(0)).is_err());
+        assert!(c.set("fill-column", Value::Bool(true)).is_err());
+        assert!(c.set("nope", Value::Int(1)).is_err());
         assert!(c.get("nope").is_err());
         assert_eq!(c.tab_width, 8);
     }

@@ -1,10 +1,10 @@
 //! Adversarial stress and invariant tests for core commands (§3, §4, §6, §8, §9).
 //! Tests edge cases, hostile key sequences, mode transitions, and boundary conditions.
 
-use crate::common::{editor, keys, point, text, typ};
 use neonemacs::core::commands::find;
 use neonemacs::core::commands::table::BUILTINS;
 use neonemacs::core::editor::{Mode, Prefix, Window};
+use neonemacs::test_support::{editor, keys, point, text, typ};
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {

@@ -9,6 +9,7 @@ pub mod effect;
 pub mod eol;
 pub mod file;
 pub mod keymap;
+pub mod kill_ring;
 pub mod mode;
 pub mod render;
 pub mod search;
@@ -29,13 +30,11 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
         Event::Run(name) => dispatch::run_named(ed, &name, fx),
         Event::Disk { id, state } => commands::disk_checked(ed, id, state, fx),
         Event::Written { id, result } => commands::written(ed, id, result, fx),
-        Event::UndoWritten { id, result } => (commands::undo_written(ed, id, result), fx),
         Event::FileRead {
             target,
             path,
             result,
         } => commands::file_read(ed, target, path, result, fx),
-        Event::UndoRead { id, bytes } => (commands::undo_read(ed, id, bytes), fx),
         Event::WalRemoved => (ed, fx),
         Event::ShellDone(result) => (commands::shell_done(ed, result), fx),
         Event::LuaDone(result) => (commands::lua_done(ed, result), fx),

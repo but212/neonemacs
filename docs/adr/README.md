@@ -38,7 +38,7 @@
 |  - Zero I/O Imports (I-14) & Zero `&mut` Signatures (I-18)               |
 |  - Deterministic Transitions: step(Editor, Event) -> (Editor, Effects)   |
 |  - UTF-8 GapBuffer, Multi-Window Layout (I-19), BufferPool (I-08)        |
-|  - Encapsulated KillRing (I-26), SyntaxRegistry (I-27), UndoLog (I-10)   |
+|  - Encapsulated KillRing (I-26), SyntaxRegistry (I-27), UndoLog          |
 +--------------------------------------------------------------------------+
 ```
 
@@ -58,7 +58,7 @@
 
 ### Pillar III: Minimal Public Lua FFI Bridge
 
-- Lua is embedded exclusively in the shell (`src/shell/lua.rs`).
+- Lua is embedded exclusively in the shell (`src/shell/lua/`).
 - The public API is deliberately small and compatibility-stable (ADR 0001, ADR 0004, ADR 0006).
 - Re-entrancy protection: Lua commands execute synchronously with a maximum nesting limit of 50.
 - Bundled prelude scripts (`syntax.lua`, `keymap.lua`, `text.lua`) boot ahead of user `init.lua`, enabling standard editor functionality without core code bloat.
@@ -83,15 +83,15 @@
 | **I-07** | Read-only buffers reject mutations and EOL toggling | Runtime (`view_mode`) | Spec §10 |
 | **I-08** | At least one buffer exists at all times; closing retargets windows safely | Runtime (`BufferPool`) | ADR 0002, Spec §5 |
 | **I-09** | Consecutive kills append to the same kill-ring entry | Runtime (`append_last`) | ADR 0002, ADR 0006 |
-| **I-10** | Persistent undo is verified against disk state before application | Runtime (`UndoLog::decode`) | ADR 0002, Spec §7 |
+| **I-10** | [Pruned] Persistent undo verified against disk state (persistent undo removed) | Pruned | ADR 0002, Spec §7 |
 | **I-11** | Configuration settings validate ranges and types at ingress boundary | Runtime boundary | ADR 0001 |
 | **I-12** | Key binding syntax accepts only valid single keys or `C-x` 2-key sequences | Parser boundary | ADR 0001, ADR 0005 |
 | **I-13** | `WriteFile` effect is emitted only after confirmation or clean check | Runtime | ADR 0002 |
 | **I-14** | `src/core` never imports I/O crates (`fs`, `process`, `mlua`, `crossterm`) | CI check / Test scan | ADR 0002 |
 | **I-15** | Every `Effect` is answered by exactly one `Event` (1:1 correspondence) | Type (`shell::perform`) | ADR 0002 |
-| **I-16** | `WriteUndo` bytes are encoded directly from `DiskState` in `Written` | Boundary | ADR 0002 |
+| **I-16** | [Pruned] `WriteUndo` bytes encoded from `DiskState` (persistent undo removed) | Pruned | ADR 0002 |
 | **I-17** | No `RefCell` borrow is held across a Lua call boundary | Runtime | ADR 0002 |
-| **I-18** | Zero `&mut` in any `src/core` signature (parameters, returns, fields) | Pure scan (`tests/core_purity.rs`) | ADR 0002 |
+| **I-18** | Zero `&mut` in any `src/core` signature (parameters, returns, fields) | Pure scan (`tests/core/purity.rs`) | ADR 0002 |
 | **I-19** | Selected window index is strictly bounded: `selected < layout.leaf_count()` | Runtime (`WindowTree`) | ADR 0002 |
 | **I-20** | Any buffer id passed to `with_buffer` exists in the buffer pool | Runtime | ADR 0002 |
 | **I-21** | Shell's `RefCell<Option<Editor>>` is `None` only during `step` evaluation | Runtime (`take`/`put`) | ADR 0002 |

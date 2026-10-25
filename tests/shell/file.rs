@@ -6,43 +6,13 @@ use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Confirm, Editor, Mode, Prefix, Window};
 use neonemacs::core::effect::{Effect, Event};
 use neonemacs::core::file::{Backing, LoadExtent};
-use neonemacs::core::keymap::{Code, Key, parse_keys};
+use neonemacs::core::keymap::parse_keys;
 use neonemacs::core::step;
 use neonemacs::shell::file;
-use neonemacs::shell::{handle, perform_all};
+use neonemacs::shell::perform_all;
+use neonemacs::test_support::{editor, keys, point, text, typ};
 use std::fs;
 use std::path::Path;
-
-fn editor() -> Editor {
-    Editor::new(Config::default())
-}
-
-fn keys(mut ed: Editor, s: &str) -> Editor {
-    for k in parse_keys(s).unwrap() {
-        ed = handle(ed, None, Event::Key(k));
-    }
-    ed
-}
-
-fn typ(mut ed: Editor, s: &str) -> Editor {
-    for c in s.chars() {
-        let code = if c == '\n' {
-            Code::Enter
-        } else {
-            Code::Char(c)
-        };
-        ed = handle(ed, None, Event::Key(Key::plain(code)));
-    }
-    ed
-}
-
-fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
-}
-
-fn point(ed: &Editor) -> usize {
-    ed.window().point
-}
 
 fn visit(ed: Editor, path: &Path) -> Editor {
     let fx = request_open(&ed, path.to_path_buf(), None, true, Vec::new());
@@ -173,21 +143,6 @@ fn quit_asks_only_with_unsaved_changes() {
 }
 
 #[test]
-fn undo_survives_reopen_when_file_matches() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    fs::write(&path, b"abc").unwrap();
-    let ed = visit(editor(), &path);
-    let ed = keys(ed, "C-e");
-    let ed = typ(ed, "d");
-    let _ = keys(ed, "C-x C-s");
-
-    let again = visit(editor(), &path);
-    let again = keys(again, "C-/");
-    assert_eq!(text(&again), "abc");
-}
-
-#[test]
 fn file_commands_find_goto_revert_write() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
@@ -252,7 +207,7 @@ fn save_requests_disk_stat_first() {
 }
 
 #[test]
-fn written_records_disk_and_emits_undo() {
+fn written_records_disk_and_reports_wrote() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
     fs::write(&path, b"abc").unwrap();
@@ -275,8 +230,8 @@ fn written_records_disk_and_emits_undo() {
         *buf.backing(),
         Backing::file(path.clone(), disk, LoadExtent::Whole)
     );
-    let bytes = buf.undo().encode(disk).unwrap();
-    assert_eq!(fx, vec![Effect::WriteUndo { id, path, bytes }]);
+    assert!(fx.is_empty());
+    assert_eq!(ed.message(), format!("Wrote {}", path.display()));
 }
 
 #[test]
@@ -318,27 +273,6 @@ fn confirmed_external_writes_without_recheck() {
             path,
             bytes: b"xabc".to_vec()
         }]
-    );
-}
-
-#[test]
-fn undo_write_failure_is_reported() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    fs::write(&path, b"abc").unwrap();
-    let ed = visit(editor(), &path);
-    let id = ed.window().buffer;
-
-    let (ed, _) = step(
-        ed,
-        Event::UndoWritten {
-            id,
-            result: Err("denied".to_owned()),
-        },
-    );
-    assert_eq!(
-        ed.message(),
-        format!("Wrote {}, undo not saved: denied", path.display())
     );
 }
 

@@ -22,22 +22,11 @@ pub enum Effect {
         path: PathBuf,
         bytes: Vec<u8>,
     },
-    /// Writes the undo file beside `path`. The bytes are encoded from the state the write produced (I-16).
-    WriteUndo {
-        id: BufferId,
-        path: PathBuf,
-        bytes: Vec<u8>,
-    },
     /// Reads at most `max_size` bytes of `path`.
     ReadFile {
         target: ReadTarget,
         path: PathBuf,
         max_size: u64,
-    },
-    /// Reads the undo file beside `path`. The core verifies it against the disk state (I-10).
-    ReadUndo {
-        id: BufferId,
-        path: PathBuf,
     },
     RemoveWal {
         path: PathBuf,
@@ -97,18 +86,10 @@ pub enum Event {
         id: BufferId,
         result: Result<DiskState, String>,
     },
-    UndoWritten {
-        id: BufferId,
-        result: Result<(), String>,
-    },
     FileRead {
         target: ReadTarget,
         path: PathBuf,
         result: Result<Read, String>,
-    },
-    UndoRead {
-        id: BufferId,
-        bytes: Option<Vec<u8>>,
     },
     WalRemoved,
     /// Raw stdout and stderr of a shell command, or the reason it did not start.

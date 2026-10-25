@@ -5,7 +5,6 @@ use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::core::effect::{self, Effect, Effects, ReadTarget};
 use crate::core::file::{Backing, DiskState, LoadExtent, loaded_from};
-use crate::core::undo::UndoLog;
 use std::path::PathBuf;
 
 /// Asks the shell to read `path` for a new buffer. The result comes back as `FileRead`.
@@ -171,12 +170,12 @@ pub(crate) fn write_buffer(ed: &Editor, id: BufferId, mut fx: Effects) -> Effect
     fx
 }
 
-/// Records a finished write (I-05). The undo file follows, encoded from the new disk state (I-16).
+/// Records a finished write (I-05) and reports it in the echo area.
 pub fn written(
     mut ed: Editor,
     id: BufferId,
     result: Result<DiskState, String>,
-    mut fx: Effects,
+    fx: Effects,
 ) -> (Editor, Effects) {
     let Some(path) = ed.buffer_by_id(id).file_path().map(PathBuf::from) else {
         return (ed, fx);
@@ -184,29 +183,11 @@ pub fn written(
     let message = match result {
         Ok(new_disk) => {
             ed = ed.with_buffer(id, |b| b.record_saved(new_disk));
-            match ed.buffer_by_id(id).undo().encode(new_disk) {
-                Some(bytes) => {
-                    fx.push(Effect::WriteUndo { id, path, bytes });
-                    return (ed, fx);
-                }
-                None => format!("Wrote {}", path.display()),
-            }
+            format!("Wrote {}", path.display())
         }
         Err(e) => format!("Save failed: {e}"),
     };
     (ed.set_message(message), fx)
-}
-
-/// Shows the result of the undo write that follows a successful save.
-pub fn undo_written(ed: Editor, id: BufferId, result: Result<(), String>) -> Editor {
-    let Some(path) = ed.buffer_by_id(id).file_path() else {
-        return ed;
-    };
-    let message = match result {
-        Ok(()) => format!("Wrote {}", path.display()),
-        Err(e) => format!("Wrote {}, undo not saved: {e}", path.display()),
-    };
-    ed.set_message(message)
 }
 
 /// Opens the file `input` in a new buffer, or shows it if it is already open.
@@ -291,7 +272,7 @@ pub fn file_read(
     target: ReadTarget,
     path: PathBuf,
     result: Result<effect::Read, String>,
-    mut fx: Effects,
+    fx: Effects,
 ) -> (Editor, Effects) {
     match (target, result) {
         (ReadTarget::Open { line, show }, Ok(read)) => {
@@ -306,7 +287,6 @@ pub fn file_read(
                 let pos = ed.buffer_by_id(id).text().nth_line_start(n);
                 ed = ed.with_buffer(id, |b| b.set_saved_point(pos));
             }
-            fx.push(Effect::ReadUndo { id, path });
             if show {
                 ed = switch_to(ed, id);
             }
@@ -331,18 +311,6 @@ pub fn file_read(
             let ed = ed.set_message(format!("Revert failed: {e}"));
             (ed, fx)
         }
-    }
-}
-
-/// Applies the undo file read for `id`. The core keeps it only if it matches the disk state (I-10).
-pub fn undo_read(ed: Editor, id: BufferId, bytes: Option<Vec<u8>>) -> Editor {
-    let Some(bytes) = bytes else {
-        return ed;
-    };
-    let disk = ed.buffer_by_id(id).backing().disk();
-    match UndoLog::decode(&bytes, disk, ed.config().undo_limit) {
-        Some(log) => ed.with_buffer(id, |b| b.with_undo(log)),
-        None => ed,
     }
 }
 
