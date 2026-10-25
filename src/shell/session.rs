@@ -260,6 +260,7 @@ fn print_styled_row(out: &mut impl Write, cells: &[crate::core::render::Cell]) -
             current = cell.style;
             match current {
                 TokenKind::Keyword => queue!(out, SetForegroundColor(Color::Cyan))?,
+                TokenKind::Type => queue!(out, SetForegroundColor(Color::Magenta))?,
                 TokenKind::String => queue!(out, SetForegroundColor(Color::Green))?,
                 TokenKind::Comment => queue!(out, SetForegroundColor(Color::DarkGrey))?,
                 TokenKind::Number => queue!(out, SetForegroundColor(Color::Yellow))?,

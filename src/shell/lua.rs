@@ -358,41 +358,47 @@ fn install_buffer_api<'lua, 'scope>(
     Ok(())
 }
 
+fn parse_string_list(spec: &Table, key: &str) -> mlua::Result<Vec<String>> {
+    let mut list = Vec::new();
+    if let Ok(table) = spec.get::<Table>(key) {
+        for item in table.sequence_values::<String>() {
+            let s = item.map_err(|_| {
+                mlua::Error::RuntimeError(format!("{key} must be an array of strings"))
+            })?;
+            list.push(s);
+        }
+    }
+    Ok(list)
+}
+
 fn parse_syntax_def(name: String, spec: Table) -> mlua::Result<SyntaxDef> {
     if name.trim().is_empty() {
         return Err(mlua::Error::RuntimeError(
             "syntax name must not be empty".to_string(),
         ));
     }
-    let ext_table: Table = spec.get("extensions").map_err(|_| {
-        mlua::Error::RuntimeError("syntax spec must have 'extensions' table".to_string())
-    })?;
-    let mut extensions = Vec::new();
-    for ext in ext_table.sequence_values::<String>() {
-        let ext = ext.map_err(|_| {
-            mlua::Error::RuntimeError("extensions must be an array of strings".to_string())
-        })?;
-        extensions.push(ext);
-    }
-    if extensions.is_empty() {
+
+    let extensions = parse_string_list(&spec, "extensions")?;
+    let filenames = parse_string_list(&spec, "filenames")?;
+    if extensions.is_empty() && filenames.is_empty() {
         return Err(mlua::Error::RuntimeError(
-            "extensions array must not be empty".to_string(),
+            "syntax spec must have at least one extension or filename".to_string(),
         ));
     }
 
     let line_comment: Option<String> = spec.get("line_comment").ok();
+    let keywords = parse_string_list(&spec, "keywords")?;
+    let types = parse_string_list(&spec, "types")?;
+    let case_insensitive: bool = spec.get("case_insensitive").unwrap_or(false);
 
-    let mut keywords = Vec::new();
-    if let Ok(kw_table) = spec.get::<Table>("keywords") {
-        for kw in kw_table.sequence_values::<String>() {
-            let kw = kw.map_err(|_| {
-                mlua::Error::RuntimeError("keywords must be an array of strings".to_string())
-            })?;
-            keywords.push(kw);
-        }
-    }
-
-    Ok(SyntaxDef::new(name, extensions, line_comment, keywords))
+    Ok(SyntaxDef::builder(name)
+        .extensions(extensions)
+        .filenames(filenames)
+        .line_comment(line_comment)
+        .keywords(keywords)
+        .types(types)
+        .case_insensitive(case_insensitive)
+        .build())
 }
 
 /// Calls the Lua command `name`, which must have been defined with `command`.
@@ -566,6 +572,30 @@ mod tests {
             r#"syntax.register("bad", { extensions = 123 })"#,
         );
         assert!(result.is_err());
+        // Missing both extensions and filenames
+        let (_, result) = script(
+            &lua,
+            ed.clone(),
+            r#"syntax.register("bad", { keywords = { "foo" } })"#,
+        );
+        assert!(result.is_err());
+
+        // Extended fields: filenames, types, case_insensitive
+        let (ed, result) = script(
+            &lua,
+            ed,
+            r##"syntax.register("sql", {
+                extensions = { "sql" },
+                filenames = { "query.sql.txt" },
+                case_insensitive = true,
+                keywords = { "select" },
+                types = { "varchar" }
+            })"##,
+        );
+        result.unwrap();
+        assert_eq!(ed.syntax_registry().detect_lang("query.sql.txt"), Some("sql"));
+        assert!(ed.syntax_registry().is_keyword("sql", "SELECT"));
+        assert!(ed.syntax_registry().is_type("sql", "VARCHAR"));
     }
 
     #[test]
@@ -581,6 +611,13 @@ mod tests {
         assert_eq!(reg.detect_lang("build.sh"), Some("shell"));
         assert_eq!(reg.detect_lang("README.md"), Some("markdown"));
         assert_eq!(reg.detect_lang("main.c"), Some("c"));
+        assert_eq!(reg.detect_lang("Makefile"), Some("makefile"));
+        assert_eq!(reg.detect_lang("Cargo.toml"), Some("toml"));
+        assert_eq!(reg.detect_lang("query.sql"), Some("sql"));
+        assert!(reg.is_type("rust", "i32"));
+        assert!(reg.is_keyword("sql", "SELECT"));
+        assert!(reg.is_type("sql", "VARCHAR"));
+        assert!(reg.is_keyword("shell", "if"));
     }
 
     #[test]

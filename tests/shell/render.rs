@@ -32,9 +32,11 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
 
     // C
     assert_eq!(reg.detect_lang("main.c"), Some("c"));
-    let c_tokens = highlight_line(reg.find("c"), "int a = 0;");
-    assert_eq!(c_tokens[0], TokenKind::Keyword); // "int"
+    let c_tokens = highlight_line(reg.find("c"), "int a = 0; return a;");
+    assert_eq!(c_tokens[0], TokenKind::Type); // "int"
     assert_eq!(c_tokens[8], TokenKind::Number); // "0"
+    let ret_idx = "int a = 0; return a;".find("return").unwrap();
+    assert_eq!(c_tokens[ret_idx], TokenKind::Keyword); // "return"
 
     // Lua
     assert_eq!(reg.detect_lang("init.lua"), Some("lua"));
