@@ -151,7 +151,7 @@ fn active_shell_tracks_spinner_and_typed_notice() {
 fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     let press = |code: KeyCode, modifiers: KeyModifiers| {
@@ -206,7 +206,7 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
 fn shell_running_does_not_clobber_status_messages() {
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     let press = |code: KeyCode, modifiers: KeyModifiers| {

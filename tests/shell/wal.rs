@@ -149,7 +149,7 @@ fn typing_and_idle_wal_recording() {
     let lua = lua::new_state().unwrap();
     let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     for c in "new text".chars() {
@@ -187,7 +187,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
     let lua = lua::new_state().unwrap();
     let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     // Type new text
@@ -278,7 +278,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
     let lua = lua::new_state().unwrap();
     let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     for c in "unsaved work ".chars() {

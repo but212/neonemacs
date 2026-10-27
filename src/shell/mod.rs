@@ -11,6 +11,7 @@ pub mod lua;
 pub mod session;
 pub mod startup;
 pub mod terminal;
+pub mod terminal_guard;
 pub mod wal;
 
 use crate::core::editor::Editor;

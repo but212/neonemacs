@@ -114,7 +114,7 @@ fn shell_session_render_sized_wide_hangul_and_scroll_writeback() {
         });
 
     let lua = lua::new_state().unwrap();
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let mut out = Vec::new();
 
     // Height 3 (1 body row + 1 status row + 1 echo row): forces vertical scroll to line 4

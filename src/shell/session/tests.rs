@@ -17,9 +17,8 @@ use std::fs;
 use std::sync::mpsc;
 
 fn make_session() -> ShellSession {
-    let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    ShellSession::new(ed, lua)
+    ShellSession::new(lua::bootstrap(Editor::new(Config::default()), &lua), lua)
 }
 
 fn key_event(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> TermEvent {

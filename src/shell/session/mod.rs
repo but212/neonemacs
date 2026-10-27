@@ -30,12 +30,8 @@ pub struct ShellSession {
 }
 
 impl ShellSession {
+    /// `ed` must come from `lua::bootstrap`: the bundled keymap and syntax definitions are loaded only there.
     pub fn new(ed: Editor, lua: Lua) -> Self {
-        let ed = if ed.syntax_registry().is_empty() {
-            crate::shell::lua::bootstrap(ed, &lua)
-        } else {
-            ed
-        };
         Self {
             ed,
             lua,

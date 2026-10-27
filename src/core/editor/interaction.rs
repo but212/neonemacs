@@ -2,7 +2,7 @@
 //! the echo-area message, and the quit flag. Fields are visible only to `editor` (I-32).
 //! `mode` may hold a `BufferId` as a value, but this group never dereferences it.
 
-use crate::core::mode::{LastCommand, Mode, Prefix};
+use crate::core::mode::{LastCommand, Mode};
 
 #[derive(Debug, Clone)]
 pub struct Interaction {
@@ -18,9 +18,7 @@ pub struct Interaction {
 impl Interaction {
     pub fn new() -> Self {
         Self {
-            mode: Mode::Normal {
-                prefix: Prefix::None,
-            },
+            mode: Mode::normal(),
             last: LastCommand::Other,
             prev: LastCommand::Other,
             message: String::new(),

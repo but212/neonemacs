@@ -27,9 +27,7 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 pub fn answer(mut ed: Editor, question: Confirm, key: Key, fx: Effects) -> (Editor, Effects) {
     let yes = key.text() == Some('y');
     if yes || key.text() == Some('n') || key == Key::ctrl('g') {
-        ed = ed.set_mode(Mode::Normal {
-            prefix: Prefix::None,
-        });
+        ed = ed.set_mode(Mode::normal());
         if yes {
             return commands::confirmed(ed, question, fx);
         }
@@ -45,9 +43,7 @@ pub fn handle_normal_key(
     key: Key,
     fx: Effects,
 ) -> (Editor, Effects) {
-    ed = ed.set_mode(Mode::Normal {
-        prefix: Prefix::None,
-    });
+    ed = ed.set_mode(Mode::normal());
     if key == Key::ctrl('g') {
         ed = ed.set_message("Quit");
         return (ed, fx);

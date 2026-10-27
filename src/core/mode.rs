@@ -51,8 +51,22 @@ pub enum Purpose {
     KillBuffer,
     GotoLine,
     ShellCommand,
-    QueryFrom { regex: bool },
-    QueryTo { regex: bool, from: String },
+    QueryFrom { kind: MatchKind },
+    QueryTo { kind: MatchKind, from: String },
+}
+
+/// Which way an incremental search moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Backward,
+}
+
+/// Whether a search pattern is literal text or a regular expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchKind {
+    Literal,
+    Regex,
 }
 
 /// A yes-or-no question that must be answered before the command continues (I-04).
@@ -67,8 +81,8 @@ pub enum Confirm {
 /// An incremental search in progress (§9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Isearch {
-    pub forward: bool,
-    pub regex: bool,
+    pub direction: Direction,
+    pub kind: MatchKind,
     pub text: String,
     /// Point when the search started; restored on cancel and used after backspace.
     pub origin: usize,
@@ -82,10 +96,11 @@ pub struct Isearch {
 pub struct QueryReplace {
     pub pattern: Pattern,
     pub replacement: String,
-    pub regex: bool,
+    pub kind: MatchKind,
     pub fold: bool,
-    /// The match waiting for an answer, as `start..end`.
-    pub current: Option<(usize, usize)>,
+    /// The match waiting for an answer, as `start..end`. A stored session always has one:
+    /// the session is stored only after a match is found, and each later match replaces it.
+    pub current: (usize, usize),
     pub count: usize,
 }
 
@@ -96,4 +111,13 @@ pub enum Mode {
     Isearch(Isearch),
     QueryReplace(QueryReplace),
     Prompt(Prompt),
+}
+
+impl Mode {
+    /// Normal editing with no prefix key pending.
+    pub const fn normal() -> Self {
+        Self::Normal {
+            prefix: Prefix::None,
+        }
+    }
 }

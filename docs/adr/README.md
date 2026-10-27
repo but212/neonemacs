@@ -18,6 +18,7 @@
 | [0008](0008-lua-comment-dwim-and-mx-completion.md) | Lua Comment DWIM and M-x Command Completion Integration | Accepted | 2026-10-25 | §4, §6, §12 | Unified `M-x` completion for Lua commands, `buffer.comment_prefix`, echo `message`, indent-aware `comment-dwim` (`M-;`) |
 | [0009](0009-oversized-files-and-eol-edit.md) | Refuse Oversized Files, Undoable EOL Toggle, and Query-Replace Read-Only Check | Accepted | 2026-10-26 | §7, §8, §9, §10 | Oversized files refused at open (I-04), `toggle-eol` as `Edit::SetEol` (I-31), WAL v2 stores EOL (I-23) |
 | [0010](0010-save-as-transitions-path-identity-bounded-history.md) | Save-As Transitions, Path Identity, and Bounded History | Accepted | 2026-10-26 | §6, §7, §8, §12 | Save-as changes state only after success (I-36), `FilePath` and one buffer per path (I-37), one undo limit (I-35), undo reset on text replacement (I-34), yank ends at next edit (I-38), kill ring cap (I-26) |
+| [0011](0011-cli-flags.md) | CLI Flags, Version and Help, and End of Options | Accepted | 2026-10-27 | §12 | `Invocation` sum type (I-39), `--` end of options and order-dependent parsing (I-40), unknown `-` options exit 2 |
 
 ---
 
@@ -72,7 +73,7 @@
 
 ---
 
-## 3. System Invariant Matrix (`I-01` ~ `I-38`)
+## 3. System Invariant Matrix (`I-01` ~ `I-40`)
 
 | ID | Invariant Summary | Enforcement Layer | Governed By |
 | :--- | :--- | :---: | :--- |
@@ -114,6 +115,8 @@
 | **I-36** | `write-file` changes the buffer's backing, name, and old WAL only after a successful write | Type (`Event::Written { id, path, result }`) | ADR 0010 |
 | **I-37** | `FilePath` has one constructor, `resolve`, which folds `.` and `..` lexically; one buffer visits one path (checked in `file_read(Open)` and `write_file`) | Type (`FilePath`) + Runtime (`commands/file.rs`) | ADR 0010 |
 | **I-38** | `LastCommand::Yank` is valid only until the next applied edit | Runtime (`Editor::apply`) | ADR 0010 |
+| **I-39** | A version or help request carries no file list, and `parse_args` is the only place that classifies `-`-prefixed arguments | Type (`Invocation`) + Boundary (`parse_args`) | ADR 0011 |
+| **I-40** | `--` makes later `-`-prefixed arguments files; the rule depends on argument order | Runtime (`parse_args` loop) | ADR 0011 |
 
 ---
 

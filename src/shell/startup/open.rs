@@ -1,48 +1,15 @@
-//! CLI argument parsing, `init.lua` loading, and startup file/WAL recovery (§12, I-23).
+//! Opens startup files and restores unsaved WAL content (§12, I-23).
 
+use super::args::FileArg;
 use crate::core::buffer::Buffer;
 use crate::core::commands::{request_open, switch_to};
 use crate::core::editor::Editor;
 use crate::core::file::DiskState;
-use crate::shell::{lua, perform_all, run_source, wal};
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-/// One file argument with the line from a preceding `+n`, if any.
-#[derive(Debug, PartialEq, Eq)]
-pub struct FileArg {
-    pub path: PathBuf,
-    pub line: Option<usize>,
-}
-
-/// Files and `+n` (§12). A `+n` applies to the file right after it (A6).
-pub fn parse_args(args: &[String]) -> Result<Vec<FileArg>, String> {
-    let mut files = Vec::new();
-    let mut line = None;
-    for arg in args {
-        if let Some(n) = arg.strip_prefix('+') {
-            let n = n
-                .parse::<usize>()
-                .ok()
-                .filter(|&n| n >= 1)
-                .ok_or_else(|| format!("invalid line number: {arg}"))?;
-            line = Some(n);
-        } else {
-            files.push(FileArg {
-                path: PathBuf::from(arg),
-                line: line.take(),
-            });
-        }
-    }
-    if line.is_some() {
-        return Err("+n must be followed by a file".to_owned());
-    }
-    Ok(files)
-}
+use crate::shell::{perform_all, wal};
+use std::path::Path;
 
 /// Queries the current disk state of the buffer backing the given path.
-pub fn buffer_disk_state(ed: &Editor, path: &Path) -> DiskState {
+fn buffer_disk_state(ed: &Editor, path: &Path) -> DiskState {
     ed.buffers()
         .find_by_path(path)
         .map_or(DiskState::Unknown, |b| b.backing().disk())
@@ -50,7 +17,7 @@ pub fn buffer_disk_state(ed: &Editor, path: &Path) -> DiskState {
 
 /// Opens a single file and restores unsaved WAL content if available (I-23).
 /// Returns the updated editor and the file name if restored from WAL.
-pub fn open_and_recover_single(
+fn open_and_recover_single(
     ed: Editor,
     lua: Option<&mlua::Lua>,
     arg: &FileArg,
@@ -103,67 +70,13 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
     }
 }
 
-/// Runs `init.lua` from the config directory, if there is one (U2).
-pub fn load_init_from(
-    ed: Editor,
-    lua: &mlua::Lua,
-    xdg: Option<&std::ffi::OsStr>,
-    home: Option<&Path>,
-) -> Editor {
-    let Some(path) = lua::config_path(xdg, home) else {
-        return ed;
-    };
-    let Ok(source) = fs::read_to_string(&path) else {
-        return ed;
-    };
-    let (ed, result) = run_source(ed, lua, &source);
-    if let Err(e) = result {
-        let msg = format!(
-            "init.lua: {}",
-            e.to_string().lines().next().unwrap_or_default()
-        );
-        return ed.set_message(msg);
-    }
-    ed
-}
-
-pub fn load_init(ed: Editor, lua: &mlua::Lua) -> Editor {
-    let xdg = env::var_os("XDG_CONFIG_HOME");
-    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
-    load_init_from(ed, lua, xdg.as_deref(), home.as_deref().map(Path::new))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::config::Config;
     use crate::core::eol::Eol;
-
-    fn strings(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| (*s).to_owned()).collect()
-    }
-
-    #[test]
-    fn args() {
-        let files = parse_args(&strings(&["a.txt", "+3", "b.txt", "c.txt"])).unwrap();
-        assert_eq!(
-            files,
-            vec![
-                FileArg {
-                    path: PathBuf::from("a.txt"),
-                    line: None
-                },
-                FileArg {
-                    path: PathBuf::from("b.txt"),
-                    line: Some(3)
-                },
-                FileArg {
-                    path: PathBuf::from("c.txt"),
-                    line: None
-                },
-            ]
-        );
-    }
+    use crate::shell::startup::files_of;
+    use std::fs;
 
     #[test]
     fn first_file_is_shown_and_line_applies_to_its_file() {
@@ -177,7 +90,7 @@ mod tests {
             "+3".to_owned(),
             b.display().to_string(),
         ];
-        let files = parse_args(&args).unwrap();
+        let files = files_of(&args);
 
         let ed = open_files(Editor::new(Config::default()), None, &files);
         assert_eq!(ed.buffer().name(), "a.txt");
@@ -194,7 +107,7 @@ mod tests {
         wal::write_wal(&path, disk, Eol::Lf, b"recovered a").unwrap();
 
         let args = [path.display().to_string(), path.display().to_string()];
-        let files = parse_args(&args).unwrap();
+        let files = files_of(&args);
         let ed = open_files(Editor::new(Config::default()), None, &files);
         assert_eq!(ed.message(), "[Recovered a.txt from WAL]");
     }
@@ -209,7 +122,7 @@ mod tests {
             a.display().to_string(),
             dir.path().join(".").join("a.txt").display().to_string(),
         ];
-        let files = parse_args(&args).unwrap();
+        let files = files_of(&args);
 
         let ed = open_files(Editor::new(Config::default()), None, &files);
         assert_eq!(
@@ -233,34 +146,13 @@ mod tests {
                 .display()
                 .to_string(),
         ];
-        let files = parse_args(&args).unwrap();
+        let files = files_of(&args);
 
         let ed = open_files(Editor::new(Config::default()), None, &files);
         assert_eq!(
             ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
             1
         );
-    }
-
-    #[test]
-    fn args_adversarial_rejections_and_boundaries() {
-        assert_eq!(parse_args(&[]).unwrap(), vec![]);
-        assert_eq!(
-            parse_args(&strings(&["+1", "file.txt"])).unwrap(),
-            vec![FileArg {
-                path: PathBuf::from("file.txt"),
-                line: Some(1)
-            }]
-        );
-        // Rejections:
-        assert!(parse_args(&strings(&["+0", "a"])).is_err());
-        assert!(parse_args(&strings(&["+-1", "a"])).is_err());
-        assert!(parse_args(&strings(&["+abc", "a"])).is_err());
-        assert!(parse_args(&strings(&["+", "a"])).is_err());
-        assert!(parse_args(&strings(&["+  1", "a"])).is_err());
-        assert!(parse_args(&strings(&["+18446744073709551616", "a"])).is_err());
-        assert!(parse_args(&strings(&["+3"])).is_err());
-        assert!(parse_args(&strings(&["a", "+3"])).is_err());
     }
 
     #[test]
@@ -348,38 +240,6 @@ mod tests {
         assert_eq!(ed2.buffer().text().to_bytes(), b"good disk");
         assert!(!ed2.buffer().modified());
         assert!(ed2.message().is_empty());
-    }
-
-    #[test]
-    fn load_init_missing_and_adversarial_lua_handling() {
-        let lua = lua::new_state().unwrap();
-        let ed = Editor::new(Config::default());
-
-        // 1. Missing / None paths
-        let ed = load_init_from(ed, &lua, None, None);
-        assert!(ed.message().is_empty());
-
-        let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("neonemacs");
-        fs::create_dir_all(&config_dir).unwrap();
-        let init_file = config_dir.join("init.lua");
-
-        // 2. Valid Lua script modifying config
-        fs::write(&init_file, r#"set("fill-column", 85)"#).unwrap();
-        let ed = load_init_from(ed, &lua, Some(dir.path().as_os_str()), None);
-        assert_eq!(ed.config().fill_column, 85);
-        assert!(ed.message().is_empty());
-
-        // 3. Syntax error in init.lua
-        fs::write(&init_file, "function bad_syntax(").unwrap();
-        let ed = load_init_from(ed, &lua, Some(dir.path().as_os_str()), None);
-        assert!(ed.message().starts_with("init.lua: "));
-
-        // 4. Runtime error in init.lua
-        fs::write(&init_file, r#"error("adversarial error")"#).unwrap();
-        let ed = load_init_from(ed, &lua, Some(dir.path().as_os_str()), None);
-        assert!(ed.message().starts_with("init.lua: "));
-        assert!(ed.message().contains("adversarial error"));
     }
 
     #[test]

@@ -252,6 +252,10 @@ impl BufferPool {
         self.buffers.iter().find(|b| b.file_path() == Some(path))
     }
 
+    pub fn find_by_name(&self, name: &str) -> Option<&Buffer> {
+        self.buffers.iter().find(|b| b.name() == name)
+    }
+
     /// Adds a buffer with an automatically assigned unique id. Ids are never reused.
     pub fn add(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
         let id = BufferId(self.next_id);
