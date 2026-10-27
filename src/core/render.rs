@@ -288,13 +288,15 @@ fn unit_char(unit: Unit) -> char {
 /// `w` cells for one character: control characters as `^X`, C1 as `\HH`,
 /// tabs as spaces, and wide characters followed by an empty cell.
 fn glyph(c: char, w: usize) -> Vec<String> {
-    let code = c as u32;
     if c == '\t' {
         return vec![" ".to_owned(); w];
     }
-    if code < 0x20 {
-        return vec!["^".to_owned(), char::from(code as u8 + 64).to_string()];
+    if let Ok(b) = u8::try_from(c)
+        && b < 0x20
+    {
+        return vec!["^".to_owned(), char::from(b + 64).to_string()];
     }
+    let code = c as u32;
     if code == 0x7F {
         return vec!["^".to_owned(), "?".to_owned()];
     }

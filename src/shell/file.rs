@@ -21,6 +21,9 @@ pub fn disk_state(path: &Path) -> DiskState {
 
 /// Reads `path` as bytes without decoding it. A missing file is `Read::Missing`.
 /// A file longer than `max_size` is not read: `bytes` is empty and `len` reports its size.
+///
+/// # Errors
+/// Returns `io::Error` if reading file metadata or bytes fails.
 pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -52,6 +55,9 @@ fn read_capped(file: &mut File, n: u64) -> io::Result<Vec<u8>> {
 
 /// Writes `bytes` to a temporary file beside the target, then renames it over
 /// the target. Symlinks are followed; permissions are kept (A2).
+///
+/// # Errors
+/// Returns `io::Error` if canonicalization or atomic file writing fails.
 pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
     let target = if fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) {
         fs::canonicalize(path)?

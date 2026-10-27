@@ -56,12 +56,12 @@ impl ShellSession {
             .any(crate::core::buffer::Buffer::is_wal_dirty)
     }
     /// Handles a terminal event (e.g. key press).
-    pub fn handle_event(&mut self, event: TermEvent) {
+    pub fn handle_event(&mut self, event: &TermEvent) {
         self.handle_event_at(event, Instant::now());
     }
 
     /// Handles a terminal event with an explicit timestamp for deterministic idle WAL scheduling.
-    pub fn handle_event_at(&mut self, event: TermEvent, now: Instant) {
+    pub fn handle_event_at(&mut self, event: &TermEvent, now: Instant) {
         if let TermEvent::Key(k) = event
             && k.kind == KeyEventKind::Press
             && let Some(key) = from_terminal(k.code, k.modifiers)
@@ -161,6 +161,9 @@ impl ShellSession {
     }
 
     /// Draws, then handles waiting events, background tasks, and WAL flush in a loop (I-22, I-24).
+    ///
+    /// # Errors
+    /// Returns `io::Error` if terminal rendering, event polling, or reading fails.
     pub fn run(mut self, out: &mut impl Write) -> io::Result<()> {
         loop {
             self.render(out)?;
@@ -171,9 +174,9 @@ impl ShellSession {
             self.tick();
 
             if event::poll(Duration::from_millis(50))? {
-                self.handle_event(event::read()?);
+                self.handle_event(&event::read()?);
                 while event::poll(Duration::ZERO)? {
-                    self.handle_event(event::read()?);
+                    self.handle_event(&event::read()?);
                 }
             }
         }

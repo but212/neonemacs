@@ -102,11 +102,17 @@ pub const fn ctrl_key(c: char) -> Key {
 }
 
 /// Parses key tokens such as `"C-x C-f"`, `"M-x"`, `"C-SPC"`, or `"left"`.
+///
+/// # Errors
+/// Returns `KeyError` if any token cannot be recognized as a valid key.
 pub fn parse_keys(s: &str) -> Result<Vec<Key>, KeyError> {
     s.split_whitespace().map(parse_key).collect()
 }
 
 /// Parses a binding key sequence. Only single keys or C-x 2-key sequences are valid bindings (I-12).
+///
+/// # Errors
+/// Returns `KeyError` if `s` is empty, contains unrecognized keys, or is an unsupported sequence.
 pub fn parse_key_seq(s: &str) -> Result<Vec<Key>, KeyError> {
     let keys = parse_keys(s)?;
     match keys.as_slice() {
@@ -175,6 +181,10 @@ impl Keymap {
         self
     }
 
+    /// Binds `keys` parsed from string notation to command `name`.
+    ///
+    /// # Errors
+    /// Returns `KeyError` if `keys` notation cannot be parsed or is unsupported.
     pub fn bind_str(self, keys: &str, name: &str) -> Result<Self, KeyError> {
         Ok(self.bind(parse_key_seq(keys)?, name))
     }
@@ -208,6 +218,9 @@ impl Keymap {
     }
 
     /// The survival set (§3), plus `M-x` (§4).
+    ///
+    /// # Panics
+    /// Panics if static survival key sequences fail to parse.
     #[must_use]
     pub fn survival() -> Self {
         let mut map = Keymap::default();

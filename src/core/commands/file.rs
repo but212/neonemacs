@@ -13,14 +13,14 @@ use std::path::{Path, PathBuf};
 #[must_use]
 pub fn request_open(
     ed: &Editor,
-    path: PathBuf,
+    path: &Path,
     line: Option<usize>,
     show: bool,
     mut fx: Effects,
 ) -> Effects {
     fx.push(Effect::ReadFile {
         target: ReadTarget::Open { line, show },
-        path: ed.resolve_path(&path).as_path().to_path_buf(),
+        path: ed.resolve_path(path).as_path().to_path_buf(),
         max_size: ed.config().max_file_size,
     });
     fx
@@ -144,13 +144,13 @@ fn write_to(ed: &Editor, id: BufferId, path: PathBuf, mut fx: Effects) -> Effect
 pub fn written(
     mut ed: Editor,
     id: BufferId,
-    path: PathBuf,
+    path: &Path,
     result: Result<DiskState, String>,
     mut fx: Effects,
 ) -> (Editor, Effects) {
     let message = match result {
         Ok(new_disk) => {
-            let file = ed.resolve_path(&path);
+            let file = ed.resolve_path(path);
             if ed.buffer_by_id(id).file_path() != Some(file.as_path()) {
                 if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
                     fx.push(eff);
@@ -186,7 +186,7 @@ pub(crate) fn find_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effect
     if let Some(id) = existing {
         (switch_to(ed, id), fx)
     } else {
-        let fx = request_open(&ed, path.as_path().to_path_buf(), None, true, fx);
+        let fx = request_open(&ed, path.as_path(), None, true, fx);
         (ed, fx)
     }
 }
@@ -246,7 +246,7 @@ fn revert_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
 pub(crate) fn toggle_eol(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let from = ed.buffer().eol();
     let to = from.toggled();
-    let (ed, applied) = ed.apply(Edit::SetEol { from, to });
+    let (ed, applied) = ed.apply(&Edit::SetEol { from, to });
     if applied.is_none() {
         return (ed, fx);
     }
@@ -678,7 +678,7 @@ mod tests {
         let (ed, fx) = written(
             ed,
             id,
-            PathBuf::from("missing/b.txt"),
+            &PathBuf::from("missing/b.txt"),
             Err("denied".to_owned()),
             Vec::new(),
         );
@@ -701,7 +701,7 @@ mod tests {
             mtime: std::time::UNIX_EPOCH,
             size: 3,
         };
-        let (ed, fx) = written(ed, id, PathBuf::from("b.txt"), Ok(disk), Vec::new());
+        let (ed, fx) = written(ed, id, &PathBuf::from("b.txt"), Ok(disk), Vec::new());
         assert_eq!(
             fx,
             vec![Effect::RemoveWal {

@@ -165,30 +165,30 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
 
     // Type buffer content, then launch `M-x shell-command RET echo session_async_ok RET`
     for c in "hello world".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
     for c in "shell-command".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     for c in "echo session_async_ok".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "[Running...]");
 
     // Move to beginning of buffer (`C-a`) and start I-search (`C-s`) while shell is running;
     // tick must not overwrite I-search echo even if the background command completes mid-search.
-    session.handle_event_at(press(KeyCode::Char('a'), KeyModifiers::CONTROL), t0);
-    session.handle_event_at(press(KeyCode::Char('s'), KeyModifiers::CONTROL), t0);
-    session.handle_event_at(press(KeyCode::Char('w'), KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Char('a'), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(&press(KeyCode::Char('s'), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(&press(KeyCode::Char('w'), KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "I-search: w");
     session.tick_at(t0 + Duration::from_millis(50));
     assert_eq!(session.ed.message(), "I-search: w");
 
     // Exit I-search with Enter -> back to Normal mode
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
 
     // Poll tick until background command completes
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -219,19 +219,19 @@ fn shell_running_does_not_clobber_status_messages() {
     };
 
     // Launch shell command
-    session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
     for c in "shell-command".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     for c in "echo 1".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "[Running...]");
 
     // User executes C-SPC (Mark set) while shell is running
-    session.handle_event_at(press(KeyCode::Char(' '), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(&press(KeyCode::Char(' '), KeyModifiers::CONTROL), t0);
     assert_eq!(session.ed.message(), "Mark set");
 
     // 50ms tick occurs: must NOT overwrite "Mark set" with spinner

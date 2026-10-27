@@ -137,6 +137,7 @@ impl Buffer {
         self
     }
 
+    #[must_use]
     pub fn set_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
@@ -262,6 +263,10 @@ impl BufferPool {
         &self.buffers
     }
 
+    /// Returns the pool index of buffer `id`.
+    ///
+    /// # Panics
+    /// Panics if `id` is not present in the pool (violating I-08).
     #[must_use]
     pub fn index_of(&self, id: BufferId) -> usize {
         self.buffers
@@ -300,6 +305,7 @@ impl BufferPool {
     }
 
     /// Replaces the buffer with `id` by `f` applied to it. Panics when `id` is unknown (I-20).
+    #[must_use]
     pub fn with_buffer(mut self, id: BufferId, f: impl FnOnce(Buffer) -> Buffer) -> Self {
         let i = self.index_of(id);
         let buf = self.buffers.remove(i);
@@ -338,6 +344,9 @@ impl BufferPool {
 
     /// Removes buffer `id`. If `id` was the only buffer, an empty `*scratch*` buffer is created first.
     /// Returns the new pool and the `BufferId` of the replacement buffer that windows should switch to (I-08).
+    ///
+    /// # Panics
+    /// Panics if no replacement buffer exists (violating I-08).
     #[must_use]
     pub fn kill(mut self, id: BufferId) -> (Self, BufferId) {
         if self.buffers.len() == 1 {

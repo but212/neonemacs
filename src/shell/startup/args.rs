@@ -28,6 +28,9 @@ pub enum Invocation {
 
 /// Arguments in order (§12). A `+n` applies to the file right after it (A6).
 /// The first `-v` or `-h` returns at once, so an earlier argument error still wins.
+///
+/// # Errors
+/// Returns an error message if any line number or flag is invalid.
 pub fn parse_args(args: &[String]) -> Result<Invocation, String> {
     let mut files = Vec::new();
     let mut line = None;

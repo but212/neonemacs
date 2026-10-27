@@ -5,6 +5,7 @@ use crate::core::editor::Editor;
 use mlua::{Lua, Scope, Table};
 use std::cell::RefCell;
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn install_buffer_api<'lua, 'scope>(
     lua: &'lua Lua,
     scope: &'lua Scope<'lua, 'scope>,

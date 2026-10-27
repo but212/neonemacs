@@ -9,6 +9,9 @@ static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Atomically writes `bytes` to `target` using a PID- and sequence-isolated temporary file.
 /// Calls `sync_all` before renaming over `target`, and cleans up the temporary file on error.
+///
+/// # Errors
+/// Returns `io::Error` if creating, writing, flushing, or renaming the temporary file fails.
 pub fn atomic_write(
     target: &Path,
     prefix: &str,

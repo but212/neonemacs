@@ -93,16 +93,15 @@ pub fn handle(ed: Editor, lua: Option<&Lua>, event: Event) -> Editor {
 #[must_use]
 pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
     let cell = RefCell::new(Some(ed));
-    let bound = match lua {
+    let bound = if let Some(lua) = lua {
         // The API stays bound for all of `effects`, so every Lua call in them sees the same editor.
-        Some(lua) => lua::with_api(lua, &cell, |lua| {
+        lua::with_api(lua, &cell, |lua| {
             perform_in(&cell, Some(lua), effects);
             Ok(())
-        }),
-        None => {
-            perform_in(&cell, None, effects);
-            Ok(())
-        }
+        })
+    } else {
+        perform_in(&cell, None, effects);
+        Ok(())
     };
     let ed = into_editor(cell);
     match bound {
@@ -113,6 +112,9 @@ pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
 
 /// Applies `event` to the editor in `cell`, then puts the new editor back. The cell is empty
 /// only during this call, since `step` never calls Lua (I-21). Returns the effects to perform.
+///
+/// # Panics
+/// Panics if `cell` does not contain an editor (violating I-21).
 pub fn step_in(cell: &RefCell<Option<Editor>>, event: Event) -> Effects {
     let ed = cell
         .borrow_mut()

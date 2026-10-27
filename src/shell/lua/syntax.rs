@@ -16,7 +16,7 @@ pub(super) fn install_syntax_api<'lua, 'scope>(
     syntax_table.set(
         "register",
         scope.create_function(|_, (name, spec): (String, Table)| {
-            let def = parse_syntax_def(name, spec)?;
+            let def = parse_syntax_def(name, &spec)?;
             mutate_editor(cell, |ed| ed.with_syntax_registry(|reg| reg.register(def)));
             Ok(())
         })?,
@@ -38,15 +38,15 @@ fn parse_string_list(spec: &Table, key: &str) -> mlua::Result<Vec<String>> {
     Ok(list)
 }
 
-fn parse_syntax_def(name: String, spec: Table) -> mlua::Result<SyntaxDef> {
+fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
     if name.trim().is_empty() {
         return Err(mlua::Error::RuntimeError(
             "syntax name must not be empty".to_string(),
         ));
     }
 
-    let extensions = parse_string_list(&spec, "extensions")?;
-    let filenames = parse_string_list(&spec, "filenames")?;
+    let extensions = parse_string_list(spec, "extensions")?;
+    let filenames = parse_string_list(spec, "filenames")?;
     if extensions.is_empty() && filenames.is_empty() {
         return Err(mlua::Error::RuntimeError(
             "syntax spec must have at least one extension or filename".to_string(),
@@ -54,8 +54,8 @@ fn parse_syntax_def(name: String, spec: Table) -> mlua::Result<SyntaxDef> {
     }
 
     let line_comment: Option<String> = spec.get("line_comment").ok();
-    let keywords = parse_string_list(&spec, "keywords")?;
-    let types = parse_string_list(&spec, "types")?;
+    let keywords = parse_string_list(spec, "keywords")?;
+    let types = parse_string_list(spec, "types")?;
     let case_insensitive: bool = spec.get("case_insensitive").unwrap_or(false);
 
     Ok(SyntaxDef::new(

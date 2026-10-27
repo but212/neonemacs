@@ -124,6 +124,9 @@ pub fn has_wal(path: &Path) -> bool {
 }
 
 /// Writes buffer contents with its EOL and base `DiskState` to WAL atomically via temp file.
+///
+/// # Errors
+/// Returns `io::Error` if atomic writing of WAL bytes fails.
 pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
     let wp = wal_path(path);
     let encoded = encode_wal(disk, eol, bytes);
@@ -131,6 +134,9 @@ pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Re
 }
 
 /// Reads the WAL contents if available and matching disk state.
+///
+/// # Errors
+/// Returns `io::Error` if reading file bytes fails or if WAL is corrupt or disk state mismatches.
 pub fn read_wal(path: &Path, disk: DiskState) -> io::Result<Recovered> {
     let wp = wal_path(path);
     let raw = fs::read(wp)?;

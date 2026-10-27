@@ -45,6 +45,9 @@ pub const BUNDLED_SCRIPTS: &[(&str, &str)] = &[
 ];
 
 /// Bootstraps built-in Lua scripts (such as syntax definitions and default keymaps) into `ed`.
+///
+/// # Panics
+/// Panics if any bundled script fails to load.
 #[must_use]
 pub fn bootstrap(mut ed: Editor, lua: &Lua) -> Editor {
     for (name, source) in BUNDLED_SCRIPTS {
@@ -58,6 +61,9 @@ pub fn bootstrap(mut ed: Editor, lua: &Lua) -> Editor {
 }
 
 /// A Lua state with the command table in place.
+///
+/// # Errors
+/// Returns `mlua::Error` if initializing global tables fails.
 pub fn new_state() -> mlua::Result<Lua> {
     let lua = Lua::new();
     lua.globals().set(COMMANDS, lua.create_table()?)?;
@@ -90,6 +96,9 @@ fn mutate_editor(cell: &RefCell<Option<Editor>>, f: impl FnOnce(Editor) -> Edito
 }
 
 /// Runs `body` with the API bound to the editor in `cell`.
+///
+/// # Errors
+/// Returns `mlua::Error` if binding any Lua API or executing `body` fails.
 pub fn with_api<R>(
     lua: &Lua,
     cell: &RefCell<Option<Editor>>,

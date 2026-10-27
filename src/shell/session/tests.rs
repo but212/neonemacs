@@ -61,7 +61,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
     ];
 
     for (i, ev) in ignored_events.into_iter().enumerate() {
-        session.handle_event_at(ev, t0 + Duration::from_secs(i as u64 + 1));
+        session.handle_event_at(&&ev, t0 + Duration::from_secs(i as u64 + 1));
     }
 
     assert_eq!(session.ed.buffer().text().to_bytes(), b"");
@@ -72,7 +72,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
 
     // Only KeyEventKind::Press with a mapped key takes effect
     session.handle_event_at(
-        press(KeyCode::Char('x'), KeyModifiers::NONE),
+        &&press(KeyCode::Char('x'), KeyModifiers::NONE),
         t0 + Duration::from_secs(10),
     );
     assert_eq!(session.ed.buffer().text().to_bytes(), b"x");
@@ -92,9 +92,9 @@ fn spinner_tick_wrapping_and_prompt_mode_echo_preservation() {
     assert_eq!(session.ed.message(), "[Running... |]");
 
     // 2. Entering M-x prompt while shell is running must NOT be overwritten by tick()
-    session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event_at(&&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
     assert!(matches!(session.ed.mode(), Mode::Prompt(_)));
-    session.handle_event_at(press(KeyCode::Char('g'), KeyModifiers::NONE), t0);
+    session.handle_event_at(&&press(KeyCode::Char('g'), KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "M-x g");
 
     // Tick multiple times while user is typing in prompt: prompt message stays intact
@@ -103,7 +103,7 @@ fn spinner_tick_wrapping_and_prompt_mode_echo_preservation() {
     assert_eq!(session.ed.message(), "M-x g");
 
     // 3. Cancel prompt with C-g -> back to Mode::Normal -> next tick resumes spinner
-    session.handle_event_at(press(KeyCode::Char('g'), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(&press(KeyCode::Char('g'), KeyModifiers::CONTROL), t0);
     assert!(matches!(session.ed.mode(), Mode::Normal { .. }));
     session.tick_at(t0 + Duration::from_millis(150));
     assert!(session.ed.message().starts_with("[Running... "));
@@ -137,15 +137,15 @@ fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
     session.active_shell = Some(ActiveShell::new(ShellTask { receiver: rx }));
 
     // Attempt to run a second shell command while first is active: M-x shell-command RET echo 2 RET
-    session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
     for c in "shell-command".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     for c in "echo 2".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
 
     assert_eq!(
         session.ed.message(),
@@ -179,23 +179,23 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
     fs::write(&file_b, "init_b").unwrap();
 
     let mut session = make_session();
-    let fx_a = request_open(&session.ed, file_a.clone(), None, true, Vec::new());
+    let fx_a = request_open(&session.ed, &file_a, None, true, Vec::new());
     session.ed = perform_all(session.ed, Some(&session.lua), fx_a);
-    let fx_b = request_open(&session.ed, file_b.clone(), None, false, Vec::new());
+    let fx_b = request_open(&session.ed, &file_b, None, false, Vec::new());
     session.ed = perform_all(session.ed, Some(&session.lua), fx_b);
 
     let t0 = Instant::now();
 
     // 1. Non-modifying cursor key in clean file buffer does NOT arm WAL
-    session.handle_event_at(press(KeyCode::Right, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Right, KeyModifiers::NONE), t0);
     assert!(!session.needs_wal_flush);
 
     // 2. Edit file_a at t0, then again at t0 + 600ms (debounce)
-    session.handle_event_at(press(KeyCode::Char('!'), KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Char('!'), KeyModifiers::NONE), t0);
     assert!(session.needs_wal_flush);
 
     let t_edit2 = t0 + Duration::from_millis(600);
-    session.handle_event_at(press(KeyCode::Char('?'), KeyModifiers::NONE), t_edit2);
+    session.handle_event_at(&press(KeyCode::Char('?'), KeyModifiers::NONE), t_edit2);
 
     // At t_edit2 + 999ms (1599ms after t0): still 1ms short of 1s idle threshold
     session.tick_at(t_edit2 + Duration::from_millis(999));
@@ -216,15 +216,15 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
 
     // 3. Edit again, then save (C-x C-s) before 1s elapses -> disarms WAL flush & removes .wal
     let t_edit3 = t0 + Duration::from_secs(3);
-    session.handle_event_at(press(KeyCode::Char('#'), KeyModifiers::NONE), t_edit3);
+    session.handle_event_at(&press(KeyCode::Char('#'), KeyModifiers::NONE), t_edit3);
     assert!(session.needs_wal_flush);
 
     session.handle_event_at(
-        press(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        &press(KeyCode::Char('x'), KeyModifiers::CONTROL),
         t_edit3 + Duration::from_millis(100),
     );
     session.handle_event_at(
-        press(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        &press(KeyCode::Char('s'), KeyModifiers::CONTROL),
         t_edit3 + Duration::from_millis(150),
     );
     assert!(!wal::has_wal(&file_a));
@@ -242,17 +242,17 @@ fn cursor_motion_does_not_retrigger_or_delay_wal_flush() {
     fs::write(&file_a, "init_text").unwrap();
 
     let mut session = make_session();
-    let fx = request_open(&session.ed, file_a.clone(), None, true, Vec::new());
+    let fx = request_open(&session.ed, &file_a, None, true, Vec::new());
     session.ed = perform_all(session.ed, Some(&session.lua), fx);
 
     let t0 = Instant::now();
     // 1. Edit buffer at t0
-    session.handle_event_at(press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
     assert!(session.needs_wal_flush);
 
     // 2. Move cursor at t0 + 500ms: must NOT postpone the 1s flush timeout!
     session.handle_event_at(
-        press(KeyCode::Right, KeyModifiers::NONE),
+        &press(KeyCode::Right, KeyModifiers::NONE),
         t0 + Duration::from_millis(500),
     );
     assert!(session.needs_wal_flush);
@@ -264,7 +264,7 @@ fn cursor_motion_does_not_retrigger_or_delay_wal_flush() {
 
     // 3. Move cursor at t0 + 2000ms: must NOT re-arm needs_wal_flush or re-write WAL!
     session.handle_event_at(
-        press(KeyCode::Right, KeyModifiers::NONE),
+        &press(KeyCode::Right, KeyModifiers::NONE),
         t0 + Duration::from_millis(2000),
     );
     assert!(

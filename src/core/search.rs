@@ -85,6 +85,9 @@ impl Pattern {
     }
 
     /// Mini regex: `.`, `[...]`, `[^...]`, `*` after an atom, `^`, `$`.
+    ///
+    /// # Errors
+    /// Returns an error message if `s` contains an unclosed character class or invalid syntax.
     pub fn regex(s: &str) -> Result<Pattern, String> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut chars = s.chars().peekable();

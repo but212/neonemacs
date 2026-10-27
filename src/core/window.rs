@@ -50,7 +50,10 @@ impl Layout {
         }
     }
 
-    /// The window at layout index `i`. Panics when `i` is out of range (I-19).
+    /// The window at layout index `i`.
+    ///
+    /// # Panics
+    /// Panics if `i >= self.leaf_count()` (violating I-19).
     #[must_use]
     pub fn leaf(&self, i: usize) -> &Window {
         match self {
@@ -68,7 +71,10 @@ impl Layout {
     }
 
     /// Replaces the window at layout index `i` by the layout `f` builds from it.
-    /// Panics when `i` is out of range (I-19).
+    ///
+    /// # Panics
+    /// Panics if `i >= self.leaf_count()` (violating I-19).
+    #[must_use]
     pub fn replace_leaf(self, i: usize, f: impl FnOnce(Window) -> Layout) -> Layout {
         match self {
             Layout::Leaf(w) if i == 0 => f(w),
@@ -99,6 +105,7 @@ impl Layout {
     }
 
     /// Applies `f` to every window. Edits use this to move anchors (I-01).
+    #[must_use]
     pub fn map_windows(self, f: &impl Fn(Window) -> Window) -> Layout {
         match self {
             Layout::Leaf(w) => Layout::Leaf(f(w)),
@@ -164,6 +171,10 @@ impl WindowManager {
         self.layout.windows()
     }
 
+    /// Sets the selected window index.
+    ///
+    /// # Panics
+    /// Panics if `index >= self.layout.leaf_count()` (violating I-19).
     #[must_use]
     pub fn set_selected(mut self, index: usize) -> Self {
         assert!(
@@ -222,6 +233,7 @@ impl WindowManager {
         self
     }
 
+    #[must_use]
     pub fn map_windows(mut self, f: &impl Fn(Window) -> Window) -> Self {
         self.layout = self.layout.map_windows(f);
         self

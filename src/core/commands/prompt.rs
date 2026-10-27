@@ -79,7 +79,7 @@ fn complete(ed: &Editor, mut p: Prompt) -> (Prompt, Option<String>) {
     match cands.as_slice() {
         [] => (p, Some("No match".to_owned())),
         [(name, _)] => {
-            p.input = name.clone();
+            p.input.clone_from(name);
             (p, None)
         }
         _ => {

@@ -9,12 +9,18 @@ use std::io::{self, Write};
 
 impl ShellSession {
     /// Draws changed rows to the terminal.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if querying terminal size or drawing fails.
     pub fn render(&mut self, out: &mut impl Write) -> io::Result<()> {
         let (cols, rows) = terminal::size()?;
         self.render_sized(out, usize::from(cols), usize::from(rows))
     }
 
     /// Draws changed rows for explicit terminal dimensions `(cols, rows)`.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if queueing commands or flushing `out` fails.
     pub fn render_sized(
         &mut self,
         out: &mut impl Write,
@@ -34,13 +40,19 @@ impl ShellSession {
         for (row, cells) in frame.rows.iter().enumerate() {
             let row_changed = self.prev_rows.get(row) != Some(cells);
             if row_changed {
-                queue!(out, cursor::MoveTo(0, row as u16))?;
+                queue!(
+                    out,
+                    cursor::MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX))
+                )?;
                 print_styled_row(out, cells)?;
             }
         }
         queue!(
             out,
-            cursor::MoveTo(frame.cursor.0 as u16, frame.cursor.1 as u16),
+            cursor::MoveTo(
+                u16::try_from(frame.cursor.0).unwrap_or(u16::MAX),
+                u16::try_from(frame.cursor.1).unwrap_or(u16::MAX),
+            ),
             cursor::Show
         )?;
         out.flush()?;

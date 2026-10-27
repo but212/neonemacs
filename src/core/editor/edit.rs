@@ -12,11 +12,10 @@ impl Editor {
     /// Applies `edit` to the buffer of the selected window. Returns the new editor and
     /// the number of undo groups dropped to respect the limit, or `None` when refused.
     #[must_use]
-    pub fn apply(mut self, edit: Edit) -> (Self, Option<usize>) {
+    pub fn apply(mut self, edit: &Edit) -> (Self, Option<usize>) {
         let id = self.window().buffer;
         if self.buffer_by_id(id).view_only() {
-            self.interaction.message = "Buffer is read-only".to_owned();
-            return (self, None);
+            return (self.set_message("Buffer is read-only"), None);
         }
 
         // The yank offsets describe the text before this edit, so the yank ends here (I-38).
@@ -28,13 +27,13 @@ impl Editor {
         let undo_limit = self.settings.config.undo_limit;
         self.documents.edit_seq = self.documents.edit_seq.wrapping_add(1);
         self.documents.buffers = self.documents.buffers.with_buffer(id, |buf| {
-            let (buf, dropped) = buf.apply_edit(edit.clone(), |a| remap(&edit, a), undo_limit);
+            let (buf, dropped) = buf.apply_edit(edit.clone(), |a| remap(edit, a), undo_limit);
             dropped_res = Some(dropped);
             buf
         });
 
         let text = self.documents.buffers.get_by_id(id).text();
-        let anchor = |a| snap(text, remap(&edit, a));
+        let anchor = |a| snap(text, remap(edit, a));
         self.documents.windows = self.documents.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
@@ -61,7 +60,7 @@ impl Editor {
             return (self, Vec::new());
         }
         let bytes = self.buffer().text().bytes(start..end);
-        let (ed, _) = self.apply(Edit::Delete {
+        let (ed, _) = self.apply(&Edit::Delete {
             pos: start,
             bytes: bytes.clone(),
         });
@@ -90,7 +89,7 @@ impl Editor {
     #[must_use]
     pub fn insert_at(self, pos: usize, bytes: &[u8]) -> Self {
         let pos = snap(self.buffer().text(), pos.min(self.buffer().text().len()));
-        let (ed, applied) = self.apply(Edit::Insert {
+        let (ed, applied) = self.apply(&Edit::Insert {
             pos,
             bytes: bytes.to_vec(),
         });
@@ -102,6 +101,7 @@ impl Editor {
     }
 
     /// Ends the current undo group.
+    #[must_use]
     pub fn boundary(self) -> Self {
         self.with_current_buffer(Buffer::close_undo)
     }
@@ -136,7 +136,7 @@ impl Editor {
         let bytes = c.to_string().into_bytes();
         let len = bytes.len();
         let at = snap(self.buffer().text(), self.window().point);
-        let (ed, applied) = self.apply(Edit::Insert { pos: at, bytes });
+        let (ed, applied) = self.apply(&Edit::Insert { pos: at, bytes });
         if applied.is_none() {
             return ed;
         }
@@ -160,13 +160,13 @@ impl Editor {
             _ => groups.checked_sub(1),
         };
         let Some(idx) = idx else {
-            ed.interaction.message = "No further undo information".to_owned();
+            "No further undo information".clone_into(&mut ed.interaction.message);
             return (ed, fx);
         };
         let group = ed.buffer_by_id(id).undo().groups()[idx].clone();
         let mut dropped = 0;
         for edit in group.iter().rev() {
-            let (next, applied) = ed.apply(edit.inverse());
+            let (next, applied) = ed.apply(&edit.inverse());
             ed = next;
             match applied {
                 Some(d) => dropped += d,
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn view_mode_blocks_edits() {
         let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
-        let (ed, applied) = ed.apply(Edit::Insert {
+        let (ed, applied) = ed.apply(&Edit::Insert {
             pos: 0,
             bytes: b"x".to_vec(),
         });
@@ -321,7 +321,7 @@ mod tests {
         let ed = editor_with("abcdef")
             .with_window(|w| Window { point: 4, ..w })
             .with_current_buffer(|b| b.set_mark(Some(2)).set_saved_point(5));
-        let (ed, _) = ed.apply(Edit::Insert {
+        let (ed, _) = ed.apply(&Edit::Insert {
             pos: 1,
             bytes: b"XYZ".to_vec(),
         });
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn anchor_snaps_to_unit_start() {
         let ed = editor_with("a\r\nb").with_window(|w| Window { point: 1, ..w });
-        let (ed, _) = ed.apply(Edit::Insert {
+        let (ed, _) = ed.apply(&Edit::Insert {
             pos: 0,
             bytes: b"x".to_vec(),
         });

@@ -31,7 +31,7 @@ fn regular_save_cleans_up_existing_wal() {
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
 
     let keys = parse_keys("C-x C-s").unwrap();
@@ -57,7 +57,7 @@ fn recovery_from_wal_restores_unsaved_content() {
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let mut ed = perform_all(ed, None, fx);
 
     if wal::has_wal(&file_path) {
@@ -125,7 +125,7 @@ fn revert_buffer_cleans_up_wal() {
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
 
     // Revert buffer (M-x revert-buffer RET)
@@ -147,14 +147,14 @@ fn typing_and_idle_wal_recording() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
     let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     for c in "new text".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -185,7 +185,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
     let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
@@ -193,7 +193,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
     // Type new text
     for c in "extra edit ".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -212,7 +212,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
 
     // Call M-x kill-buffer RET
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('x'),
             modifiers: KeyModifiers::ALT,
             kind: KeyEventKind::Press,
@@ -222,7 +222,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
     );
     for c in "kill-buffer".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -232,7 +232,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
         );
     }
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -242,7 +242,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
     );
     // Enter to submit empty buffer name targeting current buffer
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -253,7 +253,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
 
     // Prompt asks: "Buffer is modified; kill anyway? (y or n)" -> Answer 'y'
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('y'),
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -276,14 +276,14 @@ fn wal_quit_unsaved_cleans_up_wal() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
     let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     for c in "unsaved work ".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -298,7 +298,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
 
     // C-x C-c
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('x'),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
@@ -307,7 +307,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
         t0,
     );
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('c'),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
@@ -318,7 +318,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
 
     // Prompt: "Modified buffers exist; quit anyway? (y or n)" -> Answer 'y'
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('y'),
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -398,7 +398,7 @@ fn failed_write_file_keeps_old_wal() {
     wal::write_wal(&old_path, disk, Eol::Lf, b"unsaved edits").unwrap();
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, old_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &old_path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     let ed = ed.with_current_buffer(|buf| {
         buf.with_text(neonemacs::core::text::Text::from_bytes(b"unsaved edits"))
@@ -435,7 +435,7 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
     );
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, old_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &old_path, None, true, Vec::new());
     let mut ed = perform_all(ed, None, fx);
 
     // Buffer has edits matching WAL

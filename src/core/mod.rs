@@ -30,7 +30,7 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
         Event::Key(key) => dispatch::handle_key(ed, key, fx),
         Event::Run(name) => dispatch::run_named(ed, &name, fx),
         Event::Disk { id, state } => commands::disk_checked(ed, id, state, fx),
-        Event::Written { id, path, result } => commands::written(ed, id, path, result, fx),
+        Event::Written { id, path, result } => commands::written(ed, id, &path, result, fx),
         Event::FileRead {
             target,
             path,

@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 
 fn visit(ed: Editor, path: &Path) -> Editor {
-    let fx = request_open(&ed, path.to_path_buf(), None, true, Vec::new());
+    let fx = request_open(&ed, &path.to_path_buf(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     ed.with_window(|w| Window { point: 0, ..w })
 }

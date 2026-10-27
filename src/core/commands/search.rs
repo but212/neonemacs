@@ -255,14 +255,14 @@ fn replace_match(
     let after = start + replacement.len();
     // `apply` refuses only on `view_only`, which `start_query_replace` already rejected, so a
     // Delete is never left without its Insert. The `None` arms are defensive.
-    let (ed, applied) = ed.apply(Edit::Delete {
+    let (ed, applied) = ed.apply(&Edit::Delete {
         pos: start,
         bytes: matched,
     });
     if applied.is_none() {
         return (ed, None);
     }
-    let (ed, applied) = ed.apply(Edit::Insert {
+    let (ed, applied) = ed.apply(&Edit::Insert {
         pos: start,
         bytes: replacement,
     });

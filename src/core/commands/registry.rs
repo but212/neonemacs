@@ -17,6 +17,7 @@ impl CommandRegistry {
         }
     }
 
+    #[must_use]
     pub fn insert(mut self, name: impl Into<String>) -> Self {
         self.commands.insert(name.into());
         self

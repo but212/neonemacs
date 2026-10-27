@@ -26,7 +26,7 @@ fn open_and_recover_single(
     let has_wal = wal::has_wal(&path);
     // A path already open was recovered by an earlier argument, so it is not recovered again.
     let already_open = ed.buffers().find_by_path(&path).is_some();
-    let fx = request_open(&ed, path.clone(), arg.line, false, Vec::new());
+    let fx = request_open(&ed, &path, arg.line, false, Vec::new());
     let mut ed = perform_all(ed, lua, fx);
 
     // A refused open (over `max-file-size`) leaves no buffer, so there is nothing to recover into.
@@ -252,7 +252,7 @@ mod tests {
         let path = dir.path().join("tracked.txt");
         fs::write(&path, "tracked content").unwrap();
 
-        let fx = request_open(&ed, path.clone(), None, false, Vec::new());
+        let fx = request_open(&ed, &path, None, false, Vec::new());
         let ed = perform_all(ed, None, fx);
         let disk = buffer_disk_state(&ed, &path);
         assert!(matches!(disk, DiskState::Known { .. }));

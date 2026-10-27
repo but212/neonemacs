@@ -15,6 +15,10 @@ fn restore_terminal() {
 pub struct TerminalGuard;
 
 impl TerminalGuard {
+    /// Enters raw mode and the alternate screen.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if enabling raw mode or entering alternate screen fails.
     pub fn enter() -> io::Result<Self> {
         Self::install_panic_hook();
         terminal::enable_raw_mode()?;

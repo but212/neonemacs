@@ -74,6 +74,7 @@ impl Editor {
         self.documents.edit_seq
     }
 
+    #[must_use]
     pub fn clear_wal_dirty(self, id: BufferId) -> Self {
         self.with_buffer(id, Buffer::clear_wal_dirty)
     }
@@ -83,6 +84,7 @@ impl Editor {
         &self.interaction.message
     }
 
+    #[must_use]
     pub fn set_message(mut self, message: impl Into<String>) -> Self {
         self.interaction.message = message.into();
         self
@@ -105,6 +107,7 @@ impl Editor {
         self
     }
 
+    #[must_use]
     pub fn confirm(self, question: Confirm, message: impl Into<String>) -> Self {
         self.set_mode(Mode::Confirm(question)).set_message(message)
     }
@@ -119,6 +122,7 @@ impl Editor {
         &self.documents.windows
     }
 
+    #[must_use]
     pub fn with_windows(mut self, f: impl FnOnce(WindowManager) -> WindowManager) -> Self {
         self.documents.windows = f(self.documents.windows);
         self
@@ -153,6 +157,7 @@ impl Editor {
         &self.settings.syntax_registry
     }
 
+    #[must_use]
     pub fn with_syntax_registry(
         mut self,
         f: impl FnOnce(SyntaxRegistry) -> SyntaxRegistry,
@@ -166,6 +171,7 @@ impl Editor {
         &self.settings.commands
     }
 
+    #[must_use]
     pub fn register_command(mut self, name: impl Into<String>) -> Self {
         self.settings.commands = self.settings.commands.insert(name);
         self
@@ -187,6 +193,7 @@ impl Editor {
         &self.documents.kill_ring
     }
 
+    #[must_use]
     pub fn with_kill_ring(mut self, f: impl FnOnce(KillRing) -> KillRing) -> Self {
         self.documents.kill_ring = f(self.documents.kill_ring);
         self
@@ -213,6 +220,7 @@ impl Editor {
         &self.settings.keymap
     }
 
+    #[must_use]
     pub fn with_keymap(mut self, f: impl FnOnce(Keymap) -> Keymap) -> Self {
         self.settings.keymap = f(self.settings.keymap);
         self
@@ -235,6 +243,7 @@ impl Editor {
     }
 
     /// Replaces the selected window with `f` applied to it (I-19).
+    #[must_use]
     pub fn with_window(mut self, f: impl FnOnce(Window) -> Window) -> Self {
         let w = f(*self.window());
         let text = self.buffer_by_id(w.buffer).text();
@@ -259,12 +268,14 @@ impl Editor {
     }
 
     /// Replaces the buffer with `id` by `f` applied to it. Panics when `id` is unknown (I-20).
+    #[must_use]
     pub fn with_buffer(mut self, id: BufferId, f: impl FnOnce(Buffer) -> Buffer) -> Self {
         self.documents.buffers = self.documents.buffers.with_buffer(id, f);
         self
     }
 
     /// Like `with_buffer`, for the buffer of the selected window.
+    #[must_use]
     pub fn with_current_buffer(self, f: impl FnOnce(Buffer) -> Buffer) -> Self {
         let id = self.window().buffer;
         self.with_buffer(id, f)

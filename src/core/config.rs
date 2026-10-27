@@ -37,6 +37,10 @@ pub enum Value {
 }
 
 impl Config {
+    /// Returns the current value of setting `name`.
+    ///
+    /// # Errors
+    /// Returns an error if `name` is not a recognized configuration setting.
     pub fn get(&self, name: &str) -> Result<Value, String> {
         Ok(match name {
             "fill-column" => Value::Int(i64::from(self.fill_column)),
@@ -49,6 +53,9 @@ impl Config {
     }
 
     /// Sets `name` after checking the type and range. Errors leave the setting unchanged.
+    ///
+    /// # Errors
+    /// Returns an error if `name` is unknown or `value` is out of bounds or wrong type.
     pub fn set(mut self, name: &str, value: Value) -> Result<Self, String> {
         match (name, value) {
             ("fill-column", Value::Int(n)) => {

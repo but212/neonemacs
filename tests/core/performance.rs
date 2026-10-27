@@ -22,7 +22,7 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
     };
 
     // First edit initializes the gap
-    let (ed, _) = ed.apply(edit);
+    let (ed, _) = ed.apply(&edit);
 
     // Second edit must be O(1) in-place without deep-cloning the 32MB buffer.
     // If Editor::apply clones the entire Buffer on each keypress, this will take tens of ms.
@@ -31,7 +31,7 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
         bytes: b"y".to_vec(),
     };
     let start = Instant::now();
-    let (ed, _) = ed.apply(edit2);
+    let (ed, _) = ed.apply(&edit2);
     let elapsed = start.elapsed();
 
     assert_eq!(ed.buffer().text().len(), size + 2);

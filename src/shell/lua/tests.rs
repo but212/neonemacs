@@ -151,7 +151,7 @@ fn run_sequence_saves_before_quit() {
     fs::write(&path, b"abc").unwrap();
     let lua = new_state().unwrap();
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     let ed = handle(ed, None, Event::Key(Key::plain(Code::Char('x'))));
 
@@ -802,12 +802,12 @@ fn undo_limit_applies_to_existing_buffers() {
     result.unwrap();
 
     // Two edits in two undo groups. With limit 0 the first group is dropped at once (I-35).
-    let (ed, _) = ed.apply(Edit::Insert {
+    let (ed, _) = ed.apply(&Edit::Insert {
         pos: 0,
         bytes: b"a".to_vec(),
     });
     let ed = ed.end_command();
-    let (ed, _) = ed.apply(Edit::Insert {
+    let (ed, _) = ed.apply(&Edit::Insert {
         pos: 1,
         bytes: b"b".to_vec(),
     });

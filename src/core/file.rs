@@ -143,6 +143,9 @@ impl TooLarge {
 
 /// Builds the buffer for a file read. A file longer than `max_size` is refused (I-04).
 /// A missing file is an empty buffer with unknown disk state.
+///
+/// # Errors
+/// Returns `TooLarge` if the raw file length exceeds `max_size`.
 pub fn loaded_from(path: &FilePath, read: Read, max_size: u64) -> Result<Loaded, TooLarge> {
     match read {
         Read::Missing => Ok(Loaded {

@@ -26,6 +26,9 @@ pub struct SyntaxDef {
 
 impl SyntaxDef {
     /// Creates a validated and normalized `SyntaxDef` (I-28, I-29).
+    ///
+    /// # Panics
+    /// Panics if `name` is empty or if both `extensions` and `filenames` are empty.
     pub fn new(
         name: impl Into<String>,
         extensions: Vec<String>,

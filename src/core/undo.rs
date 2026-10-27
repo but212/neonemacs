@@ -71,6 +71,9 @@ impl UndoLog {
 
     /// Appends `edit` to the open group, or starts a new group. `limit` is `Config.undo_limit`,
     /// the only undo limit (I-35). Returns the new log and the number of oldest groups dropped.
+    ///
+    /// # Panics
+    /// Panics if the open group cannot be accessed.
     #[must_use]
     pub fn record(mut self, edit: Edit, limit: usize) -> (Self, usize) {
         if !self.open {
