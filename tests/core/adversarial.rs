@@ -17,8 +17,7 @@ fn empty_buffer_all_builtins_do_not_panic() {
         assert_eq!(
             result_ed.window().point,
             0,
-            "Builtin '{}' moved point unexpectedly on empty buffer",
-            name
+            "Builtin '{name}' moved point unexpectedly on empty buffer"
         );
     }
 }
@@ -238,8 +237,7 @@ fn massive_kill_pop_and_undo_reversibility() {
     assert_eq!(
         text(&ed),
         initial_text,
-        "Undo failed to perfectly recover initial state within {} steps",
-        steps
+        "Undo failed to perfectly recover initial state within {steps} steps"
     );
 }
 

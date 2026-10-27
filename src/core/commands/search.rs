@@ -46,6 +46,7 @@ fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
 
 /// Keys during an incremental search. `C-s` and `C-r` move to the next match
 /// in each direction. Any other non-text key ends the search, then runs normally.
+#[must_use]
 pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Isearch(mut s) = ed.mode().clone() else {
         return (ed, fx);
@@ -196,6 +197,7 @@ fn next_match(ed: &Editor, pattern: &Pattern, fold: bool, from: usize) -> Option
 
 /// Answers for query-replace: `y`/SPC replace, `n`/DEL skip, `!` replace the rest,
 /// `q`/RET/`C-g` stop (A8). The whole session is one undo group.
+#[must_use]
 pub fn query_key(ed: Editor, key: Key) -> Editor {
     let Mode::QueryReplace(mut q) = ed.mode().clone() else {
         return ed;

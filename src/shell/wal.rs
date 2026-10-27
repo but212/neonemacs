@@ -19,6 +19,7 @@ pub struct Recovered {
 }
 
 /// Returns the WAL sibling file path: `.filename.wal`
+#[must_use]
 pub fn wal_path(path: &Path) -> PathBuf {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     path.with_file_name(format!(".{name}.wal"))
@@ -31,7 +32,8 @@ const fn eol_byte(eol: Eol) -> u8 {
     }
 }
 
-/// Serializes payload with its EOL and DiskState header (schema).
+/// Serializes payload with its EOL and `DiskState` header (schema).
+#[must_use]
 pub fn encode_wal(disk: DiskState, eol: Eol, bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + bytes.len());
     out.extend_from_slice(WAL_MAGIC);
@@ -96,6 +98,7 @@ impl WalHeader {
 }
 
 /// Validates header against current disk state and returns the payload if matching.
+#[must_use]
 pub fn decode_wal(raw: &[u8], disk: DiskState) -> Option<Recovered> {
     let header = WalHeader::parse(raw)?;
     if !header.matches(disk) {
@@ -108,6 +111,7 @@ pub fn decode_wal(raw: &[u8], disk: DiskState) -> Option<Recovered> {
 }
 
 /// Checks if a valid WAL file exists for `path`.
+#[must_use]
 pub fn has_wal(path: &Path) -> bool {
     let wp = wal_path(path);
     if !wp.is_file() {
@@ -119,7 +123,7 @@ pub fn has_wal(path: &Path) -> bool {
     bytes.len() >= HEADER_LEN && &bytes[0..8] == WAL_MAGIC
 }
 
-/// Writes buffer contents with its EOL and base DiskState to WAL atomically via temp file.
+/// Writes buffer contents with its EOL and base `DiskState` to WAL atomically via temp file.
 pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
     let wp = wal_path(path);
     let encoded = encode_wal(disk, eol, bytes);

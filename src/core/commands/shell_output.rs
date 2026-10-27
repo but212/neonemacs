@@ -24,6 +24,7 @@ pub(crate) fn run_shell(command: &str, mut fx: Effects) -> Effects {
 }
 
 /// Shows the output of a shell command. One line goes to the echo area; more goes to `*Shell Command Output*` (A9).
+#[must_use]
 pub fn shell_done(ed: Editor, result: Result<String, String>) -> Editor {
     let output = match result {
         Ok(output) => output,
@@ -64,6 +65,7 @@ fn show_output(ed: Editor, text: &str) -> Editor {
 }
 
 /// Ends a Lua command: shows the first line of its error, then closes its undo group like any command.
+#[must_use]
 pub fn lua_done(ed: Editor, result: Result<(), String>) -> Editor {
     let ed = match result {
         Ok(()) => ed,

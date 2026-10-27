@@ -12,6 +12,7 @@ use crate::core::text::Text;
 // --- Layer 1: Pure domain primitives ---
 
 /// Computes the delete range for backward deletion from `point`.
+#[must_use]
 pub fn delete_backward_char_range(text: &Text, point: usize) -> Option<(usize, usize)> {
     if point == 0 {
         None
@@ -21,6 +22,7 @@ pub fn delete_backward_char_range(text: &Text, point: usize) -> Option<(usize, u
 }
 
 /// Computes the delete range for forward deletion from `point`.
+#[must_use]
 pub fn delete_char_range(text: &Text, point: usize) -> Option<(usize, usize)> {
     if point >= text.len() {
         None
@@ -30,6 +32,7 @@ pub fn delete_char_range(text: &Text, point: usize) -> Option<(usize, usize)> {
 }
 
 /// Computes the range to kill from `point` to the end of the line (or newline).
+#[must_use]
 pub fn kill_line_range(text: &Text, point: usize) -> Option<(usize, usize)> {
     let line_end = text.line_end(point);
     let end = if line_end == point && point < text.len() {

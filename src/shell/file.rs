@@ -14,6 +14,7 @@ fn state_of(meta: &fs::Metadata) -> DiskState {
         })
 }
 
+#[must_use]
 pub fn disk_state(path: &Path) -> DiskState {
     fs::metadata(path).map_or(DiskState::Unknown, |m| state_of(&m))
 }

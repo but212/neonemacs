@@ -41,6 +41,7 @@ pub enum Effect {
 
 impl Effect {
     /// Returns a `RemoveWal` effect if `buf` is backed by a disk file.
+    #[must_use]
     pub fn remove_wal_if_file(buf: &Buffer) -> Option<Self> {
         buf.file_path().map(|path| Self::RemoveWal {
             path: path.to_path_buf(),

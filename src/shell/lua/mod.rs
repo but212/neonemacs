@@ -45,6 +45,7 @@ pub const BUNDLED_SCRIPTS: &[(&str, &str)] = &[
 ];
 
 /// Bootstraps built-in Lua scripts (such as syntax definitions and default keymaps) into `ed`.
+#[must_use]
 pub fn bootstrap(mut ed: Editor, lua: &Lua) -> Editor {
     for (name, source) in BUNDLED_SCRIPTS {
         let (next_ed, result) = crate::shell::run_source(ed, lua, source);
@@ -64,6 +65,7 @@ pub fn new_state() -> mlua::Result<Lua> {
 }
 
 /// `$XDG_CONFIG_HOME/neonemacs/init.lua`, else `<home>/.config/neonemacs/init.lua` (U2).
+#[must_use]
 pub fn config_path(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
     match xdg.filter(|s| !s.is_empty()) {
         Some(xdg) => Some(PathBuf::from(xdg).join("neonemacs").join("init.lua")),

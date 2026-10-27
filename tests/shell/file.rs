@@ -59,7 +59,7 @@ fn external_change_asks_before_overwrite() {
     );
     assert_eq!(fs::read(&path).unwrap(), b"external change");
 
-    keys(ed, "C-x C-s y");
+    let _ = keys(ed, "C-x C-s y");
     assert_eq!(fs::read(&path).unwrap(), b"xone");
 }
 
@@ -163,7 +163,7 @@ fn file_commands_find_goto_revert_write() {
     ed = typ(ed, "write-file");
     ed = keys(ed, "RET");
     ed = typ(ed, &copy.display().to_string());
-    keys(ed, "RET");
+    let _ = keys(ed, "RET");
     assert_eq!(fs::read(&copy).unwrap(), b"one\ntwo\nthree\n");
 }
 
@@ -217,7 +217,7 @@ fn written_records_disk_and_reports_wrote() {
         *buf.backing(),
         Backing::file(FilePath::resolve(Path::new(""), &path), disk)
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, [] as [Effect; 0]);
     assert_eq!(ed.message(), format!("Wrote {}", path.display()));
 }
 
@@ -238,7 +238,7 @@ fn write_failure_keeps_buffer_modified() {
             result: Err("disk full".to_owned()),
         },
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, [] as [Effect; 0]);
     assert_eq!(ed.message(), "Save failed: disk full");
     assert!(ed.buffer_by_id(id).modified());
 }

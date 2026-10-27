@@ -11,6 +11,7 @@ pub struct ActiveShell {
 }
 
 impl ActiveShell {
+    #[must_use]
     pub const fn new(task: ShellTask) -> Self {
         Self {
             task,

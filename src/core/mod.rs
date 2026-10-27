@@ -23,6 +23,7 @@ use crate::core::editor::Editor;
 use crate::core::effect::{Effects, Event};
 
 /// Applies `event` to the editor. Returns the new editor and the effects the shell must perform.
+#[must_use]
 pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
     let fx = Vec::new();
     match event {

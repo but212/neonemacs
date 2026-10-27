@@ -76,11 +76,13 @@ impl SyntaxDef {
     }
 
     /// Checks if a word is a keyword using binary search in $O(\log K)$ (I-29).
+    #[must_use]
     pub fn is_keyword(&self, word: &str) -> bool {
         self.contains_word(&self.keywords, word)
     }
 
     /// Checks if a word is a type using binary search in $O(\log T)$ (I-29).
+    #[must_use]
     pub fn is_type(&self, word: &str) -> bool {
         self.contains_word(&self.types, word)
     }
@@ -99,16 +101,19 @@ pub struct SyntaxRegistry {
 }
 
 impl SyntaxRegistry {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             languages: Vec::new(),
         }
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.languages.is_empty()
     }
 
+    #[must_use]
     pub fn register(mut self, def: SyntaxDef) -> Self {
         if let Some(pos) = self.languages.iter().position(|l| l.name == def.name) {
             self.languages[pos] = def;
@@ -120,6 +125,7 @@ impl SyntaxRegistry {
 
     /// Finds the syntax definition matching the file or buffer name.
     /// Priority (I-28): Exact basename match against `filenames` > extension match against `extensions`.
+    #[must_use]
     pub fn find_by_filename<'a>(&'a self, name: &str) -> Option<&'a SyntaxDef> {
         let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
         if basename.is_empty() {
@@ -145,6 +151,7 @@ impl SyntaxRegistry {
             .find(|l| l.extensions.iter().any(|e| e == ext))
     }
 
+    #[must_use]
     pub fn line_comment_for_filename<'a>(&'a self, filename: &str) -> Option<&'a str> {
         self.find_by_filename(filename)
             .and_then(|d| d.line_comment.as_deref())

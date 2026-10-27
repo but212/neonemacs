@@ -115,6 +115,7 @@ pub enum Mode {
 
 impl Mode {
     /// Normal editing with no prefix key pending.
+    #[must_use]
     pub const fn normal() -> Self {
         Self::Normal {
             prefix: Prefix::None,

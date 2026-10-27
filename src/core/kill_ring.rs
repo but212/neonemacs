@@ -9,6 +9,7 @@ pub struct KillRing {
 }
 
 impl KillRing {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -21,11 +22,13 @@ impl KillRing {
         Self { entries }
     }
 
+    #[must_use]
     pub fn entries(&self) -> &[Vec<u8>] {
         &self.entries
     }
 
     /// Adds a new entry. Past `KILL_RING_MAX` the oldest entry is dropped first (I-26).
+    #[must_use]
     pub fn push(mut self, bytes: Vec<u8>) -> Self {
         if self.entries.len() == KILL_RING_MAX {
             self.entries.remove(0);
@@ -34,6 +37,7 @@ impl KillRing {
         self
     }
 
+    #[must_use]
     pub fn append_last(mut self, bytes: &[u8]) -> Self {
         if let Some(last) = self.entries.last_mut() {
             last.extend_from_slice(bytes);
@@ -43,6 +47,7 @@ impl KillRing {
         self
     }
 
+    #[must_use]
     pub fn rotate_right(mut self, n: usize) -> Self {
         if !self.entries.is_empty() {
             let len = self.entries.len();
@@ -51,14 +56,17 @@ impl KillRing {
         self
     }
 
+    #[must_use]
     pub fn last(&self) -> Option<&[u8]> {
-        self.entries.last().map(|v| v.as_slice())
+        self.entries.last().map(Vec::as_slice)
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.entries.len()
     }

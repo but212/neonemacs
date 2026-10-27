@@ -20,6 +20,7 @@ pub enum Edit {
 }
 
 impl Edit {
+    #[must_use]
     pub fn inverse(&self) -> Edit {
         match self {
             Edit::Insert { pos, bytes } => Edit::Delete {
@@ -54,6 +55,7 @@ pub struct UndoLog {
 }
 
 impl UndoLog {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             groups: Vec::new(),
@@ -62,12 +64,14 @@ impl UndoLog {
         }
     }
 
+    #[must_use]
     pub fn groups(&self) -> &[Vec<Edit>] {
         &self.groups
     }
 
     /// Appends `edit` to the open group, or starts a new group. `limit` is `Config.undo_limit`,
     /// the only undo limit (I-35). Returns the new log and the number of oldest groups dropped.
+    #[must_use]
     pub fn record(mut self, edit: Edit, limit: usize) -> (Self, usize) {
         if !self.open {
             self.groups.push(Vec::new());
@@ -81,6 +85,7 @@ impl UndoLog {
         self.trim(limit)
     }
 
+    #[must_use]
     pub const fn close(mut self) -> Self {
         self.open = false;
         self

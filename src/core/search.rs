@@ -71,6 +71,7 @@ impl Class {
 
 impl Pattern {
     /// Every character is literal.
+    #[must_use]
     pub fn literal(s: &str) -> Pattern {
         Pattern {
             nodes: s
@@ -114,6 +115,7 @@ impl Pattern {
     }
 
     /// End of the match that starts at `pos`, if any.
+    #[must_use]
     pub fn match_at(&self, text: &Text, pos: usize, fold: bool) -> Option<usize> {
         run(&self.nodes, text, pos, fold)
     }
@@ -185,6 +187,7 @@ fn run(nodes: &[Node], text: &Text, pos: usize, fold: bool) -> Option<usize> {
 }
 
 /// First match starting at or after `from`. Returns `(start, end)`.
+#[must_use]
 pub fn find_forward(text: &Text, pat: &Pattern, from: usize, fold: bool) -> Option<(usize, usize)> {
     let mut p = from;
     loop {
@@ -199,6 +202,7 @@ pub fn find_forward(text: &Text, pat: &Pattern, from: usize, fold: bool) -> Opti
 }
 
 /// Last match starting before `from`. Returns `(start, end)`.
+#[must_use]
 pub fn find_backward(
     text: &Text,
     pat: &Pattern,
@@ -216,6 +220,7 @@ pub fn find_backward(
 }
 
 /// Replacement text for a regex match: `&` is the matched text, `\&` is a literal `&`.
+#[must_use]
 pub fn expand_replacement(replacement: &str, matched: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut chars = replacement.chars().peekable();

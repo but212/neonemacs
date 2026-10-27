@@ -29,6 +29,7 @@ pub struct Key {
 pub struct KeyError(pub String);
 
 impl Key {
+    #[must_use]
     pub const fn plain(code: Code) -> Key {
         Key {
             code,
@@ -37,15 +38,18 @@ impl Key {
         }
     }
 
+    #[must_use]
     pub const fn ctrl(c: char) -> Key {
         ctrl_key(c)
     }
 
+    #[must_use]
     pub const fn with_meta(self) -> Key {
         Key { meta: true, ..self }
     }
 
     /// The character this key inserts, if it is plain text.
+    #[must_use]
     pub const fn text(self) -> Option<char> {
         match (self.code, self.ctrl, self.meta) {
             (Code::Char(c), false, false) => Some(c),
@@ -56,6 +60,7 @@ impl Key {
     }
 
     /// Emacs-style name, such as `C-x` or `M-x`.
+    #[must_use]
     pub fn describe(self) -> String {
         let mut s = String::new();
         if self.ctrl {
@@ -82,6 +87,7 @@ impl Key {
     }
 }
 
+#[must_use]
 pub const fn ctrl_key(c: char) -> Key {
     let code = match c.to_ascii_lowercase() {
         '_' | '/' | '7' => Code::Char('_'),
@@ -163,6 +169,7 @@ pub struct Keymap {
 }
 
 impl Keymap {
+    #[must_use]
     pub fn bind(mut self, keys: Vec<Key>, name: &str) -> Self {
         self.bindings.insert(keys, name.to_owned());
         self
@@ -172,12 +179,14 @@ impl Keymap {
         Ok(self.bind(parse_key_seq(keys)?, name))
     }
 
+    #[must_use]
     pub fn unbind(mut self, keys: &[Key]) -> Self {
         self.bindings.remove(keys);
         self
     }
 
     /// Key sequences bound to `name`, for display.
+    #[must_use]
     pub fn keys_for(&self, name: &str) -> Vec<String> {
         let mut keys: Vec<String> = self
             .bindings
@@ -199,6 +208,7 @@ impl Keymap {
     }
 
     /// The survival set (§3), plus `M-x` (§4).
+    #[must_use]
     pub fn survival() -> Self {
         let mut map = Keymap::default();
         let bindings = [

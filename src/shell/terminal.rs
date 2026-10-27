@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 /// Canonical key for a terminal event (I-12). Several terminal encodings
 /// map to one key: `C-_`, `C-/`, and `C-7` all mean undo; `C-SPC`, `C-@`,
 /// and `C-2` all mean mark.
+#[must_use]
 pub const fn from_terminal(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     let meta = mods.contains(KeyModifiers::ALT);
     let key = match code {

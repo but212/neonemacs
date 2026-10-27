@@ -10,6 +10,7 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             commands: BTreeSet::new(),
@@ -21,6 +22,7 @@ impl CommandRegistry {
         self
     }
 
+    #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.commands.contains(name)
     }

@@ -38,6 +38,7 @@ pub enum ShellOutcome {
 }
 
 /// Runs `command` in a background thread without blocking the editor UI (I-24).
+#[must_use]
 pub fn spawn_shell(command: String) -> ShellTask {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -49,6 +50,7 @@ pub fn spawn_shell(command: String) -> ShellTask {
 
 /// Applies `event` in an interactive session. Spawns `RunShell` in the background (I-24)
 /// while performing other effects immediately. If `shell_busy` is true, rejects new shell commands.
+#[must_use]
 pub fn handle_interactive(
     ed: Editor,
     lua: Option<&Lua>,
@@ -81,12 +83,14 @@ pub fn handle_interactive(
 }
 
 /// Applies `event` to the editor and performs the effects it causes. Returns the new editor.
+#[must_use]
 pub fn handle(ed: Editor, lua: Option<&Lua>, event: Event) -> Editor {
     let (ed, effects) = step(ed, event);
     perform_all(ed, lua, effects)
 }
 
 /// Performs `effects` in order, until none are left. Returns the new editor.
+#[must_use]
 pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
     let cell = RefCell::new(Some(ed));
     let bound = match lua {
@@ -141,6 +145,7 @@ const fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
 }
 
 /// Performs one effect and returns the single event that answers it (I-15).
+#[must_use]
 pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
     match effect {
         Effect::StatDisk { id, path } => Event::Disk {

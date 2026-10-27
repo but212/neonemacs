@@ -11,6 +11,7 @@ const TYPED_GROUP: usize = 20;
 impl Editor {
     /// Applies `edit` to the buffer of the selected window. Returns the new editor and
     /// the number of undo groups dropped to respect the limit, or `None` when refused.
+    #[must_use]
     pub fn apply(mut self, edit: Edit) -> (Self, Option<usize>) {
         let id = self.window().buffer;
         if self.buffer_by_id(id).view_only() {
@@ -50,6 +51,7 @@ impl Editor {
     }
 
     /// Deletes `start..end`. Returns the editor and the removed bytes.
+    #[must_use]
     pub fn delete_range(self, start: usize, end: usize) -> (Self, Vec<u8>) {
         let text = self.buffer().text();
         let len = text.len();
@@ -68,6 +70,7 @@ impl Editor {
 
     /// Deletes `start..end` and pushes the removed bytes to the kill ring.
     /// Consecutive kills append to one entry (I-09).
+    #[must_use]
     pub fn kill_range(self, start: usize, end: usize) -> Self {
         let (ed, bytes) = self.delete_range(start, end);
         if bytes.is_empty() {
@@ -84,6 +87,7 @@ impl Editor {
     }
 
     /// Inserts `bytes` at `pos` and moves point after them.
+    #[must_use]
     pub fn insert_at(self, pos: usize, bytes: &[u8]) -> Self {
         let pos = snap(self.buffer().text(), pos.min(self.buffer().text().len()));
         let (ed, applied) = self.apply(Edit::Insert {
@@ -102,6 +106,7 @@ impl Editor {
         self.with_current_buffer(Buffer::close_undo)
     }
 
+    #[must_use]
     pub const fn begin_command(mut self) -> Self {
         self.interaction.prev = self.interaction.last;
         self.interaction.last = LastCommand::Other;
@@ -109,6 +114,7 @@ impl Editor {
     }
 
     /// Closes the undo group after a command, unless the command was an insert.
+    #[must_use]
     pub fn end_command(self) -> Self {
         if matches!(self.interaction.last, LastCommand::Insert { .. }) {
             self
@@ -118,6 +124,7 @@ impl Editor {
     }
 
     /// Inserts a typed character at point. Up to `TYPED_GROUP` characters share an undo group.
+    #[must_use]
     pub fn self_insert(mut self, c: char) -> Self {
         let count = match self.interaction.prev {
             LastCommand::Insert { count } if count < TYPED_GROUP => count + 1,
@@ -143,6 +150,7 @@ impl Editor {
 
     /// Emacs-style undo. Consecutive undos walk back through the log; any other
     /// command starts the next undo from the newest group, which undoes the last undo.
+    #[must_use]
     pub fn undo(self, fx: Effects) -> (Editor, Effects) {
         let mut ed = self.boundary();
         let id = ed.window().buffer;

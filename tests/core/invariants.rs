@@ -156,5 +156,5 @@ fn wal_recovery_clears_stale_undo_and_applies_line_offset() {
     // 2. Undo command must report "No further undo information" rather than corrupting recovered text
     let (switched_ed, fx) = recovered_ed.undo(Vec::new());
     assert_eq!(switched_ed.message(), "No further undo information");
-    assert!(fx.is_empty());
+    assert_eq!(fx, [] as [neonemacs::core::effect::Effect; 0]);
 }

@@ -11,6 +11,7 @@ pub struct Config {
 }
 
 impl Config {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             fill_column: 70,
@@ -51,7 +52,7 @@ impl Config {
     pub fn set(mut self, name: &str, value: Value) -> Result<Self, String> {
         match (name, value) {
             ("fill-column", Value::Int(n)) => {
-                self.fill_column = bounded(name, n, 1, i64::from(u16::MAX))?
+                self.fill_column = bounded(name, n, 1, i64::from(u16::MAX))?;
             }
             ("tab-width", Value::Int(n)) => self.tab_width = bounded(name, n, 1, 16)?,
             ("case-fold-search", Value::Bool(b)) => self.case_fold_search = b,

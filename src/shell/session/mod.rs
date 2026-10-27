@@ -31,6 +31,7 @@ pub struct ShellSession {
 
 impl ShellSession {
     /// `ed` must come from `lua::bootstrap`: the bundled keymap and syntax definitions are loaded only there.
+    #[must_use]
     pub fn new(ed: Editor, lua: Lua) -> Self {
         Self {
             ed,
@@ -43,6 +44,7 @@ impl ShellSession {
         }
     }
 
+    #[must_use]
     pub const fn is_quit(&self) -> bool {
         self.ed.quit()
     }

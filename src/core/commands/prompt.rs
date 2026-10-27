@@ -122,6 +122,7 @@ fn common_prefix(names: &[&str]) -> String {
 }
 
 /// Keys inside a prompt: text edits the input, RET submits, C-g cancels, TAB completes.
+#[must_use]
 pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Prompt(mut p) = ed.mode().clone() else {
         return (ed, fx);
@@ -187,12 +188,11 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
         return ed;
     }
     let found = ed.buffers().find_by_name(name).map(Buffer::id);
-    match found {
-        Some(id) => switch_to(ed, id),
-        None => {
-            let (ed, id) = ed.add_buffer(name, Text::default(), Backing::None);
-            switch_to(ed, id)
-        }
+    if let Some(id) = found {
+        switch_to(ed, id)
+    } else {
+        let (ed, id) = ed.add_buffer(name, Text::default(), Backing::None);
+        switch_to(ed, id)
     }
 }
 

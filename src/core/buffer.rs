@@ -1,4 +1,4 @@
-//! Buffer and BufferPool state (§4, §5, §7).
+//! Buffer and `BufferPool` state (§4, §5, §7).
 //! Enforces I-08: at least one buffer exists at all times.
 
 use std::path::Path;
@@ -28,6 +28,7 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    #[must_use]
     pub fn new(id: BufferId, name: &str, text: Text, backing: Backing) -> Self {
         Self {
             id,
@@ -43,77 +44,94 @@ impl Buffer {
         }
     }
 
+    #[must_use]
     pub const fn id(&self) -> BufferId {
         self.id
     }
 
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    #[must_use]
     pub const fn text(&self) -> &Text {
         &self.text
     }
 
+    #[must_use]
     pub const fn backing(&self) -> &Backing {
         &self.backing
     }
 
+    #[must_use]
     pub const fn undo(&self) -> &UndoLog {
         &self.undo
     }
 
+    #[must_use]
     pub const fn modified(&self) -> bool {
         self.modified
     }
 
+    #[must_use]
     pub const fn view_only(&self) -> bool {
         self.view_only
     }
 
+    #[must_use]
     pub const fn mark(&self) -> Option<usize> {
         self.mark
     }
 
+    #[must_use]
     pub const fn saved_point(&self) -> usize {
         self.saved_point
     }
 
+    #[must_use]
     pub const fn eol(&self) -> Eol {
         self.eol
     }
 
     /// Returns the file path if this buffer is backed by a disk file.
+    #[must_use]
     pub fn file_path(&self) -> Option<&Path> {
         self.backing.path()
     }
 
+    #[must_use]
     pub const fn is_wal_dirty(&self) -> bool {
         self.backing.is_wal_dirty()
     }
 
     /// Sets `mark`, snapped to a valid unit boundary in `0..=text.len()` (I-01).
+    #[must_use]
     pub fn set_mark(mut self, mark: Option<usize>) -> Self {
         self.mark = mark.map(|m| snap(&self.text, m));
         self
     }
 
     /// Sets `saved_point`, snapped to a valid unit boundary in `0..=text.len()` (I-01).
+    #[must_use]
     pub fn set_saved_point(mut self, pos: usize) -> Self {
         self.saved_point = snap(&self.text, pos);
         self
     }
 
+    #[must_use]
     pub const fn set_view_only(mut self, view_only: bool) -> Self {
         self.view_only = view_only;
         self
     }
 
+    #[must_use]
     pub const fn set_modified(mut self, modified: bool) -> Self {
         self.modified = modified;
         self
     }
 
+    #[must_use]
     pub const fn set_eol(mut self, eol: Eol) -> Self {
         self.eol = eol;
         self
@@ -124,6 +142,7 @@ impl Buffer {
         self
     }
 
+    #[must_use]
     pub fn set_backing(mut self, backing: Backing) -> Self {
         self.backing = backing;
         self
@@ -131,22 +150,26 @@ impl Buffer {
 
     /// Replaces `text` and snaps `saved_point` and `mark` to valid unit boundaries (I-01).
     /// The undo history described the old text, so it starts over (I-34).
+    #[must_use]
     pub fn with_text(mut self, text: Text) -> Self {
         self.text = text;
         self.undo = UndoLog::new();
         self.snap_anchors()
     }
 
+    #[must_use]
     pub fn close_undo(mut self) -> Self {
         self.undo = self.undo.close();
         self
     }
 
+    #[must_use]
     pub fn clear_wal_dirty(mut self) -> Self {
         self.backing = self.backing.set_wal_dirty(false);
         self
     }
 
+    #[must_use]
     pub fn record_saved(mut self, new_disk: DiskState) -> Self {
         self.backing = self.backing.with_disk(new_disk).set_wal_dirty(false);
         self.modified = false;
@@ -154,6 +177,7 @@ impl Buffer {
         self
     }
 
+    #[must_use]
     pub fn replace_from_disk(mut self, text: Text, backing: Backing, eol: Eol) -> Self {
         self.text = text;
         self.backing = backing;
@@ -188,6 +212,7 @@ impl Buffer {
     }
 
     /// Snaps `saved_point` and `mark` to valid UTF-8 unit boundaries within the current text (I-01, I-25).
+    #[must_use]
     pub fn snap_anchors(mut self) -> Self {
         self.saved_point = snap(&self.text, self.saved_point);
         self.mark = self.mark.map(|m| snap(&self.text, m));
@@ -209,6 +234,7 @@ impl Default for BufferPool {
 }
 
 impl BufferPool {
+    #[must_use]
     pub fn new() -> Self {
         let scratch = Buffer::new(BufferId(0), "*scratch*", Text::default(), Backing::None);
         Self {
@@ -217,10 +243,12 @@ impl BufferPool {
         }
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.buffers.len()
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.buffers.is_empty()
     }
@@ -229,10 +257,12 @@ impl BufferPool {
         self.buffers.iter()
     }
 
+    #[must_use]
     pub fn as_slice(&self) -> &[Buffer] {
         &self.buffers
     }
 
+    #[must_use]
     pub fn index_of(&self, id: BufferId) -> usize {
         self.buffers
             .iter()
@@ -240,23 +270,28 @@ impl BufferPool {
             .expect("window refers to a live buffer (I-08)")
     }
 
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&Buffer> {
         self.buffers.get(index)
     }
 
+    #[must_use]
     pub fn get_by_id(&self, id: BufferId) -> &Buffer {
         &self.buffers[self.index_of(id)]
     }
 
+    #[must_use]
     pub fn find_by_path(&self, path: &Path) -> Option<&Buffer> {
         self.buffers.iter().find(|b| b.file_path() == Some(path))
     }
 
+    #[must_use]
     pub fn find_by_name(&self, name: &str) -> Option<&Buffer> {
         self.buffers.iter().find(|b| b.name() == name)
     }
 
     /// Adds a buffer with an automatically assigned unique id. Ids are never reused.
+    #[must_use]
     pub fn add(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
         let id = BufferId(self.next_id);
         self.next_id += 1;
@@ -273,6 +308,7 @@ impl BufferPool {
     }
 
     /// Restores the content of the buffer visiting `path` from WAL bytes and EOL (I-23).
+    #[must_use]
     pub fn restore_content(
         self,
         path: &Path,
@@ -302,6 +338,7 @@ impl BufferPool {
 
     /// Removes buffer `id`. If `id` was the only buffer, an empty `*scratch*` buffer is created first.
     /// Returns the new pool and the `BufferId` of the replacement buffer that windows should switch to (I-08).
+    #[must_use]
     pub fn kill(mut self, id: BufferId) -> (Self, BufferId) {
         if self.buffers.len() == 1 {
             let scratch_id = BufferId(self.next_id);

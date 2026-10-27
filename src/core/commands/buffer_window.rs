@@ -30,6 +30,7 @@ pub(crate) fn delete_other_windows(ed: Editor, fx: Effects) -> (Editor, Effects)
 }
 
 /// Shows buffer `id` in the selected window. The old buffer keeps its point.
+#[must_use]
 pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
     let old = ed.window().buffer;
     if old == id {
@@ -47,6 +48,7 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
 }
 
 /// Kills buffer `id`. A modified buffer asks first.
+#[must_use]
 pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     if ed.buffer_by_id(id).modified() {
         (

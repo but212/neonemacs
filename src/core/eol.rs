@@ -13,6 +13,7 @@ impl Eol {
     /// Strictly more CRLF pairs than lone LF yields `Crlf`.
     /// All CRLF pairs are normalized by stripping the `\r` immediately preceding `\n`.
     /// Standalone `\r` characters not followed by `\n` are preserved.
+    #[must_use]
     pub fn from_raw(raw: Vec<u8>) -> (Eol, Vec<u8>) {
         let lf = raw.iter().filter(|&&b| b == b'\n').count();
         let crlf = raw
@@ -37,6 +38,7 @@ impl Eol {
     }
 
     /// Encodes normalized in-memory text for disk storage according to this EOL mode.
+    #[must_use]
     pub fn encode(self, text: &[u8]) -> Vec<u8> {
         match self {
             Self::Lf => text.to_vec(),
@@ -54,6 +56,7 @@ impl Eol {
         }
     }
 
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Lf => "LF",
@@ -61,6 +64,7 @@ impl Eol {
         }
     }
 
+    #[must_use]
     pub const fn toggled(self) -> Self {
         match self {
             Self::Lf => Self::Crlf,

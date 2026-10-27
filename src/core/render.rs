@@ -14,6 +14,7 @@ pub struct Cell {
 }
 
 impl Cell {
+    #[must_use]
     pub const fn plain(glyph: String) -> Self {
         Self {
             glyph,
@@ -21,6 +22,7 @@ impl Cell {
         }
     }
 
+    #[must_use]
     pub fn space() -> Self {
         Self::plain(" ".to_owned())
     }
@@ -34,6 +36,7 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[must_use]
     pub fn row_strings(&self) -> Vec<String> {
         self.rows
             .iter()
@@ -102,6 +105,7 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
 }
 
 /// Moves each window's `top` and `left_col` so that its point is visible.
+#[must_use]
 pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
     let tab = usize::from(ed.config().tab_width);
     let windows: Vec<Window> = ed.windows().windows().into_iter().copied().collect();
@@ -344,6 +348,7 @@ fn fit(s: &str, width: usize, fill: char) -> Vec<String> {
 }
 
 /// Rows that changed, with their new content. An empty `prev` redraws everything.
+#[must_use]
 pub fn diff(prev: &[Vec<Cell>], next: &[Vec<Cell>]) -> Vec<(usize, Vec<Cell>)> {
     next.iter()
         .enumerate()

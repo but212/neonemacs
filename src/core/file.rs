@@ -21,6 +21,7 @@ impl FilePath {
     /// Joins `input` onto `cwd` and folds the result lexically: `.` is dropped and `..` removes the
     /// component before it. A relative path keeps the `..` it cannot fold. No link is followed, so
     /// the function is pure (I-14).
+    #[must_use]
     pub fn resolve(cwd: &Path, input: &Path) -> Self {
         let mut out = PathBuf::new();
         for c in cwd.join(input).components() {
@@ -39,6 +40,7 @@ impl FilePath {
         Self(out)
     }
 
+    #[must_use]
     pub fn as_path(&self) -> &Path {
         &self.0
     }
@@ -55,6 +57,7 @@ pub enum Backing {
 }
 
 impl Backing {
+    #[must_use]
     pub const fn file(path: FilePath, disk: DiskState) -> Self {
         Self::File {
             path,
@@ -63,6 +66,7 @@ impl Backing {
         }
     }
 
+    #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
             Self::File { path, .. } => Some(path.as_path()),
@@ -70,6 +74,7 @@ impl Backing {
         }
     }
 
+    #[must_use]
     pub const fn disk(&self) -> DiskState {
         match self {
             Self::File { disk, .. } => *disk,
@@ -77,6 +82,7 @@ impl Backing {
         }
     }
 
+    #[must_use]
     pub const fn is_wal_dirty(&self) -> bool {
         match self {
             Self::File { wal_dirty, .. } => *wal_dirty,
@@ -84,6 +90,7 @@ impl Backing {
         }
     }
 
+    #[must_use]
     pub fn set_wal_dirty(self, dirty: bool) -> Self {
         match self {
             Self::File { path, disk, .. } => Self::File {
@@ -95,6 +102,7 @@ impl Backing {
         }
     }
 
+    #[must_use]
     pub fn with_disk(self, disk: DiskState) -> Self {
         match self {
             Self::File {
@@ -124,6 +132,7 @@ pub struct TooLarge {
 
 impl TooLarge {
     /// The echo-area message for a refused file.
+    #[must_use]
     pub fn message(self) -> String {
         format!(
             "File too large: {} bytes (max-file-size {})",

@@ -13,6 +13,7 @@ use crate::core::width::{column, pos_at_column};
 
 /// Computes the target position and goal column for a vertical motion.
 /// Returns `(target_pos, goal_column)`.
+#[must_use]
 pub fn vertical_step(
     text: &Text,
     point: usize,
@@ -36,6 +37,7 @@ pub fn vertical_step(
 }
 
 /// Returns the region between point and mark as `start..end`.
+#[must_use]
 pub fn region_range(point: usize, mark: Option<usize>) -> Option<(usize, usize)> {
     mark.map(|m| (point.min(m), point.max(m)))
 }
@@ -92,16 +94,15 @@ fn vertical(ed: Editor, down: bool) -> Editor {
         _ => None,
     };
     let (target, goal) = vertical_step(ed.buffer().text(), p, tab, prev_goal, down);
-    let ed = match target {
-        Some(pos) => ed.move_point(pos),
-        None => {
-            let msg = if down {
-                "End of buffer"
-            } else {
-                "Beginning of buffer"
-            };
-            ed.set_message(msg)
-        }
+    let ed = if let Some(pos) = target {
+        ed.move_point(pos)
+    } else {
+        let msg = if down {
+            "End of buffer"
+        } else {
+            "Beginning of buffer"
+        };
+        ed.set_message(msg)
     };
     ed.set_last(LastCommand::Vertical { col: goal })
 }

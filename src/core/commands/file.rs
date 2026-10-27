@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Asks the shell to read `path` for a new buffer. The result comes back as `FileRead`.
 /// `line` moves point to that line once the file is loaded (`+n`). `show` selects the buffer.
+#[must_use]
 pub fn request_open(
     ed: &Editor,
     path: PathBuf,
@@ -33,6 +34,7 @@ pub fn has_modified_buffers(pool: &BufferPool) -> bool {
 }
 
 /// Returns true if the external disk state changed since read (I-04).
+#[must_use]
 pub fn is_external_change(backing_disk: DiskState, disk_now: DiskState) -> bool {
     matches!(backing_disk, DiskState::Known { .. }) && backing_disk != disk_now
 }
@@ -58,6 +60,7 @@ pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effec
 
 /// Saves `id`. A file-backed buffer asks the shell for its disk state first (`StatDisk`);
 /// `disk_checked` then applies the external-change check (I-04).
+#[must_use]
 pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     match ed.buffer_by_id(id).file_path() {
         None => (ed.set_message("No file is visiting this buffer"), fx),
@@ -73,6 +76,7 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 
 /// Applies the disk state the shell found for `id`. A change since the read asks first (I-04).
 /// A buffer without a file has no disk state to change, so its write is a no-op in `write_buffer`.
+#[must_use]
 pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> (Editor, Effects) {
     let disk = ed.buffer_by_id(id).backing().disk();
     if is_external_change(disk, state) {
@@ -88,6 +92,7 @@ pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> 
 }
 
 /// Runs the action that a yes answer to `question` allows.
+#[must_use]
 pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects) {
     match question {
         Confirm::SaveExternal(id) => {
@@ -135,6 +140,7 @@ fn write_to(ed: &Editor, id: BufferId, path: PathBuf, mut fx: Effects) -> Effect
 
 /// Records a finished write (I-05) and reports it in the echo area. A write to a new path moves
 /// the buffer there and removes the WAL of the old path (I-25, I-36). A failed write changes nothing.
+#[must_use]
 pub fn written(
     mut ed: Editor,
     id: BufferId,
@@ -177,12 +183,11 @@ pub(crate) fn find_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effect
     }
     let path = ed.resolve_path(Path::new(input));
     let existing = ed.buffers().find_by_path(path.as_path()).map(Buffer::id);
-    match existing {
-        Some(id) => (switch_to(ed, id), fx),
-        None => {
-            let fx = request_open(&ed, path.as_path().to_path_buf(), None, true, fx);
-            (ed, fx)
-        }
+    if let Some(id) = existing {
+        (switch_to(ed, id), fx)
+    } else {
+        let fx = request_open(&ed, path.as_path().to_path_buf(), None, true, fx);
+        (ed, fx)
     }
 }
 
