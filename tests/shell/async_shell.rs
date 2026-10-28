@@ -68,9 +68,8 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
         false,
     );
 
-    let task = match outcome {
-        ShellOutcome::Spawned(t) => t,
-        _ => panic!("Expected ShellOutcome::Spawned"),
+    let ShellOutcome::Spawned(task) = outcome else {
+        panic!("Expected ShellOutcome::Spawned")
     };
     assert_eq!(final_ed.message(), "[Running...]");
 

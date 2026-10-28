@@ -155,7 +155,7 @@ mod tests {
 
         // Shell command with empty string produces no effects
         let fx = run_shell("", Vec::new());
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
 
         // Multi-line shell output when windows are already split
         let ed_split = split(ed.clone(), Dir::Below);
@@ -185,7 +185,7 @@ mod tests {
 
         // lua_done success and multi-line error
         let ed_lua_ok = lua_done(ed.clone(), Ok(()));
-        assert!(ed_lua_ok.message().is_empty());
+        assert_eq!(ed_lua_ok.message(), "");
 
         let ed_lua_err = lua_done(
             ed,

@@ -168,23 +168,23 @@ fn raw_non_utf8_bytes_do_not_shift_syntax_highlighting() {
 
     let (cols, rows) = (40, 5);
     let frame = render::frame(&ed, cols, rows);
-    let row0 = &frame.rows[0];
+    let first_row = &frame.rows[0];
 
-    // Find "let x = 7;" in row0
-    let _row_str: String = row0.iter().map(|c| c.glyph.as_str()).collect();
+    // Find "let x = 7;" in first_row
+    let _row_str: String = first_row.iter().map(|c| c.glyph.as_str()).collect();
     // 'l', 'e', 't' of second let are at cells 14, 15, 16
-    assert_eq!(row0[14].glyph, "l");
+    assert_eq!(first_row[14].glyph, "l");
     assert_eq!(
-        row0[14].style,
+        first_row[14].style,
         TokenKind::Keyword,
         "second 'let' keyword style was shifted or corrupted by raw bytes!"
     );
-    assert_eq!(row0[15].glyph, "e");
-    assert_eq!(row0[15].style, TokenKind::Keyword);
-    assert_eq!(row0[16].glyph, "t");
-    assert_eq!(row0[16].style, TokenKind::Keyword);
+    assert_eq!(first_row[15].glyph, "e");
+    assert_eq!(first_row[15].style, TokenKind::Keyword);
+    assert_eq!(first_row[16].glyph, "t");
+    assert_eq!(first_row[16].style, TokenKind::Keyword);
 
     // '7' is at cell 22
-    assert_eq!(row0[22].glyph, "7");
-    assert_eq!(row0[22].style, TokenKind::Number);
+    assert_eq!(first_row[22].glyph, "7");
+    assert_eq!(first_row[22].style, TokenKind::Number);
 }

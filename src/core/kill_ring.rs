@@ -18,6 +18,7 @@ impl KillRing {
 
     /// Builds a ring from entries without the `KILL_RING_MAX` check, so tests only (I-26).
     #[cfg(test)]
+    #[must_use]
     pub const fn from_entries(entries: Vec<Vec<u8>>) -> Self {
         Self { entries }
     }

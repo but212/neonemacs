@@ -140,7 +140,7 @@ fn run_from_lua_can_use_get_and_set() {
     );
     result.unwrap();
     let ed = handle(ed, Some(&lua), Event::Run("outer".to_owned()));
-    assert!(ed.message().is_empty());
+    assert_eq!(ed.message(), "");
     assert_eq!(ed.config().fill_column, 40);
 }
 
@@ -176,7 +176,7 @@ fn reentrant_run_does_not_panic() {
     );
     result.unwrap();
     let ed = handle(ed, Some(&lua), Event::Run("again".to_owned()));
-    assert!(!ed.message().is_empty());
+    assert_ne!(ed.message(), "");
     assert!(!ed.quit());
 }
 
@@ -238,13 +238,13 @@ fn api_syntax_register_and_validation() {
     let (ed, result) = script(
         &lua,
         ed,
-        r##"syntax.register("sql", {
+        r#"syntax.register("sql", {
             extensions = { "sql" },
             filenames = { "query.sql.txt" },
             case_insensitive = true,
             keywords = { "select" },
             types = { "varchar" }
-        })"##,
+        })"#,
     );
     result.unwrap();
     assert_eq!(lang_of(ed.syntax_registry(), "query.sql.txt"), Some("sql"));
@@ -362,8 +362,8 @@ fn bundled_keymap_loaded_by_bootstrap() {
     let k_kill = crate::core::keymap::parse_key_seq("C-x k").unwrap();
     assert_eq!(keymap.lookup(&k_kill), Some("kill-buffer"));
 
-    let k_fill = crate::core::keymap::parse_key_seq("M-q").unwrap();
-    assert_eq!(keymap.lookup(&k_fill), Some("fill-paragraph"));
+    let k_fill_para = crate::core::keymap::parse_key_seq("M-q").unwrap();
+    assert_eq!(keymap.lookup(&k_fill_para), Some("fill-paragraph"));
 
     let k_goto = crate::core::keymap::parse_key_seq("M-g").unwrap();
     assert_eq!(keymap.lookup(&k_goto), Some("goto-line"));
@@ -468,7 +468,7 @@ fn buffer_mark_api() {
     assert_eq!(ed.buffer().mark(), None);
 
     // set mark to 5
-    let (ed, res) = script(&lua, ed, r#"buffer.set_mark(5)"#);
+    let (ed, res) = script(&lua, ed, r"buffer.set_mark(5)");
     res.unwrap();
     assert_eq!(ed.buffer().mark(), Some(5));
 

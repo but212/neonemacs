@@ -522,7 +522,7 @@ mod tests {
         let (ed, fx) = file_read(ed, target, PathBuf::from("big.txt"), Ok(read), Vec::new());
         assert_eq!(ed.buffers().iter().count(), count);
         assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 
     #[test]
@@ -546,7 +546,7 @@ mod tests {
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
         // Nothing is removed: the unsaved edits stay recoverable from the WAL.
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 
     #[test]
@@ -591,7 +591,7 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(ed.buffers().iter().count(), count);
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 
     #[test]
@@ -623,11 +623,11 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(ed.buffers().iter().count(), count);
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
 
         let (ed, fx) = find_file(ed, "../w/a.txt", Vec::new());
         assert_eq!(ed.buffers().iter().count(), count);
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 
     #[test]
@@ -644,7 +644,7 @@ mod tests {
         let before = ed.buffer().backing().clone();
 
         let (ed, fx) = write_file(ed, "g.txt", Vec::new());
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
         assert_eq!(ed.message(), "Buffer g.txt is visiting g.txt");
         assert_eq!(*ed.buffer().backing(), before);
     }
@@ -662,7 +662,7 @@ mod tests {
         );
 
         let (ed, fx) = write_file(ed, "sub/../g.txt", Vec::new());
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
         assert_eq!(ed.message(), "Buffer g.txt is visiting g.txt");
     }
 
@@ -682,7 +682,7 @@ mod tests {
             Err("denied".to_owned()),
             Vec::new(),
         );
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
         assert_eq!(ed.message(), "Save failed: denied");
         assert_eq!(*ed.buffer().backing(), before);
         assert_eq!(ed.buffer().name(), "f.txt");

@@ -99,7 +99,7 @@ mod tests {
             panic!("expected Found");
         };
         assert_eq!(raw.len, 10);
-        assert!(raw.bytes.is_empty());
+        assert_eq!(raw.bytes, [] as [u8; 0]);
     }
 
     #[test]

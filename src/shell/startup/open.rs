@@ -160,7 +160,7 @@ mod tests {
         let ed = open_files(Editor::new(Config::default()), None, &[]);
         assert_eq!(ed.buffers().len(), 1);
         assert_eq!(ed.buffer().name(), "*scratch*");
-        assert!(ed.message().is_empty());
+        assert_eq!(ed.message(), "");
     }
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
         // Stale WAL must not be recovered; disk content loaded
         assert_eq!(ed.buffer().text().to_bytes(), b"external change from git");
         assert!(!ed.buffer().modified());
-        assert!(ed.message().is_empty());
+        assert_eq!(ed.message(), "");
 
         // 2. Corrupted WAL file (invalid bytes in WAL path)
         let corrupt_path = dir.path().join("bad_wal.txt");
@@ -239,7 +239,7 @@ mod tests {
         let ed2 = open_files(Editor::new(Config::default()), None, &files2);
         assert_eq!(ed2.buffer().text().to_bytes(), b"good disk");
         assert!(!ed2.buffer().modified());
-        assert!(ed2.message().is_empty());
+        assert_eq!(ed2.message(), "");
     }
 
     #[test]

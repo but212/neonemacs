@@ -19,6 +19,10 @@ pub fn press(ed: Editor, key: Key) -> Editor {
 }
 
 /// Presses each key of `s`, in `parse_keys` notation such as `C-x C-s`.
+///
+/// # Panics
+///
+/// Panics if `s` contains an invalid key notation.
 #[must_use]
 pub fn keys(mut ed: Editor, s: &str) -> Editor {
     for k in parse_keys(s).unwrap() {

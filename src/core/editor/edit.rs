@@ -223,7 +223,7 @@ mod tests {
     }
 
     fn undo(ed: Editor) -> Editor {
-        run_command(ed, |e, fx| e.undo(fx))
+        run_command(ed, Editor::undo)
     }
 
     #[test]

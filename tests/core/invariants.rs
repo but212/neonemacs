@@ -76,7 +76,8 @@ fn open_files_with_line_arg_and_shrunk_wal_preserves_i01() {
     // Original file has 30 lines
     let mut initial_content = String::new();
     for i in 1..=30 {
-        initial_content.push_str(&format!("Line number {i} with some content\n"));
+        use std::fmt::Write as _;
+        let _ = writeln!(initial_content, "Line number {i} with some content");
     }
     fs::write(&file_path, &initial_content).unwrap();
 

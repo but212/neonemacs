@@ -46,7 +46,7 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::core::effect::Event;
+    use crate::core::effect::{Effect, Event};
     use crate::core::keymap::{Code, Key};
 
     #[test]
@@ -54,6 +54,6 @@ mod tests {
         let ed = Editor::new(Config::default());
         let (ed, fx) = step(ed, Event::Key(Key::plain(Code::Char('a'))));
         assert_eq!(ed.buffer().text().to_bytes(), b"a");
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 }

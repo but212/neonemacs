@@ -219,6 +219,7 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::effect::Effect;
     use crate::core::mode::Prefix;
     use crate::test_support::{editor, keys, typ};
 
@@ -242,7 +243,7 @@ mod tests {
     fn mx_lists_candidates_with_their_keys() {
         let ed = editor();
         assert!(completions(&ed, "und").contains(&("undo".to_owned(), "C-_".to_owned())));
-        assert!(completions(&ed, "zzz").is_empty());
+        assert_eq!(completions(&ed, "zzz"), [] as [(String, String); 0]);
     }
 
     #[test]
@@ -312,7 +313,7 @@ mod tests {
         );
         let (same_ed, same_fx) = prompt_key(ed.clone(), Key::plain(Code::Char('a')), Vec::new());
         assert_eq!(same_ed.mode(), ed.mode());
-        assert!(same_fx.is_empty());
+        assert_eq!(same_fx, [] as [Effect; 0]);
     }
 
     #[test]

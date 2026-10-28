@@ -172,6 +172,8 @@ pub fn loaded_from(path: &FilePath, read: Read, max_size: u64) -> Result<Loaded,
 
 #[cfg(test)]
 mod tests {
+    use memchr::memchr_iter;
+
     use super::*;
     use crate::core::effect::RawFile;
 
@@ -344,12 +346,12 @@ mod tests {
     #[test]
     fn pure_files_round_trip_through_load_and_encode() {
         const ALPHA: [u8; 4] = [b'\r', b'\n', b'a', 0xFF];
-        for len in 0..=7usize {
-            for n in 0..4usize.pow(len as u32) {
+        for len in 0..=7u32 {
+            for n in 0..4usize.pow(len) {
                 let raw: Vec<u8> = (0..len)
-                    .map(|i| ALPHA[(n / 4usize.pow(i as u32)) % 4])
+                    .map(|i| ALPHA[(n / 4usize.pow(i)) % 4])
                     .collect();
-                let lf = raw.iter().filter(|&&b| b == b'\n').count();
+                let lf = memchr_iter(b'\n', &raw).count();
                 let crlf = raw
                     .windows(2)
                     .filter(|w| w[0] == b'\r' && w[1] == b'\n')

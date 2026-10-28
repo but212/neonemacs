@@ -61,7 +61,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
     ];
 
     for (i, ev) in ignored_events.into_iter().enumerate() {
-        session.handle_event_at(&&ev, t0 + Duration::from_secs(i as u64 + 1));
+        session.handle_event_at(&ev, t0 + Duration::from_secs(i as u64 + 1));
     }
 
     assert_eq!(session.ed.buffer().text().to_bytes(), b"");
@@ -72,7 +72,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
 
     // Only KeyEventKind::Press with a mapped key takes effect
     session.handle_event_at(
-        &&press(KeyCode::Char('x'), KeyModifiers::NONE),
+        &press(KeyCode::Char('x'), KeyModifiers::NONE),
         t0 + Duration::from_secs(10),
     );
     assert_eq!(session.ed.buffer().text().to_bytes(), b"x");
@@ -92,9 +92,9 @@ fn spinner_tick_wrapping_and_prompt_mode_echo_preservation() {
     assert_eq!(session.ed.message(), "[Running... |]");
 
     // 2. Entering M-x prompt while shell is running must NOT be overwritten by tick()
-    session.handle_event_at(&&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
     assert!(matches!(session.ed.mode(), Mode::Prompt(_)));
-    session.handle_event_at(&&press(KeyCode::Char('g'), KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Char('g'), KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "M-x g");
 
     // Tick multiple times while user is typing in prompt: prompt message stays intact
@@ -288,7 +288,7 @@ fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colo
             style: TokenKind::String,
         },
         crate::core::render::Cell {
-            glyph: "".into(),
+            glyph: String::new(),
             style: TokenKind::String,
         },
         crate::core::render::Cell {

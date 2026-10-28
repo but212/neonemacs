@@ -44,7 +44,7 @@ mod tests {
 
         // 1. Missing / None paths
         let ed = load_init_from(ed, &lua, None, None);
-        assert!(ed.message().is_empty());
+        assert_eq!(ed.message(), "");
 
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("neonemacs");
@@ -55,7 +55,7 @@ mod tests {
         fs::write(&init_file, r#"set("fill-column", 85)"#).unwrap();
         let ed = load_init_from(ed, &lua, Some(dir.path().as_os_str()), None);
         assert_eq!(ed.config().fill_column, 85);
-        assert!(ed.message().is_empty());
+        assert_eq!(ed.message(), "");
 
         // 3. Syntax error in init.lua
         fs::write(&init_file, "function bad_syntax(").unwrap();
