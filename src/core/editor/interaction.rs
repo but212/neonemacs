@@ -16,7 +16,7 @@ pub struct Interaction {
 }
 
 impl Interaction {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             mode: Mode::normal(),
             last: LastCommand::Other,

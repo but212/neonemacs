@@ -16,7 +16,7 @@ impl Eol {
     /// All CRLF pairs are normalized by stripping the `\r` immediately preceding `\n`.
     /// Standalone `\r` characters not followed by `\n` are preserved.
     #[must_use]
-    pub fn from_raw(raw: Vec<u8>) -> (Eol, Vec<u8>) {
+    pub fn from_raw(raw: Vec<u8>) -> (Self, Vec<u8>) {
         let lf = memchr_iter(b'\n', &raw).count();
         let crlf = raw
             .windows(2)

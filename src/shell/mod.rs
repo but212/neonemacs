@@ -247,7 +247,7 @@ mod tests {
         let read = perform(
             Effect::ReadFile {
                 target: ReadTarget::Revert(id),
-                path: path.clone(),
+                path,
                 max_size: 10,
             },
             None,

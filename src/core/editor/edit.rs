@@ -151,7 +151,7 @@ impl Editor {
     /// Emacs-style undo. Consecutive undos walk back through the log; any other
     /// command starts the next undo from the newest group, which undoes the last undo.
     #[must_use]
-    pub fn undo(self, fx: Effects) -> (Editor, Effects) {
+    pub fn undo(self, fx: Effects) -> (Self, Effects) {
         let mut ed = self.boundary();
         let id = ed.window().buffer;
         let groups = ed.buffer_by_id(id).undo().groups().len();
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(text(&ed_ins), "a가");
 
         // delete_range 1..2 should snap boundaries (0..3)
-        let (ed_del, removed) = ed.clone().delete_range(1, 2);
+        let (ed_del, removed) = ed.delete_range(1, 2);
         assert_eq!(text(&ed_del), "");
         assert_eq!(removed, "가".as_bytes());
 

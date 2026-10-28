@@ -45,7 +45,7 @@ fn snapshot(ed: &Editor) -> Snapshot {
     }
 }
 
-fn normal() -> Mode {
+const fn normal() -> Mode {
     Mode::Normal {
         prefix: Prefix::None,
     }

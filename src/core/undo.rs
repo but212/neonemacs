@@ -21,17 +21,17 @@ pub enum Edit {
 
 impl Edit {
     #[must_use]
-    pub fn inverse(&self) -> Edit {
+    pub fn inverse(&self) -> Self {
         match self {
-            Edit::Insert { pos, bytes } => Edit::Delete {
+            Self::Insert { pos, bytes } => Self::Delete {
                 pos: *pos,
                 bytes: bytes.clone(),
             },
-            Edit::Delete { pos, bytes } => Edit::Insert {
+            Self::Delete { pos, bytes } => Self::Insert {
                 pos: *pos,
                 bytes: bytes.clone(),
             },
-            Edit::SetEol { from, to } => Edit::SetEol {
+            Self::SetEol { from, to } => Self::SetEol {
                 from: *to,
                 to: *from,
             },
@@ -40,8 +40,8 @@ impl Edit {
 
     const fn size(&self) -> usize {
         match self {
-            Edit::Insert { bytes, .. } | Edit::Delete { bytes, .. } => bytes.len(),
-            Edit::SetEol { .. } => 0,
+            Self::Insert { bytes, .. } | Self::Delete { bytes, .. } => bytes.len(),
+            Self::SetEol { .. } => 0,
         }
     }
 }

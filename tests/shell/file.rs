@@ -234,7 +234,7 @@ fn write_failure_keeps_buffer_modified() {
         ed,
         Event::Written {
             id,
-            path: path.clone(),
+            path,
             result: Err("disk full".to_owned()),
         },
     );

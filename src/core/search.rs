@@ -46,8 +46,8 @@ fn upper(c: char) -> char {
 impl SetItem {
     fn contains(&self, c: char) -> bool {
         match *self {
-            SetItem::Char(p) => p == c,
-            SetItem::Range(a, b) => (a..=b).contains(&c),
+            Self::Char(p) => p == c,
+            Self::Range(a, b) => (a..=b).contains(&c),
         }
     }
 }
@@ -58,9 +58,9 @@ impl Class {
             return false;
         }
         match self {
-            Class::Lit(p) => *p == c || (fold && lower(*p) == lower(c)),
-            Class::Any => true,
-            Class::Set { negate, items } => {
+            Self::Lit(p) => *p == c || (fold && lower(*p) == lower(c)),
+            Self::Any => true,
+            Self::Set { negate, items } => {
                 let hit = |x| items.iter().any(|it| it.contains(x));
                 let found = hit(c) || (fold && (hit(lower(c)) || hit(upper(c))));
                 found != *negate
@@ -72,8 +72,8 @@ impl Class {
 impl Pattern {
     /// Every character is literal.
     #[must_use]
-    pub fn literal(s: &str) -> Pattern {
-        Pattern {
+    pub fn literal(s: &str) -> Self {
+        Self {
             nodes: s
                 .chars()
                 .map(|c| Node::Atom {
@@ -88,7 +88,7 @@ impl Pattern {
     ///
     /// # Errors
     /// Returns an error message if `s` contains an unclosed character class or invalid syntax.
-    pub fn regex(s: &str) -> Result<Pattern, String> {
+    pub fn regex(s: &str) -> Result<Self, String> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut chars = s.chars().peekable();
         while let Some(c) = chars.next() {
@@ -114,7 +114,7 @@ impl Pattern {
                 }),
             }
         }
-        Ok(Pattern { nodes })
+        Ok(Self { nodes })
     }
 
     /// End of the match that starts at `pos`, if any.

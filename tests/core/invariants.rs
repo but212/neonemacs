@@ -89,7 +89,7 @@ fn open_files_with_line_arg_and_shrunk_wal_preserves_i01() {
         Editor::new(Config::default()),
         None,
         &[FileArg {
-            path: file_path.clone(),
+            path: file_path,
             line: Some(25),
         }],
     );

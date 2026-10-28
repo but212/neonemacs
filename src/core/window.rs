@@ -23,8 +23,8 @@ pub enum Layout {
     Leaf(Window),
     Split {
         dir: Dir,
-        first: Box<Layout>,
-        second: Box<Layout>,
+        first: Box<Self>,
+        second: Box<Self>,
     },
 }
 
@@ -33,8 +33,8 @@ impl Layout {
     #[must_use]
     pub fn windows(&self) -> Vec<&Window> {
         match self {
-            Layout::Leaf(w) => vec![w],
-            Layout::Split { first, second, .. } => {
+            Self::Leaf(w) => vec![w],
+            Self::Split { first, second, .. } => {
                 let mut out = first.windows();
                 out.extend(second.windows());
                 out
@@ -45,8 +45,8 @@ impl Layout {
     #[must_use]
     pub const fn leaf_count(&self) -> usize {
         match self {
-            Layout::Leaf(_) => 1,
-            Layout::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
+            Self::Leaf(_) => 1,
+            Self::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
         }
     }
 
@@ -57,9 +57,9 @@ impl Layout {
     #[must_use]
     pub fn leaf(&self, i: usize) -> &Window {
         match self {
-            Layout::Leaf(w) if i == 0 => w,
-            Layout::Leaf(_) => panic!("window index out of range (I-19)"),
-            Layout::Split { first, second, .. } => {
+            Self::Leaf(w) if i == 0 => w,
+            Self::Leaf(_) => panic!("window index out of range (I-19)"),
+            Self::Split { first, second, .. } => {
                 let k = first.leaf_count();
                 if i < k {
                     first.leaf(i)
@@ -75,20 +75,20 @@ impl Layout {
     /// # Panics
     /// Panics if `i >= self.leaf_count()` (violating I-19).
     #[must_use]
-    pub fn replace_leaf(self, i: usize, f: impl FnOnce(Window) -> Layout) -> Layout {
+    pub fn replace_leaf(self, i: usize, f: impl FnOnce(Window) -> Self) -> Self {
         match self {
-            Layout::Leaf(w) if i == 0 => f(w),
-            Layout::Leaf(_) => panic!("window index out of range (I-19)"),
-            Layout::Split { dir, first, second } => {
+            Self::Leaf(w) if i == 0 => f(w),
+            Self::Leaf(_) => panic!("window index out of range (I-19)"),
+            Self::Split { dir, first, second } => {
                 let k = first.leaf_count();
                 if i < k {
-                    Layout::Split {
+                    Self::Split {
                         dir,
                         first: Box::new((*first).replace_leaf(i, f)),
                         second,
                     }
                 } else {
-                    Layout::Split {
+                    Self::Split {
                         dir,
                         first,
                         second: Box::new((*second).replace_leaf(i - k, f)),
@@ -100,16 +100,16 @@ impl Layout {
 
     /// Replaces the window at layout index `i`. Panics when `i` is out of range (I-19).
     #[must_use]
-    pub fn set_leaf(self, i: usize, w: Window) -> Layout {
-        self.replace_leaf(i, |_| Layout::Leaf(w))
+    pub fn set_leaf(self, i: usize, w: Window) -> Self {
+        self.replace_leaf(i, |_| Self::Leaf(w))
     }
 
     /// Applies `f` to every window. Edits use this to move anchors (I-01).
     #[must_use]
-    pub fn map_windows(self, f: &impl Fn(Window) -> Window) -> Layout {
+    pub fn map_windows(self, f: &impl Fn(Window) -> Window) -> Self {
         match self {
-            Layout::Leaf(w) => Layout::Leaf(f(w)),
-            Layout::Split { dir, first, second } => Layout::Split {
+            Self::Leaf(w) => Self::Leaf(f(w)),
+            Self::Split { dir, first, second } => Self::Split {
                 dir,
                 first: Box::new((*first).map_windows(f)),
                 second: Box::new((*second).map_windows(f)),

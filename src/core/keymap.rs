@@ -30,8 +30,8 @@ pub struct KeyError(pub String);
 
 impl Key {
     #[must_use]
-    pub const fn plain(code: Code) -> Key {
-        Key {
+    pub const fn plain(code: Code) -> Self {
+        Self {
             code,
             ctrl: false,
             meta: false,
@@ -39,13 +39,13 @@ impl Key {
     }
 
     #[must_use]
-    pub const fn ctrl(c: char) -> Key {
+    pub const fn ctrl(c: char) -> Self {
         ctrl_key(c)
     }
 
     #[must_use]
-    pub const fn with_meta(self) -> Key {
-        Key { meta: true, ..self }
+    pub const fn with_meta(self) -> Self {
+        Self { meta: true, ..self }
     }
 
     /// The character this key inserts, if it is plain text.
@@ -223,7 +223,7 @@ impl Keymap {
     /// Panics if static survival key sequences fail to parse.
     #[must_use]
     pub fn survival() -> Self {
-        let mut map = Keymap::default();
+        let mut map = Self::default();
         let bindings = [
             ("C-x C-f", "find-file"),
             ("C-x C-s", "save-buffer"),
@@ -316,7 +316,7 @@ mod tests {
         let key = parse_key_seq("C-k").unwrap();
         assert_eq!(map.lookup(&key), None);
 
-        let map2 = map.clone().unbind(&key);
+        let map2 = map.unbind(&key);
         assert_eq!(map2.lookup(&key), None);
     }
 }

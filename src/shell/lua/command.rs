@@ -61,7 +61,7 @@ pub(super) fn install_command_api<'lua, 'scope>(
 }
 
 /// Calls the Lua command `name`, which must have been defined with `command`.
-pub(crate) fn call_lua(lua: &Lua, name: &str) -> mlua::Result<()> {
+pub fn call_lua(lua: &Lua, name: &str) -> mlua::Result<()> {
     let table: Table = lua.globals().get(COMMANDS)?;
     match table.get::<Option<Function>>(name)? {
         Some(f) => f.call(()),

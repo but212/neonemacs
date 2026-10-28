@@ -179,11 +179,11 @@ mod tests {
 
         let files = vec![
             FileArg {
-                path: path_a.clone(),
+                path: path_a,
                 line: None,
             },
             FileArg {
-                path: path_b.clone(),
+                path: path_b,
                 line: None,
             },
         ];
@@ -214,7 +214,7 @@ mod tests {
         fs::write(&path, "external change from git").unwrap();
 
         let files = vec![FileArg {
-            path: path.clone(),
+            path,
             line: None,
         }];
         let ed = open_files(Editor::new(Config::default()), None, &files);
@@ -233,7 +233,7 @@ mod tests {
         fs::write(&wal_file, b"GARBAGE_NOT_A_VALID_WAL_FORMAT").unwrap();
 
         let files2 = vec![FileArg {
-            path: corrupt_path.clone(),
+            path: corrupt_path,
             line: None,
         }];
         let ed2 = open_files(Editor::new(Config::default()), None, &files2);
