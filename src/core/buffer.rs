@@ -258,11 +258,6 @@ impl BufferPool {
         self.buffers.iter()
     }
 
-    #[must_use]
-    pub fn as_slice(&self) -> &[Buffer] {
-        &self.buffers
-    }
-
     /// Returns the pool index of buffer `id`.
     ///
     /// # Panics
