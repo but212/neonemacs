@@ -22,22 +22,11 @@ pub enum Effect {
         path: PathBuf,
         bytes: Vec<u8>,
     },
-    /// Writes the undo file beside `path`. The bytes are encoded from the state the write produced (I-16).
-    WriteUndo {
-        id: BufferId,
-        path: PathBuf,
-        bytes: Vec<u8>,
-    },
-    /// Reads at most `max_size` bytes of `path`.
+    /// Reads `path`. A file longer than `max_size` is not read: the result carries only its length.
     ReadFile {
         target: ReadTarget,
         path: PathBuf,
         max_size: u64,
-    },
-    /// Reads the undo file beside `path`. The core verifies it against the disk state (I-10).
-    ReadUndo {
-        id: BufferId,
-        path: PathBuf,
     },
     RemoveWal {
         path: PathBuf,
@@ -52,6 +41,7 @@ pub enum Effect {
 
 impl Effect {
     /// Returns a `RemoveWal` effect if `buf` is backed by a disk file.
+    #[must_use]
     pub fn remove_wal_if_file(buf: &Buffer) -> Option<Self> {
         buf.file_path().map(|path| Self::RemoveWal {
             path: path.to_path_buf(),
@@ -80,7 +70,7 @@ pub struct RawFile {
     /// Length on disk, which can exceed `bytes.len()`.
     pub len: u64,
     pub disk: DiskState,
-    /// The first `min(len, max_size)` bytes.
+    /// The whole file, or empty when `len` exceeds `max_size`.
     pub bytes: Vec<u8>,
 }
 
@@ -95,20 +85,13 @@ pub enum Event {
     },
     Written {
         id: BufferId,
+        path: PathBuf,
         result: Result<DiskState, String>,
-    },
-    UndoWritten {
-        id: BufferId,
-        result: Result<(), String>,
     },
     FileRead {
         target: ReadTarget,
         path: PathBuf,
         result: Result<Read, String>,
-    },
-    UndoRead {
-        id: BufferId,
-        bytes: Option<Vec<u8>>,
     },
     WalRemoved,
     /// Raw stdout and stderr of a shell command, or the reason it did not start.

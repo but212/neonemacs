@@ -15,13 +15,14 @@ use crate::core::commands::motion::{
     next_line, previous_line, set_mark_command,
 };
 use crate::core::commands::prompt::{
-    execute_extended_command, find_file_cmd, goto_line_cmd, kill_buffer_cmd, shell_command_cmd,
-    switch_to_buffer_cmd, write_file_cmd,
+    execute_extended_command, find_file_cmd, goto_line_cmd, kill_buffer_cmd, switch_to_buffer_cmd,
+    write_file_cmd,
 };
 use crate::core::commands::search::{
     isearch_backward, isearch_backward_regexp, isearch_forward, isearch_forward_regexp,
     query_replace_cmd, query_replace_regexp_cmd,
 };
+use crate::core::commands::shell_output::shell_command_cmd;
 use crate::core::editor::Editor;
 use crate::core::effect::Effects;
 

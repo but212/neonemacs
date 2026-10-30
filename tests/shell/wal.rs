@@ -10,6 +10,7 @@ use neonemacs::core::commands::request_open;
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::Editor;
 use neonemacs::core::effect::Event;
+use neonemacs::core::eol::Eol;
 use neonemacs::core::keymap::parse_keys;
 use neonemacs::shell::file;
 use neonemacs::shell::lua;
@@ -26,11 +27,11 @@ fn regular_save_cleans_up_existing_wal() {
     fs::write(&file_path, "initial text").unwrap();
 
     let disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, disk, b"unsaved draft").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"unsaved draft").unwrap();
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
 
     let keys = parse_keys("C-x C-s").unwrap();
@@ -52,15 +53,15 @@ fn recovery_from_wal_restores_unsaved_content() {
     fs::write(&file_path, "fn old() {}").unwrap();
 
     let disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, disk, b"fn new() { // recovered }\n").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"fn new() { // recovered }\n").unwrap();
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let mut ed = perform_all(ed, None, fx);
 
     if wal::has_wal(&file_path) {
-        let wal_bytes = wal::read_wal(&file_path, disk).unwrap();
+        let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
         ed = ed.with_current_buffer(|buf| {
             buf.with_text(neonemacs::core::text::Text::from_bytes(&wal_bytes))
                 .set_modified(true)
@@ -82,13 +83,13 @@ fn wal_recovers_empty_zero_byte_file() {
 
     let disk = file::disk_state(&file_path);
     // Persist 0-byte (all text deleted) to WAL
-    wal::write_wal(&file_path, disk, b"").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"").unwrap();
     assert!(
         wal::has_wal(&file_path),
         "0-byte WAL must be recognized via NEONWAL1 header"
     );
 
-    let wal_bytes = wal::read_wal(&file_path, disk).unwrap();
+    let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
     assert_eq!(wal_bytes, b"");
 }
 
@@ -99,7 +100,7 @@ fn wal_rejects_recovery_if_original_file_modified_externally() {
     fs::write(&file_path, "original text").unwrap();
 
     let original_disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, original_disk, b"unsaved edits").unwrap();
+    wal::write_wal(&file_path, original_disk, Eol::Lf, b"unsaved edits").unwrap();
     assert!(wal::has_wal(&file_path));
 
     // External process modifies file (simulating git pull or another editor)
@@ -120,11 +121,11 @@ fn revert_buffer_cleans_up_wal() {
     fs::write(&file_path, "disk content").unwrap();
 
     let disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, disk, b"unwanted edits").unwrap();
+    wal::write_wal(&file_path, disk, Eol::Lf, b"unwanted edits").unwrap();
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
 
     // Revert buffer (M-x revert-buffer RET)
@@ -146,14 +147,14 @@ fn typing_and_idle_wal_recording() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     for c in "new text".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -172,7 +173,7 @@ fn typing_and_idle_wal_recording() {
     assert!(wal::has_wal(&file_path));
 
     let disk = file::disk_state(&file_path);
-    let recovered = wal::read_wal(&file_path, disk).unwrap();
+    let recovered = wal::read_wal(&file_path, disk).unwrap().bytes;
     assert_eq!(recovered, b"new textline1\n");
 }
 
@@ -184,15 +185,15 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     // Type new text
     for c in "extra edit ".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -211,7 +212,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
 
     // Call M-x kill-buffer RET
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('x'),
             modifiers: KeyModifiers::ALT,
             kind: KeyEventKind::Press,
@@ -221,7 +222,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
     );
     for c in "kill-buffer".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -231,7 +232,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
         );
     }
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -241,7 +242,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
     );
     // Enter to submit empty buffer name targeting current buffer
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -252,7 +253,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
 
     // Prompt asks: "Buffer is modified; kill anyway? (y or n)" -> Answer 'y'
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('y'),
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -275,14 +276,14 @@ fn wal_quit_unsaved_cleans_up_wal() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, file_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     for c in "unsaved work ".chars() {
         session.handle_event_at(
-            TermEvent::Key(KeyEvent {
+            &TermEvent::Key(KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
@@ -297,7 +298,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
 
     // C-x C-c
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('x'),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
@@ -306,7 +307,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
         t0,
     );
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('c'),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
@@ -317,7 +318,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
 
     // Prompt: "Modified buffers exist; quit anyway? (y or n)" -> Answer 'y'
     session.handle_event_at(
-        TermEvent::Key(KeyEvent {
+        &TermEvent::Key(KeyEvent {
             code: KeyCode::Char('y'),
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -335,7 +336,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
 #[test]
 fn wal_decode_wal_rejects_when_new_buffer_but_external_file_appeared() {
     // New buffer created (DiskState::Unknown, tag == 0)
-    let raw_wal = wal::encode_wal(DiskState::Unknown, b"wal draft for new file");
+    let raw_wal = wal::encode_wal(DiskState::Unknown, Eol::Lf, b"wal draft for new file");
 
     // However, an external file was created on disk before recovery
     let external_disk = DiskState::Known {
@@ -357,7 +358,7 @@ fn wal_decode_wal_rejects_when_existing_file_was_deleted_externally() {
         mtime: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
         size: 512,
     };
-    let raw_wal = wal::encode_wal(original_disk, b"wal draft for existing file");
+    let raw_wal = wal::encode_wal(original_disk, Eol::Lf, b"wal draft for existing file");
 
     // Original file was deleted externally (DiskState::Unknown)
     assert!(
@@ -372,7 +373,7 @@ fn wal_decode_wal_rejects_overflowing_nanos() {
         mtime: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
         size: 512,
     };
-    let mut raw_wal = wal::encode_wal(disk, b"valid payload");
+    let mut raw_wal = wal::encode_wal(disk, Eol::Lf, b"valid payload");
 
     // Overwrite secs with u64::MAX and nanos with 1_000_000_000
     // In Rust std, Duration::new(u64::MAX, 1_000_000_000) causes an arithmetic overflow panic!
@@ -387,20 +388,54 @@ fn wal_decode_wal_rejects_overflowing_nanos() {
 }
 
 #[test]
+fn failed_write_file_keeps_old_wal() {
+    use neonemacs::test_support::{keys, typ};
+
+    let dir = tempfile::tempdir().unwrap();
+    let old_path = dir.path().join("old.txt");
+    fs::write(&old_path, "initial content").unwrap();
+    let disk = file::disk_state(&old_path);
+    wal::write_wal(&old_path, disk, Eol::Lf, b"unsaved edits").unwrap();
+
+    let ed = Editor::new(Config::default());
+    let fx = request_open(&ed, &old_path, None, true, Vec::new());
+    let ed = perform_all(ed, None, fx);
+    let ed = ed.with_current_buffer(|buf| {
+        buf.with_text(neonemacs::core::text::Text::from_bytes(b"unsaved edits"))
+            .set_modified(true)
+    });
+
+    // The parent directory does not exist, so the write fails.
+    let bad_path = dir.path().join("missing").join("new.txt");
+    let ed = keys(ed, "M-x");
+    let ed = typ(ed, "write-file");
+    let ed = keys(ed, "RET");
+    let ed = typ(ed, &bad_path.display().to_string());
+    let ed = keys(ed, "RET");
+
+    assert!(ed.message().starts_with("Save failed"));
+    assert_eq!(ed.buffer().name(), "old.txt");
+    assert!(
+        wal::has_wal(&old_path),
+        "a failed write-file keeps the old file's WAL (I-36)"
+    );
+}
+
+#[test]
 fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
     let dir = tempfile::tempdir().unwrap();
     let old_path = dir.path().join("old.txt");
     fs::write(&old_path, "initial content").unwrap();
 
     let disk = file::disk_state(&old_path);
-    wal::write_wal(&old_path, disk, b"modified content").unwrap();
+    wal::write_wal(&old_path, disk, Eol::Lf, b"modified content").unwrap();
     assert!(
         wal::has_wal(&old_path),
         "Old WAL must exist before write-file"
     );
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, old_path.clone(), None, true, Vec::new());
+    let fx = request_open(&ed, &old_path, None, true, Vec::new());
     let mut ed = perform_all(ed, None, fx);
 
     // Buffer has edits matching WAL
@@ -472,7 +507,7 @@ fn wal_concurrent_write_wal_does_not_collide_on_fixed_tmp() {
             std::thread::spawn(move || {
                 for iter in 0..10 {
                     let payload = format!("worker {i} iter {iter}").into_bytes();
-                    wal::write_wal(&p, disk, &payload)?;
+                    wal::write_wal(&p, disk, Eol::Lf, &payload)?;
                 }
                 std::io::Result::Ok(())
             })
@@ -486,7 +521,9 @@ fn wal_concurrent_write_wal_does_not_collide_on_fixed_tmp() {
     }
 
     assert!(wal::has_wal(&target));
-    let recovered = wal::read_wal(&target, disk).expect("recovered WAL must be intact");
+    let recovered = wal::read_wal(&target, disk)
+        .expect("recovered WAL must be intact")
+        .bytes;
     assert!(
         recovered.starts_with(b"worker "),
         "WAL content must not be corrupted"

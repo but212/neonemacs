@@ -10,7 +10,12 @@ memchr = "2"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
 unicode-width = "0.2"
 
+[features]
+# Exposes `test_support` to integration tests. Off by default, so release builds do not carry it.
+test-support = []
+
 [dev-dependencies]
+neonemacs = { path = ".", features = ["test-support"] }
 tempfile = "3"
 
 [profile.release]

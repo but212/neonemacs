@@ -18,29 +18,44 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
     let reg = ed.syntax_registry();
 
     // Rust
-    assert_eq!(reg.detect_lang("lib.rs"), Some("rust"));
-    let rust_tokens = highlight_line(reg.find("rust"), "let x = 10; // assign");
+    assert_eq!(
+        reg.find_by_filename("lib.rs").map(|d| d.name.as_str()),
+        Some("rust")
+    );
+    let rust_tokens = highlight_line(reg.find_by_filename("lib.rs"), "let x = 10; // assign");
     assert_eq!(rust_tokens[0], TokenKind::Keyword); // "let"
     assert_eq!(rust_tokens[8], TokenKind::Number); // "10"
     assert_eq!(rust_tokens[13], TokenKind::Comment); // "// assign"
 
     // Python
-    assert_eq!(reg.detect_lang("script.py"), Some("python"));
-    let py_tokens = highlight_line(reg.find("python"), "def foo(): # comment");
+    assert_eq!(
+        reg.find_by_filename("script.py").map(|d| d.name.as_str()),
+        Some("python")
+    );
+    let py_tokens = highlight_line(reg.find_by_filename("script.py"), "def foo(): # comment");
     assert_eq!(py_tokens[0], TokenKind::Keyword); // "def"
     assert_eq!(py_tokens[11], TokenKind::Comment); // "# comment"
 
     // C
-    assert_eq!(reg.detect_lang("main.c"), Some("c"));
-    let c_tokens = highlight_line(reg.find("c"), "int a = 0; return a;");
+    assert_eq!(
+        reg.find_by_filename("main.c").map(|d| d.name.as_str()),
+        Some("c")
+    );
+    let c_tokens = highlight_line(reg.find_by_filename("main.c"), "int a = 0; return a;");
     assert_eq!(c_tokens[0], TokenKind::Type); // "int"
     assert_eq!(c_tokens[8], TokenKind::Number); // "0"
     let ret_idx = "int a = 0; return a;".find("return").unwrap();
     assert_eq!(c_tokens[ret_idx], TokenKind::Keyword); // "return"
 
     // Lua
-    assert_eq!(reg.detect_lang("init.lua"), Some("lua"));
-    let lua_tokens = highlight_line(reg.find("lua"), "local v = 'str' -- comment");
+    assert_eq!(
+        reg.find_by_filename("init.lua").map(|d| d.name.as_str()),
+        Some("lua")
+    );
+    let lua_tokens = highlight_line(
+        reg.find_by_filename("init.lua"),
+        "local v = 'str' -- comment",
+    );
     assert_eq!(lua_tokens[0], TokenKind::Keyword); // "local"
     assert_eq!(lua_tokens[10], TokenKind::String); // 'str'
     assert_eq!(lua_tokens[16], TokenKind::Comment); // -- comment
@@ -99,7 +114,7 @@ fn shell_session_render_sized_wide_hangul_and_scroll_writeback() {
         });
 
     let lua = lua::new_state().unwrap();
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let mut out = Vec::new();
 
     // Height 3 (1 body row + 1 status row + 1 echo row): forces vertical scroll to line 4
@@ -153,23 +168,23 @@ fn raw_non_utf8_bytes_do_not_shift_syntax_highlighting() {
 
     let (cols, rows) = (40, 5);
     let frame = render::frame(&ed, cols, rows);
-    let row0 = &frame.rows[0];
+    let first_row = &frame.rows[0];
 
-    // Find "let x = 7;" in row0
-    let _row_str: String = row0.iter().map(|c| c.glyph.as_str()).collect();
+    // Find "let x = 7;" in first_row
+    let _row_str: String = first_row.iter().map(|c| c.glyph.as_str()).collect();
     // 'l', 'e', 't' of second let are at cells 14, 15, 16
-    assert_eq!(row0[14].glyph, "l");
+    assert_eq!(first_row[14].glyph, "l");
     assert_eq!(
-        row0[14].style,
+        first_row[14].style,
         TokenKind::Keyword,
         "second 'let' keyword style was shifted or corrupted by raw bytes!"
     );
-    assert_eq!(row0[15].glyph, "e");
-    assert_eq!(row0[15].style, TokenKind::Keyword);
-    assert_eq!(row0[16].glyph, "t");
-    assert_eq!(row0[16].style, TokenKind::Keyword);
+    assert_eq!(first_row[15].glyph, "e");
+    assert_eq!(first_row[15].style, TokenKind::Keyword);
+    assert_eq!(first_row[16].glyph, "t");
+    assert_eq!(first_row[16].style, TokenKind::Keyword);
 
     // '7' is at cell 22
-    assert_eq!(row0[22].glyph, "7");
-    assert_eq!(row0[22].style, TokenKind::Number);
+    assert_eq!(first_row[22].glyph, "7");
+    assert_eq!(first_row[22].style, TokenKind::Number);
 }

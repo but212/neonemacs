@@ -1,65 +1,29 @@
 //! File operations: save check flow, reading, reverting, and confirmation (§8, ADR 0002).
 
-use crate::core::buffer::BufferPool;
 use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::core::effect::{self, Effect, Effects, ReadTarget};
-use crate::core::file::{Backing, DiskState, LoadExtent, loaded_from};
-use crate::core::undo::UndoLog;
-use std::path::PathBuf;
+use crate::core::file::{Backing, DiskState, loaded_from};
+use crate::core::undo::Edit;
+use std::path::{Path, PathBuf};
 
 /// Asks the shell to read `path` for a new buffer. The result comes back as `FileRead`.
 /// `line` moves point to that line once the file is loaded (`+n`). `show` selects the buffer.
+#[must_use]
 pub fn request_open(
     ed: &Editor,
-    path: PathBuf,
+    path: &Path,
     line: Option<usize>,
     show: bool,
     mut fx: Effects,
 ) -> Effects {
     fx.push(Effect::ReadFile {
         target: ReadTarget::Open { line, show },
-        path,
+        path: ed.resolve_path(path).as_path().to_path_buf(),
         max_size: ed.config().max_file_size,
     });
     fx
 }
-
-// --- Layer 1: Pure domain primitives ---
-
-/// Returns true if any buffer in the pool has unsaved modifications.
-pub fn has_modified_buffers(pool: &BufferPool) -> bool {
-    pool.iter().any(Buffer::modified)
-}
-
-/// Save check result for a backing file.
-#[derive(Debug, PartialEq, Eq)]
-pub enum SavePrecondition<'a> {
-    NoFile,
-    Truncated(&'a PathBuf),
-    Ready(&'a PathBuf),
-}
-
-/// Checks the save preconditions for a backing in I-04 order.
-pub fn check_save_precondition(backing: &Backing) -> SavePrecondition<'_> {
-    match backing {
-        Backing::File { path, extent, .. } => {
-            if *extent == LoadExtent::Truncated {
-                SavePrecondition::Truncated(path)
-            } else {
-                SavePrecondition::Ready(path)
-            }
-        }
-        Backing::None => SavePrecondition::NoFile,
-    }
-}
-
-/// Returns true if the external disk state changed since read (I-04).
-pub fn is_external_change(backing_disk: DiskState, disk_now: DiskState) -> bool {
-    matches!(backing_disk, DiskState::Known { .. }) && backing_disk != disk_now
-}
-
-// --- Layer 2: Built-in command adapters ---
 
 pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let id = ed.window().buffer;
@@ -67,7 +31,7 @@ pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    if has_modified_buffers(ed.buffers()) {
+    if ed.buffers().iter().any(Buffer::modified) {
         let ed = ed.confirm(
             Confirm::QuitUnsaved,
             "Modified buffers exist; quit anyway? (y or n)",
@@ -78,31 +42,16 @@ pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effec
     }
 }
 
-fn file_state(ed: &Editor, id: BufferId) -> Option<(PathBuf, DiskState, LoadExtent)> {
-    match ed.buffer_by_id(id).backing() {
-        Backing::File {
-            path, disk, extent, ..
-        } => Some((path.clone(), *disk, *extent)),
-        Backing::None => None,
-    }
-}
-
-/// Saves `id`. The checks run in I-04 order: truncated file, then external change.
-/// A file-backed buffer asks the shell for its disk state first (`StatDisk`).
+/// Saves `id`. A file-backed buffer asks the shell for its disk state first (`StatDisk`);
+/// `disk_checked` then applies the external-change check (I-04).
+#[must_use]
 pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
-    match check_save_precondition(ed.buffer_by_id(id).backing()) {
-        SavePrecondition::NoFile => (ed.set_message("No file is visiting this buffer"), fx),
-        SavePrecondition::Truncated(_) => {
-            let ed = ed.confirm(
-                Confirm::SaveTruncated(id),
-                "File was truncated when read; save anyway? (y or n)",
-            );
-            (ed, fx)
-        }
-        SavePrecondition::Ready(path) => {
+    match ed.buffer_by_id(id).file_path() {
+        None => (ed.set_message("No file is visiting this buffer"), fx),
+        Some(path) => {
             fx.push(Effect::StatDisk {
                 id,
-                path: path.clone(),
+                path: path.to_path_buf(),
             });
             (ed, fx)
         }
@@ -110,11 +59,11 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 }
 
 /// Applies the disk state the shell found for `id`. A change since the read asks first (I-04).
+/// A buffer without a file has no disk state to change, so its write is a no-op in `write_buffer`.
+#[must_use]
 pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> (Editor, Effects) {
-    let Some((_, disk, _)) = file_state(&ed, id) else {
-        return (ed, fx);
-    };
-    if is_external_change(disk, state) {
+    let disk = ed.buffer_by_id(id).backing().disk();
+    if matches!(disk, DiskState::Known { .. }) && disk != state {
         let ed = ed.confirm(
             Confirm::SaveExternal(id),
             "File changed on disk since it was read; overwrite? (y or n)",
@@ -127,12 +76,9 @@ pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> 
 }
 
 /// Runs the action that a yes answer to `question` allows.
+#[must_use]
 pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects) {
     match question {
-        Confirm::SaveTruncated(id) => {
-            let ed = ed.with_buffer(id, Buffer::confirm_truncated);
-            save_buffer(ed, id, fx)
-        }
         Confirm::SaveExternal(id) => {
             let fx = write_buffer(&ed, id, fx);
             (ed, fx)
@@ -158,55 +104,60 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
 }
 
 /// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-13).
-pub(crate) fn write_buffer(ed: &Editor, id: BufferId, mut fx: Effects) -> Effects {
+pub(crate) fn write_buffer(ed: &Editor, id: BufferId, fx: Effects) -> Effects {
+    match ed.buffer_by_id(id).file_path() {
+        Some(path) => write_to(ed, id, path.to_path_buf(), fx),
+        None => fx,
+    }
+}
+
+/// Asks the shell to write the buffer to `path`. The buffer's file changes only in `written` (I-36).
+fn write_to(ed: &Editor, id: BufferId, path: PathBuf, mut fx: Effects) -> Effects {
     let buf = ed.buffer_by_id(id);
-    let Some(path) = buf.file_path() else {
-        return fx;
-    };
     fx.push(Effect::WriteFile {
         id,
-        path: path.to_path_buf(),
+        path,
         bytes: buf.eol().encode(&buf.text().to_bytes()),
     });
     fx
 }
 
-/// Records a finished write (I-05). The undo file follows, encoded from the new disk state (I-16).
+/// Records a finished write (I-05) and reports it in the echo area. A write to a new path moves
+/// the buffer there and removes the WAL of the old path (I-25, I-36). A failed write changes nothing.
+#[must_use]
 pub fn written(
     mut ed: Editor,
     id: BufferId,
+    path: &Path,
     result: Result<DiskState, String>,
     mut fx: Effects,
 ) -> (Editor, Effects) {
-    let Some(path) = ed.buffer_by_id(id).file_path().map(PathBuf::from) else {
-        return (ed, fx);
-    };
     let message = match result {
         Ok(new_disk) => {
-            ed = ed.with_buffer(id, |b| b.record_saved(new_disk));
-            match ed.buffer_by_id(id).undo().encode(new_disk) {
-                Some(bytes) => {
-                    fx.push(Effect::WriteUndo { id, path, bytes });
-                    return (ed, fx);
+            let file = ed.resolve_path(path);
+            if ed.buffer_by_id(id).file_path() != Some(file.as_path()) {
+                if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
+                    fx.push(eff);
                 }
-                None => format!("Wrote {}", path.display()),
+                let name = name_of(file.as_path());
+                ed = ed.with_buffer(id, |b| {
+                    b.set_name(name).set_backing(Backing::file(file, new_disk))
+                });
             }
+            ed = ed.with_buffer(id, |b| b.record_saved(new_disk));
+            format!("Wrote {}", path.display())
         }
         Err(e) => format!("Save failed: {e}"),
     };
     (ed.set_message(message), fx)
 }
 
-/// Shows the result of the undo write that follows a successful save.
-pub fn undo_written(ed: Editor, id: BufferId, result: Result<(), String>) -> Editor {
-    let Some(path) = ed.buffer_by_id(id).file_path() else {
-        return ed;
-    };
-    let message = match result {
-        Ok(()) => format!("Wrote {}", path.display()),
-        Err(e) => format!("Wrote {}, undo not saved: {e}", path.display()),
-    };
-    ed.set_message(message)
+/// The buffer name for `path`: its last component, or the whole path when it has none.
+fn name_of(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Opens the file `input` in a new buffer, or shows it if it is already open.
@@ -214,35 +165,37 @@ pub(crate) fn find_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effect
     if input.is_empty() {
         return (ed, fx);
     }
-    let path = PathBuf::from(input);
-    let existing = ed.buffers().find_by_path(&path).map(Buffer::id);
-    match existing {
-        Some(id) => (switch_to(ed, id), fx),
-        None => {
-            let fx = request_open(&ed, path, None, true, fx);
-            (ed, fx)
-        }
+    let path = ed.resolve_path(Path::new(input));
+    let existing = ed.buffers().find_by_path(path.as_path()).map(Buffer::id);
+    if let Some(id) = existing {
+        (switch_to(ed, id), fx)
+    } else {
+        let fx = request_open(&ed, path.as_path(), None, true, fx);
+        (ed, fx)
     }
 }
 
-/// Writes the current buffer to a new file name and makes that its file (§8).
-pub(crate) fn write_file(mut ed: Editor, input: &str, mut fx: Effects) -> (Editor, Effects) {
+/// Writes the current buffer to a new file name. `written` makes that its file on success (§8).
+pub(crate) fn write_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effects) {
     if input.is_empty() {
         return (ed, fx);
     }
     let id = ed.window().buffer;
-    if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
-        fx.push(eff);
+    let path = ed.resolve_path(Path::new(input));
+    // Another buffer visits this path, so writing here would give two buffers one WAL (I-37).
+    if let Some(other) = ed
+        .buffers()
+        .find_by_path(path.as_path())
+        .filter(|b| b.id() != id)
+    {
+        let message = format!(
+            "Buffer {} is visiting {}",
+            other.name(),
+            path.as_path().display()
+        );
+        return (ed.set_message(message), fx);
     }
-    let path = PathBuf::from(input);
-    let name = path
-        .file_name()
-        .map_or_else(|| input.to_owned(), |n| n.to_string_lossy().into_owned());
-    ed = ed.with_buffer(id, |b| {
-        b.set_name(name)
-            .set_backing(Backing::file(path, DiskState::Unknown, LoadExtent::Whole))
-    });
-    let fx = write_buffer(&ed, id, fx);
+    let fx = write_to(&ed, id, path.as_path().to_path_buf(), fx);
     (ed, fx)
 }
 
@@ -261,7 +214,7 @@ pub(crate) fn revert_buffer(ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 /// Asks the shell to read the file again. The result comes back as `FileRead` (C-12).
 fn revert_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
-    let Some((path, _, _)) = file_state(&ed, id) else {
+    let Some(path) = ed.buffer_by_id(id).file_path().map(Path::to_path_buf) else {
         return (ed.set_message("Buffer has no file to revert to"), fx);
     };
     fx.push(Effect::ReadFile {
@@ -272,20 +225,21 @@ fn revert_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
-/// Switches the buffer between LF and CRLF. Only the save encoding changes, so the switch
-/// is not in the undo log.
+/// Switches the buffer between LF and CRLF as an undoable edit (I-31). `apply` refuses a
+/// read-only buffer and sets its message.
 pub(crate) fn toggle_eol(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let id = ed.window().buffer;
-    let buf = ed.buffer_by_id(id);
-    if buf.view_only() {
-        return (ed.set_message("Buffer is read-only"), fx);
+    let from = ed.buffer().eol();
+    let to = from.toggled();
+    let (ed, applied) = ed.apply(&Edit::SetEol { from, to });
+    if applied.is_none() {
+        return (ed, fx);
     }
-    let eol = buf.eol().toggled();
-    let ed = ed.with_buffer(id, |b| b.set_eol(eol).set_modified(true));
-    (ed.set_message(format!("Line endings: {}", eol.label())), fx)
+    (ed.set_message(format!("Line endings: {}", to.label())), fx)
 }
 
 /// Applies the result of a file read: a new buffer for `Open`, a reload for `Revert` (C-11, C-12).
+/// A file over `max-file-size` is refused: `Open` makes no buffer, `Revert` keeps the buffer
+/// and its WAL (I-04).
 pub fn file_read(
     ed: Editor,
     target: ReadTarget,
@@ -293,40 +247,50 @@ pub fn file_read(
     result: Result<effect::Read, String>,
     mut fx: Effects,
 ) -> (Editor, Effects) {
+    let max_size = ed.config().max_file_size;
+    let file = ed.resolve_path(&path);
     match (target, result) {
         (ReadTarget::Open { line, show }, Ok(read)) => {
-            let loaded = loaded_from(&path, read, ed.config().max_file_size);
-            let name = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            );
-            let (mut ed, id) = ed.add_buffer(&name, loaded.text, loaded.backing);
-            ed = ed.with_buffer(id, |b| b.set_eol(loaded.eol));
-            if let Some(n) = line {
-                let pos = ed.buffer_by_id(id).text().nth_line_start(n);
-                ed = ed.with_buffer(id, |b| b.set_saved_point(pos));
+            // A visited path keeps its one buffer (I-37), so `line` does not move it.
+            if let Some(id) = ed.buffers().find_by_path(file.as_path()).map(Buffer::id) {
+                let ed = if show { switch_to(ed, id) } else { ed };
+                return (ed, fx);
             }
-            fx.push(Effect::ReadUndo { id, path });
-            if show {
-                ed = switch_to(ed, id);
+            match loaded_from(&file, read, max_size) {
+                Ok(loaded) => {
+                    let (mut ed, id) = ed.add_buffer(&name_of(&path), loaded.text, loaded.backing);
+                    ed = ed.with_buffer(id, |b| b.set_eol(loaded.eol));
+                    if let Some(n) = line {
+                        let pos = ed.buffer_by_id(id).text().nth_line_start(n);
+                        ed = ed.with_buffer(id, |b| b.set_saved_point(pos));
+                    }
+                    if show {
+                        ed = switch_to(ed, id);
+                    }
+                    (ed, fx)
+                }
+                Err(e) => (ed.set_message(e.message()), fx),
             }
-            (ed, fx)
         }
         (ReadTarget::Open { .. }, Err(e)) => {
             let ed = ed.set_message(format!("Cannot open {}: {e}", path.display()));
             (ed, fx)
         }
-        (ReadTarget::Revert(id), Ok(read)) => {
-            let loaded = loaded_from(&path, read, ed.config().max_file_size);
-            let limit = ed.config().undo_limit;
-            let ed = ed
-                .with_buffer(id, |b| {
-                    b.replace_from_disk(loaded.text, loaded.backing, loaded.eol, limit)
-                })
-                .snap_windows_for_buffer(id)
-                .set_message("Reverted");
-            (ed, fx)
-        }
+        (ReadTarget::Revert(id), Ok(read)) => match loaded_from(&file, read, max_size) {
+            Ok(loaded) => {
+                let ed = ed
+                    .with_buffer(id, |b| {
+                        b.replace_from_disk(loaded.text, loaded.backing, loaded.eol)
+                    })
+                    .snap_windows_for_buffer(id)
+                    .set_message("Reverted");
+                // The WAL goes only after the reload succeeds, so a refused revert keeps
+                // the unsaved edits recoverable.
+                fx.push(Effect::RemoveWal { path });
+                (ed, fx)
+            }
+            Err(e) => (ed.set_message(e.message()), fx),
+        },
         (ReadTarget::Revert(_), Err(e)) => {
             let ed = ed.set_message(format!("Revert failed: {e}"));
             (ed, fx)
@@ -334,34 +298,33 @@ pub fn file_read(
     }
 }
 
-/// Applies the undo file read for `id`. The core keeps it only if it matches the disk state (I-10).
-pub fn undo_read(ed: Editor, id: BufferId, bytes: Option<Vec<u8>>) -> Editor {
-    let Some(bytes) = bytes else {
-        return ed;
-    };
-    let disk = ed.buffer_by_id(id).backing().disk();
-    match UndoLog::decode(&bytes, disk, ed.config().undo_limit) {
-        Some(log) => ed.with_buffer(id, |b| b.with_undo(log)),
-        None => ed,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::Config;
     use crate::core::effect::{RawFile, Read};
     use crate::core::eol::Eol;
+    use crate::core::file::FilePath;
     use crate::core::text::Text;
     use crate::test_support::editor;
+    use std::path::Path;
+
+    /// An editor whose `max-file-size` is 4 bytes.
+    fn small_limit() -> Editor {
+        Editor::new(Config {
+            max_file_size: 4,
+            ..Config::default()
+        })
+    }
 
     /// Replaces the selected buffer with an unmodified file-backed buffer holding `bytes`.
     fn file_buffer(ed: Editor, bytes: &[u8], eol: Eol) -> Editor {
         ed.with_current_buffer(|b| {
             b.with_text(Text::from_bytes(bytes))
+                .set_name("f.txt")
                 .set_backing(Backing::file(
-                    PathBuf::from("f.txt"),
+                    FilePath::resolve(Path::new(""), Path::new("f.txt")),
                     DiskState::Unknown,
-                    LoadExtent::Whole,
                 ))
                 .set_eol(eol)
                 .set_modified(false)
@@ -406,12 +369,21 @@ mod tests {
     }
 
     #[test]
-    fn toggle_leaves_text_and_undo_alone() {
+    fn toggle_eol_is_undoable() {
         let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
-        let undo_before = ed.buffer().undo().clone();
         let (ed, _) = toggle_eol(ed, Vec::new());
+        assert_eq!(ed.buffer().eol(), Eol::Crlf);
         assert_eq!(ed.buffer().text().to_bytes(), b"a\nb\n");
-        assert_eq!(ed.buffer().undo(), &undo_before);
+        let (ed, _) = ed.undo(Vec::new());
+        assert_eq!(ed.buffer().eol(), Eol::Lf);
+        assert_eq!(ed.buffer().text().to_bytes(), b"a\nb\n");
+    }
+
+    #[test]
+    fn toggle_eol_marks_wal_dirty() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
+        let (ed, _) = toggle_eol(ed, Vec::new());
+        assert!(ed.buffer().backing().is_wal_dirty());
     }
 
     #[test]
@@ -516,5 +488,216 @@ mod tests {
         );
         assert_eq!(ed.buffer().eol(), Eol::Crlf);
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
+    }
+
+    #[test]
+    fn oversized_open_creates_no_buffer() {
+        let ed = small_limit();
+        let count = ed.buffers().iter().count();
+        let read = Read::Found(RawFile {
+            len: 10,
+            disk: DiskState::Unknown,
+            bytes: Vec::new(),
+        });
+        let target = ReadTarget::Open {
+            line: None,
+            show: true,
+        };
+        let (ed, fx) = file_read(ed, target, PathBuf::from("big.txt"), Ok(read), Vec::new());
+        assert_eq!(ed.buffers().iter().count(), count);
+        assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
+        assert_eq!(fx, [] as [Effect; 0]);
+    }
+
+    #[test]
+    fn oversized_revert_keeps_buffer_and_wal() {
+        let ed = file_buffer(small_limit(), b"ab", Eol::Lf)
+            .with_current_buffer(|b| b.set_modified(true));
+        let id = ed.window().buffer;
+        let read = Read::Found(RawFile {
+            len: 10,
+            disk: DiskState::Unknown,
+            bytes: Vec::new(),
+        });
+        let (ed, fx) = file_read(
+            ed,
+            ReadTarget::Revert(id),
+            PathBuf::from("f.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        assert_eq!(ed.buffer().text().to_bytes(), b"ab");
+        assert!(ed.buffer().modified());
+        assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
+        // Nothing is removed: the unsaved edits stay recoverable from the WAL.
+        assert_eq!(fx, [] as [Effect; 0]);
+    }
+
+    #[test]
+    fn successful_revert_removes_wal_after_reload() {
+        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
+        let id = ed.window().buffer;
+        let read = Read::Found(RawFile {
+            len: 2,
+            disk: DiskState::Unknown,
+            bytes: b"x\n".to_vec(),
+        });
+        let (ed, fx) = file_read(
+            ed,
+            ReadTarget::Revert(id),
+            PathBuf::from("f.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        assert_eq!(ed.buffer().text().to_bytes(), b"x\n");
+        assert!(
+            matches!(fx.as_slice(), [Effect::RemoveWal { path }] if path == Path::new("f.txt"))
+        );
+    }
+
+    #[test]
+    fn open_of_visited_path_reuses_buffer() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let count = ed.buffers().iter().count();
+        let read = Read::Found(RawFile {
+            len: 3,
+            disk: DiskState::Unknown,
+            bytes: b"abc".to_vec(),
+        });
+        let (ed, fx) = file_read(
+            ed,
+            ReadTarget::Open {
+                line: None,
+                show: true,
+            },
+            PathBuf::from("./f.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        assert_eq!(ed.buffers().iter().count(), count);
+        assert_eq!(fx, [] as [Effect; 0]);
+    }
+
+    #[test]
+    fn open_with_parent_spelling_reuses_buffer() {
+        let ed = editor().with_cwd(PathBuf::from("/w"));
+        let ed = ed.with_current_buffer(|b| {
+            b.with_text(Text::from_bytes(b"abc"))
+                .set_name("a.txt")
+                .set_backing(Backing::file(
+                    FilePath::resolve(Path::new("/w"), Path::new("a.txt")),
+                    DiskState::Unknown,
+                ))
+                .set_modified(false)
+        });
+        let count = ed.buffers().iter().count();
+        let read = Read::Found(RawFile {
+            len: 3,
+            disk: DiskState::Unknown,
+            bytes: b"abc".to_vec(),
+        });
+        let (ed, fx) = file_read(
+            ed,
+            ReadTarget::Open {
+                line: None,
+                show: true,
+            },
+            PathBuf::from("../w/a.txt"),
+            Ok(read),
+            Vec::new(),
+        );
+        assert_eq!(ed.buffers().iter().count(), count);
+        assert_eq!(fx, [] as [Effect; 0]);
+
+        let (ed, fx) = find_file(ed, "../w/a.txt", Vec::new());
+        assert_eq!(ed.buffers().iter().count(), count);
+        assert_eq!(fx, [] as [Effect; 0]);
+    }
+
+    #[test]
+    fn write_file_to_visited_path_is_refused() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let (ed, _) = ed.add_buffer(
+            "g.txt",
+            Text::from_bytes(b"x"),
+            Backing::file(
+                FilePath::resolve(Path::new(""), Path::new("g.txt")),
+                DiskState::Unknown,
+            ),
+        );
+        let before = ed.buffer().backing().clone();
+
+        let (ed, fx) = write_file(ed, "g.txt", Vec::new());
+        assert_eq!(fx, [] as [Effect; 0]);
+        assert_eq!(ed.message(), "Buffer g.txt is visiting g.txt");
+        assert_eq!(*ed.buffer().backing(), before);
+    }
+
+    #[test]
+    fn write_file_to_parent_spelling_of_visited_path_is_refused() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let (ed, _) = ed.add_buffer(
+            "g.txt",
+            Text::from_bytes(b"x"),
+            Backing::file(
+                FilePath::resolve(Path::new(""), Path::new("g.txt")),
+                DiskState::Unknown,
+            ),
+        );
+
+        let (ed, fx) = write_file(ed, "sub/../g.txt", Vec::new());
+        assert_eq!(fx, [] as [Effect; 0]);
+        assert_eq!(ed.message(), "Buffer g.txt is visiting g.txt");
+    }
+
+    #[test]
+    fn write_file_failure_keeps_backing_and_wal() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let id = ed.window().buffer;
+        let before = ed.buffer().backing().clone();
+        let (ed, fx) = write_file(ed, "missing/b.txt", Vec::new());
+        // Only the write is requested. The old WAL goes only after the write succeeds (I-36).
+        assert!(matches!(fx.as_slice(), [Effect::WriteFile { .. }]));
+
+        let (ed, fx) = written(
+            ed,
+            id,
+            &PathBuf::from("missing/b.txt"),
+            Err("denied".to_owned()),
+            Vec::new(),
+        );
+        assert_eq!(fx, [] as [Effect; 0]);
+        assert_eq!(ed.message(), "Save failed: denied");
+        assert_eq!(*ed.buffer().backing(), before);
+        assert_eq!(ed.buffer().name(), "f.txt");
+    }
+
+    #[test]
+    fn write_file_success_moves_backing_then_removes_old_wal() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let id = ed.window().buffer;
+        let (_, fx) = write_file(ed.clone(), "b.txt", Vec::new());
+        assert!(
+            matches!(fx.as_slice(), [Effect::WriteFile { path, .. }] if path == Path::new("b.txt"))
+        );
+
+        let disk = DiskState::Known {
+            mtime: std::time::UNIX_EPOCH,
+            size: 3,
+        };
+        let (ed, fx) = written(ed, id, &PathBuf::from("b.txt"), Ok(disk), Vec::new());
+        assert_eq!(
+            fx,
+            vec![Effect::RemoveWal {
+                path: PathBuf::from("f.txt")
+            }]
+        );
+        assert_eq!(
+            *ed.buffer().backing(),
+            Backing::file(FilePath::resolve(Path::new(""), Path::new("b.txt")), disk)
+        );
+        assert_eq!(ed.buffer().name(), "b.txt");
+        assert!(!ed.buffer().modified());
+        assert_eq!(ed.message(), "Wrote b.txt");
     }
 }

@@ -29,23 +29,27 @@ pub struct Key {
 pub struct KeyError(pub String);
 
 impl Key {
-    pub const fn plain(code: Code) -> Key {
-        Key {
+    #[must_use]
+    pub const fn plain(code: Code) -> Self {
+        Self {
             code,
             ctrl: false,
             meta: false,
         }
     }
 
-    pub const fn ctrl(c: char) -> Key {
+    #[must_use]
+    pub const fn ctrl(c: char) -> Self {
         ctrl_key(c)
     }
 
-    pub const fn with_meta(self) -> Key {
-        Key { meta: true, ..self }
+    #[must_use]
+    pub const fn with_meta(self) -> Self {
+        Self { meta: true, ..self }
     }
 
     /// The character this key inserts, if it is plain text.
+    #[must_use]
     pub const fn text(self) -> Option<char> {
         match (self.code, self.ctrl, self.meta) {
             (Code::Char(c), false, false) => Some(c),
@@ -56,6 +60,7 @@ impl Key {
     }
 
     /// Emacs-style name, such as `C-x` or `M-x`.
+    #[must_use]
     pub fn describe(self) -> String {
         let mut s = String::new();
         if self.ctrl {
@@ -82,6 +87,7 @@ impl Key {
     }
 }
 
+#[must_use]
 pub const fn ctrl_key(c: char) -> Key {
     let code = match c.to_ascii_lowercase() {
         '_' | '/' | '7' => Code::Char('_'),
@@ -96,11 +102,17 @@ pub const fn ctrl_key(c: char) -> Key {
 }
 
 /// Parses key tokens such as `"C-x C-f"`, `"M-x"`, `"C-SPC"`, or `"left"`.
+///
+/// # Errors
+/// Returns `KeyError` if any token cannot be recognized as a valid key.
 pub fn parse_keys(s: &str) -> Result<Vec<Key>, KeyError> {
     s.split_whitespace().map(parse_key).collect()
 }
 
 /// Parses a binding key sequence. Only single keys or C-x 2-key sequences are valid bindings (I-12).
+///
+/// # Errors
+/// Returns `KeyError` if `s` is empty, contains unrecognized keys, or is an unsupported sequence.
 pub fn parse_key_seq(s: &str) -> Result<Vec<Key>, KeyError> {
     let keys = parse_keys(s)?;
     match keys.as_slice() {
@@ -163,26 +175,28 @@ pub struct Keymap {
 }
 
 impl Keymap {
+    #[must_use]
     pub fn bind(mut self, keys: Vec<Key>, name: &str) -> Self {
         self.bindings.insert(keys, name.to_owned());
         self
     }
 
+    /// Binds `keys` parsed from string notation to command `name`.
+    ///
+    /// # Errors
+    /// Returns `KeyError` if `keys` notation cannot be parsed or is unsupported.
     pub fn bind_str(self, keys: &str, name: &str) -> Result<Self, KeyError> {
         Ok(self.bind(parse_key_seq(keys)?, name))
     }
 
+    #[must_use]
     pub fn unbind(mut self, keys: &[Key]) -> Self {
         self.bindings.remove(keys);
         self
     }
 
-    pub fn unbind_str(self, keys: &str) -> Result<Self, KeyError> {
-        let seq = parse_key_seq(keys)?;
-        Ok(self.unbind(&seq))
-    }
-
     /// Key sequences bound to `name`, for display.
+    #[must_use]
     pub fn keys_for(&self, name: &str) -> Vec<String> {
         let mut keys: Vec<String> = self
             .bindings
@@ -204,8 +218,12 @@ impl Keymap {
     }
 
     /// The survival set (§3), plus `M-x` (§4).
+    ///
+    /// # Panics
+    /// Panics if static survival key sequences fail to parse.
+    #[must_use]
     pub fn survival() -> Self {
-        let mut map = Keymap::default();
+        let mut map = Self::default();
         let bindings = [
             ("C-x C-f", "find-file"),
             ("C-x C-s", "save-buffer"),
@@ -288,7 +306,7 @@ mod tests {
         let key = parse_key_seq("C-x C-s").unwrap();
         assert_eq!(map.lookup(&key), Some("save-buffer"));
 
-        let unmapped = map.unbind_str("C-x C-s").unwrap();
+        let unmapped = map.unbind(&key);
         assert_eq!(unmapped.lookup(&key), None);
     }
 
@@ -298,7 +316,7 @@ mod tests {
         let key = parse_key_seq("C-k").unwrap();
         assert_eq!(map.lookup(&key), None);
 
-        let map2 = map.clone().unbind(&key);
+        let map2 = map.unbind(&key);
         assert_eq!(map2.lookup(&key), None);
     }
 }

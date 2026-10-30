@@ -46,8 +46,8 @@ fn upper(c: char) -> char {
 impl SetItem {
     fn contains(&self, c: char) -> bool {
         match *self {
-            SetItem::Char(p) => p == c,
-            SetItem::Range(a, b) => (a..=b).contains(&c),
+            Self::Char(p) => p == c,
+            Self::Range(a, b) => (a..=b).contains(&c),
         }
     }
 }
@@ -58,9 +58,9 @@ impl Class {
             return false;
         }
         match self {
-            Class::Lit(p) => *p == c || (fold && lower(*p) == lower(c)),
-            Class::Any => true,
-            Class::Set { negate, items } => {
+            Self::Lit(p) => *p == c || (fold && lower(*p) == lower(c)),
+            Self::Any => true,
+            Self::Set { negate, items } => {
                 let hit = |x| items.iter().any(|it| it.contains(x));
                 let found = hit(c) || (fold && (hit(lower(c)) || hit(upper(c))));
                 found != *negate
@@ -71,8 +71,9 @@ impl Class {
 
 impl Pattern {
     /// Every character is literal.
-    pub fn literal(s: &str) -> Pattern {
-        Pattern {
+    #[must_use]
+    pub fn literal(s: &str) -> Self {
+        Self {
             nodes: s
                 .chars()
                 .map(|c| Node::Atom {
@@ -84,7 +85,10 @@ impl Pattern {
     }
 
     /// Mini regex: `.`, `[...]`, `[^...]`, `*` after an atom, `^`, `$`.
-    pub fn regex(s: &str) -> Result<Pattern, String> {
+    ///
+    /// # Errors
+    /// Returns an error message if `s` contains an unclosed character class or invalid syntax.
+    pub fn regex(s: &str) -> Result<Self, String> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut chars = s.chars().peekable();
         while let Some(c) = chars.next() {
@@ -110,11 +114,15 @@ impl Pattern {
                 }),
             }
         }
-        Ok(Pattern { nodes })
+        Ok(Self { nodes })
     }
 
     /// End of the match that starts at `pos`, if any.
+    #[must_use]
     pub fn match_at(&self, text: &Text, pos: usize, fold: bool) -> Option<usize> {
+        if pos > text.len() {
+            return None;
+        }
         run(&self.nodes, text, pos, fold)
     }
 }
@@ -185,7 +193,11 @@ fn run(nodes: &[Node], text: &Text, pos: usize, fold: bool) -> Option<usize> {
 }
 
 /// First match starting at or after `from`. Returns `(start, end)`.
+#[must_use]
 pub fn find_forward(text: &Text, pat: &Pattern, from: usize, fold: bool) -> Option<(usize, usize)> {
+    if from > text.len() {
+        return None;
+    }
     let mut p = from;
     loop {
         if let Some(end) = pat.match_at(text, p, fold) {
@@ -199,13 +211,14 @@ pub fn find_forward(text: &Text, pat: &Pattern, from: usize, fold: bool) -> Opti
 }
 
 /// Last match starting before `from`. Returns `(start, end)`.
+#[must_use]
 pub fn find_backward(
     text: &Text,
     pat: &Pattern,
     from: usize,
     fold: bool,
 ) -> Option<(usize, usize)> {
-    let mut p = from;
+    let mut p = from.min(text.len());
     while p > 0 {
         p = text.prev_boundary(p);
         if let Some(end) = pat.match_at(text, p, fold) {
@@ -216,6 +229,7 @@ pub fn find_backward(
 }
 
 /// Replacement text for a regex match: `&` is the matched text, `\&` is a literal `&`.
+#[must_use]
 pub fn expand_replacement(replacement: &str, matched: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut chars = replacement.chars().peekable();

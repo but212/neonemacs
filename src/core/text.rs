@@ -14,17 +14,12 @@ pub struct Text {
 }
 
 impl Text {
-    pub const fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            gap_start: 0,
-            gap_end: 0,
-        }
-    }
+    #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Self::from_vec(bytes.to_vec())
     }
 
+    #[must_use]
     pub const fn from_vec(buf: Vec<u8>) -> Self {
         let n = buf.len();
         Self {
@@ -34,14 +29,17 @@ impl Text {
         }
     }
 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.buf.len() - (self.gap_end - self.gap_start)
     }
 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[must_use]
     pub fn byte_at(&self, pos: usize) -> u8 {
         if pos < self.gap_start {
             self.buf[pos]
@@ -50,6 +48,7 @@ impl Text {
         }
     }
 
+    #[must_use]
     pub fn bytes(&self, range: std::ops::Range<usize>) -> Vec<u8> {
         let len = self.len();
         let start = range.start.min(len);
@@ -67,10 +66,12 @@ impl Text {
     }
 
     /// Returns the two contiguous slices before and after the gap.
+    #[must_use]
     pub fn slices(&self) -> (&[u8], &[u8]) {
         (&self.buf[..self.gap_start], &self.buf[self.gap_end..])
     }
 
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let (left, right) = self.slices();
         let mut out = Vec::with_capacity(left.len() + right.len());
@@ -79,6 +80,7 @@ impl Text {
         out
     }
 
+    #[must_use]
     pub fn insert(self, pos: usize, bytes: &[u8]) -> Self {
         let pos = pos.min(self.len());
         let mut t = self.move_gap(pos).reserve_gap(bytes.len());
@@ -88,6 +90,7 @@ impl Text {
     }
 
     /// Removes `range`. Read the bytes first with `bytes` if they are needed.
+    #[must_use]
     pub fn delete(self, range: std::ops::Range<usize>) -> Self {
         let len = self.len();
         let start = range.start.min(len);
@@ -153,11 +156,13 @@ impl Text {
     }
 
     /// Unit starting at `pos`, with its byte length. `None` at end.
+    #[must_use]
     pub fn unit_at(&self, pos: usize) -> Option<(Unit, usize)> {
         (pos < self.len()).then(|| self.decode_at(pos))
     }
 
     /// True when `pos` is the start of a unit or the end of the text.
+    #[must_use]
     pub fn is_boundary(&self, pos: usize) -> bool {
         let len = self.len();
         if pos > len {
@@ -171,6 +176,7 @@ impl Text {
     }
 
     /// Largest boundary strictly before `pos`. `pos` must be in `1..=len`.
+    #[must_use]
     pub fn prev_boundary(&self, pos: usize) -> usize {
         let mut q = pos - 1;
         while !self.is_boundary(q) {
@@ -180,6 +186,7 @@ impl Text {
     }
 
     /// Smallest boundary strictly after `pos`.
+    #[must_use]
     pub fn next_boundary(&self, pos: usize) -> usize {
         let len = self.len();
         let mut q = pos + 1;
@@ -190,6 +197,7 @@ impl Text {
     }
 
     /// Start of line `n` (1-based). Past the last line, the start of the last line.
+    #[must_use]
     pub fn nth_line_start(&self, n: usize) -> usize {
         if n <= 1 {
             return 0;
@@ -218,6 +226,7 @@ impl Text {
     }
 
     /// Counts newline characters strictly within `start..end`.
+    #[must_use]
     pub fn count_lines(&self, start: usize, end: usize) -> usize {
         let len = self.len();
         let start = start.min(len);
@@ -249,6 +258,7 @@ impl Text {
     }
 
     /// Start of the line containing pos.
+    #[must_use]
     pub fn line_start(&self, pos: usize) -> usize {
         let pos = pos.min(self.len());
         let (left, right) = self.slices();
@@ -267,6 +277,7 @@ impl Text {
     }
 
     /// Position of the \n ending the line containing pos, or the end of text.
+    #[must_use]
     pub fn line_end(&self, pos: usize) -> usize {
         let len = self.len();
         let pos = pos.min(len);

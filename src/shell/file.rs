@@ -14,12 +14,16 @@ fn state_of(meta: &fs::Metadata) -> DiskState {
         })
 }
 
+#[must_use]
 pub fn disk_state(path: &Path) -> DiskState {
     fs::metadata(path).map_or(DiskState::Unknown, |m| state_of(&m))
 }
 
 /// Reads `path` as bytes without decoding it. A missing file is `Read::Missing`.
-/// Reads at most `max_size` bytes; `len` reports the full length on disk.
+/// A file longer than `max_size` is not read: `bytes` is empty and `len` reports its size.
+///
+/// # Errors
+/// Returns `io::Error` if reading file metadata or bytes fails.
 pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -27,7 +31,11 @@ pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
         Err(e) => return Err(e),
     };
     let meta = file.metadata()?;
-    let bytes = read_capped(&mut file, meta.len().min(max_size))?;
+    let bytes = if meta.len() > max_size {
+        Vec::new()
+    } else {
+        read_capped(&mut file, meta.len())?
+    };
     Ok(effect::Read::Found(RawFile {
         len: meta.len(),
         disk: state_of(&meta),
@@ -47,6 +55,9 @@ fn read_capped(file: &mut File, n: u64) -> io::Result<Vec<u8>> {
 
 /// Writes `bytes` to a temporary file beside the target, then renames it over
 /// the target. Symlinks are followed; permissions are kept (A2).
+///
+/// # Errors
+/// Returns `io::Error` if canonicalization or atomic file writing fails.
 pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
     let target = if fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) {
         fs::canonicalize(path)?
@@ -61,7 +72,7 @@ pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::file::loaded_from;
+    use crate::core::file::{FilePath, loaded_from};
 
     #[test]
     fn roundtrip_exact() {
@@ -71,10 +82,24 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         let read = read_raw(&path, 1 << 20).unwrap();
-        let loaded = loaded_from(&path, read, 1 << 20);
+        let loaded = loaded_from(&FilePath::resolve(Path::new(""), &path), read, 1 << 20).unwrap();
         assert_eq!(loaded.text.to_bytes(), bytes);
         save(&path, &loaded.text.to_bytes()).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn oversized_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        fs::write(&path, b"0123456789").unwrap();
+
+        let read = read_raw(&path, 4).unwrap();
+        let effect::Read::Found(raw) = read else {
+            panic!("expected Found");
+        };
+        assert_eq!(raw.len, 10);
+        assert_eq!(raw.bytes, [] as [u8; 0]);
     }
 
     #[test]

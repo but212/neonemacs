@@ -1,3 +1,5 @@
+use memchr::memchr_iter;
+
 /// End-of-line mode.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Eol {
@@ -13,8 +15,9 @@ impl Eol {
     /// Strictly more CRLF pairs than lone LF yields `Crlf`.
     /// All CRLF pairs are normalized by stripping the `\r` immediately preceding `\n`.
     /// Standalone `\r` characters not followed by `\n` are preserved.
-    pub fn from_raw(raw: Vec<u8>) -> (Eol, Vec<u8>) {
-        let lf = raw.iter().filter(|&&b| b == b'\n').count();
+    #[must_use]
+    pub fn from_raw(raw: Vec<u8>) -> (Self, Vec<u8>) {
+        let lf = memchr_iter(b'\n', &raw).count();
         let crlf = raw
             .windows(2)
             .filter(|w| w[0] == b'\r' && w[1] == b'\n')
@@ -37,11 +40,12 @@ impl Eol {
     }
 
     /// Encodes normalized in-memory text for disk storage according to this EOL mode.
+    #[must_use]
     pub fn encode(self, text: &[u8]) -> Vec<u8> {
         match self {
             Self::Lf => text.to_vec(),
             Self::Crlf => {
-                let lf_count = text.iter().filter(|&&b| b == b'\n').count();
+                let lf_count = memchr_iter(b'\n', text).count();
                 let mut out = Vec::with_capacity(text.len() + lf_count);
                 for &b in text {
                     if b == b'\n' {
@@ -54,6 +58,7 @@ impl Eol {
         }
     }
 
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Lf => "LF",
@@ -61,6 +66,7 @@ impl Eol {
         }
     }
 
+    #[must_use]
     pub const fn toggled(self) -> Self {
         match self {
             Self::Lf => Self::Crlf,

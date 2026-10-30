@@ -5,6 +5,7 @@ use crate::core::text::{Text, Unit};
 use unicode_width::UnicodeWidthChar;
 
 /// Display column of `pos` relative to the start of its line.
+#[must_use]
 pub fn column(text: &Text, pos: usize, tab: usize) -> usize {
     let mut col = 0;
     let mut p = text.line_start(pos);
@@ -19,6 +20,7 @@ pub fn column(text: &Text, pos: usize, tab: usize) -> usize {
 }
 
 /// Position on the line starting at `line` whose column is at most `col`.
+#[must_use]
 pub fn pos_at_column(text: &Text, line: usize, col: usize, tab: usize) -> usize {
     let end = text.line_end(line);
     let (mut p, mut c) = (line, 0);
@@ -37,6 +39,7 @@ pub fn pos_at_column(text: &Text, line: usize, col: usize, tab: usize) -> usize 
 }
 
 /// Columns occupied by `unit` when it starts at column `col`.
+#[must_use]
 pub fn unit_width(unit: Unit, col: usize, tab_width: usize) -> usize {
     match unit {
         Unit::Char('\t') => tab_width - col % tab_width,
@@ -46,6 +49,7 @@ pub fn unit_width(unit: Unit, col: usize, tab_width: usize) -> usize {
     }
 }
 
+#[must_use]
 pub fn char_width(c: char) -> usize {
     match c as u32 {
         0x00..=0x1F | 0x7F => 2,
@@ -56,6 +60,7 @@ pub fn char_width(c: char) -> usize {
 }
 
 /// Display columns occupied by string `s`, starting at column 0.
+#[must_use]
 pub fn str_width(s: &str, tab_width: usize) -> usize {
     let mut col = 0;
     for c in s.chars() {

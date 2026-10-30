@@ -7,16 +7,23 @@ use crate::core::keymap::{Code, Key, parse_keys};
 use crate::shell::{handle, perform_all};
 
 /// A fresh editor with the default configuration.
+#[must_use]
 pub fn editor() -> Editor {
     Editor::new(Config::default())
 }
 
 /// Handles a key and performs its effects.
+#[must_use]
 pub fn press(ed: Editor, key: Key) -> Editor {
     handle(ed, None, Event::Key(key))
 }
 
 /// Presses each key of `s`, in `parse_keys` notation such as `C-x C-s`.
+///
+/// # Panics
+///
+/// Panics if `s` contains an invalid key notation.
+#[must_use]
 pub fn keys(mut ed: Editor, s: &str) -> Editor {
     for k in parse_keys(s).unwrap() {
         ed = press(ed, k);
@@ -25,6 +32,7 @@ pub fn keys(mut ed: Editor, s: &str) -> Editor {
 }
 
 /// Types `s` as plain characters. A newline is RET.
+#[must_use]
 pub fn typ(mut ed: Editor, s: &str) -> Editor {
     for c in s.chars() {
         let code = if c == '\n' {
@@ -44,11 +52,13 @@ pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Eff
 }
 
 /// The text of the selected buffer.
+#[must_use]
 pub fn text(ed: &Editor) -> String {
     String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
 }
 
 /// Point of the selected window.
+#[must_use]
 pub fn point(ed: &Editor) -> usize {
     ed.window().point
 }

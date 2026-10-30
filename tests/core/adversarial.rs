@@ -1,10 +1,10 @@
 //! Adversarial stress and invariant tests for core commands (§3, §4, §6, §8, §9).
 //! Tests edge cases, hostile key sequences, mode transitions, and boundary conditions.
 
-use crate::common::{editor, keys, point, text, typ};
 use neonemacs::core::commands::find;
 use neonemacs::core::commands::table::BUILTINS;
 use neonemacs::core::editor::{Mode, Prefix, Window};
+use neonemacs::test_support::{editor, keys, point, text, typ};
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {
@@ -17,8 +17,7 @@ fn empty_buffer_all_builtins_do_not_panic() {
         assert_eq!(
             result_ed.window().point,
             0,
-            "Builtin '{}' moved point unexpectedly on empty buffer",
-            name
+            "Builtin '{name}' moved point unexpectedly on empty buffer"
         );
     }
 }
@@ -238,8 +237,7 @@ fn massive_kill_pop_and_undo_reversibility() {
     assert_eq!(
         text(&ed),
         initial_text,
-        "Undo failed to perfectly recover initial state within {} steps",
-        steps
+        "Undo failed to perfectly recover initial state within {steps} steps"
     );
 }
 
@@ -576,3 +574,96 @@ fn prompt_shell_command_adversarial() {
         }
     );
 }
+
+#[test]
+fn isearch_backward_extends_pattern_at_position_zero_and_current_match() {
+    let isearch_backward = find("isearch-backward").unwrap();
+
+    // 1. Backward search from 0 typing letters must not immediately fail
+    let mut ed = typ(editor(), "hello world");
+    ed = ed.move_point(0);
+    let (after_start, _) = isearch_backward(ed, Vec::new());
+    ed = after_start;
+    assert!(matches!(ed.mode(), Mode::Isearch(_)));
+    ed = typ(ed, "h");
+    assert_eq!(point(&ed), 0);
+    assert_eq!(ed.message(), "I-search: h");
+    ed = typ(ed, "e");
+    assert_eq!(point(&ed), 0);
+    assert_eq!(ed.message(), "I-search: he");
+    ed = typ(ed, "l");
+    assert_eq!(point(&ed), 0);
+    assert_eq!(ed.message(), "I-search: hel");
+
+    // 2. Extending pattern on a match found by backward search must stay on current match
+    let mut ed2 = typ(editor(), "test test");
+    ed2 = ed2.move_point(9);
+    let (after_start2, _) = isearch_backward(ed2, Vec::new());
+    ed2 = after_start2;
+    ed2 = typ(ed2, "t");
+    assert_eq!(point(&ed2), 8);
+    ed2 = typ(ed2, "e");
+    assert_eq!(point(&ed2), 5);
+    ed2 = typ(ed2, "s");
+    assert_eq!(point(&ed2), 5, "Extending 'te' to 'tes' jumped backwards unexpectedly");
+    ed2 = typ(ed2, "t");
+    assert_eq!(point(&ed2), 5, "Extending 'tes' to 'test' jumped backwards unexpectedly");
+}
+
+#[test]
+fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
+    let isearch_backward = find("isearch-backward").unwrap();
+
+    // Text: "test alpha test beta test"
+    // Offsets:
+    // 0..4:   "test"
+    // 11..15: "test"
+    // 21..25: "test"
+    let mut ed = typ(editor(), "test alpha test beta test");
+    assert_eq!(ed.buffer().text().len(), 25);
+    ed = ed.move_point(25);
+
+    let (after_start, _) = isearch_backward(ed, Vec::new());
+    ed = after_start;
+    assert!(matches!(ed.mode(), Mode::Isearch(_)));
+
+    // Type "test" -> backward search finds last occurrence at 21..25
+    ed = typ(ed, "test");
+    assert_eq!(point(&ed), 21, "First match should be at offset 21");
+
+    // Press C-r to navigate to previous occurrence (11..15)
+    ed = keys(ed, "C-r");
+    assert_eq!(point(&ed), 11, "Repeat C-r must move to previous match at offset 11");
+
+    // Press C-r to navigate to first occurrence (0..4)
+    ed = keys(ed, "C-r");
+    assert_eq!(point(&ed), 0, "Repeat C-r must move to first match at offset 0");
+
+    // Press C-r at buffer start -> wraps around to last match at 21
+    ed = keys(ed, "C-r");
+    assert_eq!(point(&ed), 21, "C-r at buffer boundary must wrap around to last match at offset 21");
+    assert!(ed.message().contains("Wrapped"), "Message must indicate wrapped search: {}", ed.message());
+
+    // Reverse direction with C-s -> finds next match forward (wrap from 21 back to 0)
+    ed = keys(ed, "C-s");
+    assert_eq!(point(&ed), 25, "C-s from 21 should re-anchor to end of current match (25)");
+    ed = keys(ed, "C-s");
+    assert_eq!(point(&ed), 4, "C-s from 25 must wrap forward to end of first match (4)");
+}
+
+#[test]
+fn find_forward_out_of_bounds_from_does_not_panic() {
+    let t = neonemacs::core::text::Text::from_bytes(b"hello");
+    let pat = neonemacs::core::search::Pattern::regex("^h").unwrap();
+    // from is far beyond text length and initial gap buffer capacity
+    let res = neonemacs::core::search::find_forward(&t, &pat, 100_000, false);
+    assert_eq!(res, None);
+
+    let pat_lit = neonemacs::core::search::Pattern::literal("h");
+    let res_lit = neonemacs::core::search::find_forward(&t, &pat_lit, 100_000, false);
+    assert_eq!(res_lit, None);
+
+    let res_bkwd = neonemacs::core::search::find_backward(&t, &pat, 100_000, false);
+    assert_eq!(res_bkwd, Some((0, 1)));
+}
+

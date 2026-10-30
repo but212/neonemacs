@@ -22,7 +22,7 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
     };
 
     // First edit initializes the gap
-    let (ed, _) = ed.apply(edit);
+    let (ed, _) = ed.apply(&edit);
 
     // Second edit must be O(1) in-place without deep-cloning the 32MB buffer.
     // If Editor::apply clones the entire Buffer on each keypress, this will take tens of ms.
@@ -31,14 +31,13 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
         bytes: b"y".to_vec(),
     };
     let start = Instant::now();
-    let (ed, _) = ed.apply(edit2);
+    let (ed, _) = ed.apply(&edit2);
     let elapsed = start.elapsed();
 
     assert_eq!(ed.buffer().text().len(), size + 2);
     assert!(
         elapsed < Duration::from_millis(5),
-        "Subsequent insert took {:?} (expected < 5ms). Full buffer clone detected in Editor::apply!",
-        elapsed
+        "Subsequent insert took {elapsed:?} (expected < 5ms). Full buffer clone detected in Editor::apply!"
     );
 }
 
@@ -80,13 +79,11 @@ fn large_file_nth_line_start_and_line_navigation_latency() {
     // Strict performance assertion: nth_line_start for 80k lines must complete under 60ms (sub-millisecond in release mode)
     assert!(
         elapsed_nth < Duration::from_millis(60),
-        "nth_line_start(80_000) took {:?} (expected < 60ms). Byte-by-byte linear search overhead detected!",
-        elapsed_nth
+        "nth_line_start(80_000) took {elapsed_nth:?} (expected < 60ms). Byte-by-byte linear search overhead detected!"
     );
     assert!(
         elapsed_single < Duration::from_millis(1),
-        "line_start/line_end took {:?} (expected < 1ms)",
-        elapsed_single
+        "line_start/line_end took {elapsed_single:?} (expected < 1ms)"
     );
 }
 
@@ -121,8 +118,7 @@ fn lua_comment_dwim_100_lines_on_32mb_buffer_is_fast() {
 
     assert!(
         elapsed < Duration::from_millis(100),
-        "comment-dwim on 100 lines of 32MB buffer took {:?} (expected < 100ms). Full Editor clone in mutate_editor detected!",
-        elapsed
+        "comment-dwim on 100 lines of 32MB buffer took {elapsed:?} (expected < 100ms). Full Editor clone in mutate_editor detected!"
     );
     // Verify first line commented
     assert_eq!(&ed.buffer().text().bytes(0..15), b"// let x = 42;\n");

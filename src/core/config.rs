@@ -11,6 +11,7 @@ pub struct Config {
 }
 
 impl Config {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             fill_column: 70,
@@ -36,6 +37,10 @@ pub enum Value {
 }
 
 impl Config {
+    /// Returns the current value of setting `name`.
+    ///
+    /// # Errors
+    /// Returns an error if `name` is not a recognized configuration setting.
     pub fn get(&self, name: &str) -> Result<Value, String> {
         Ok(match name {
             "fill-column" => Value::Int(i64::from(self.fill_column)),
@@ -48,10 +53,13 @@ impl Config {
     }
 
     /// Sets `name` after checking the type and range. Errors leave the setting unchanged.
+    ///
+    /// # Errors
+    /// Returns an error if `name` is unknown or `value` is out of bounds or wrong type.
     pub fn set(mut self, name: &str, value: Value) -> Result<Self, String> {
         match (name, value) {
             ("fill-column", Value::Int(n)) => {
-                self.fill_column = bounded(name, n, 1, i64::from(u16::MAX))?
+                self.fill_column = bounded(name, n, 1, i64::from(u16::MAX))?;
             }
             ("tab-width", Value::Int(n)) => self.tab_width = bounded(name, n, 1, 16)?,
             ("case-fold-search", Value::Bool(b)) => self.case_fold_search = b,
@@ -85,9 +93,9 @@ mod tests {
         assert_eq!(c.get("case-fold-search"), Ok(Value::Bool(true)));
         let c = c.set("fill-column", Value::Int(33)).unwrap();
         assert_eq!(c.fill_column, 33);
-        assert!(c.clone().set("tab-width", Value::Int(0)).is_err());
-        assert!(c.clone().set("fill-column", Value::Bool(true)).is_err());
-        assert!(c.clone().set("nope", Value::Int(1)).is_err());
+        assert!(c.set("tab-width", Value::Int(0)).is_err());
+        assert!(c.set("fill-column", Value::Bool(true)).is_err());
+        assert!(c.set("nope", Value::Int(1)).is_err());
         assert!(c.get("nope").is_err());
         assert_eq!(c.tab_width, 8);
     }

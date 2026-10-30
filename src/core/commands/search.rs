@@ -1,33 +1,41 @@
 //! Incremental search and interactive query-replace commands (§9).
 
 use crate::core::commands::prompt::prompt;
-use crate::core::editor::{Editor, Isearch, Mode, Prefix, Purpose, QueryReplace};
+use crate::core::editor::{
+    Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
+};
 use crate::core::effect::Effects;
 use crate::core::keymap::{Code, Key};
 use crate::core::search::{self, Pattern};
 use crate::core::undo::Edit;
 
 pub(crate) fn isearch_forward(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, true, false), fx)
+    (
+        start_isearch(ed, Direction::Forward, MatchKind::Literal),
+        fx,
+    )
 }
 
 pub(crate) fn isearch_backward(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, false, false), fx)
+    (
+        start_isearch(ed, Direction::Backward, MatchKind::Literal),
+        fx,
+    )
 }
 
 pub(crate) fn isearch_forward_regexp(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, true, true), fx)
+    (start_isearch(ed, Direction::Forward, MatchKind::Regex), fx)
 }
 
 pub(crate) fn isearch_backward_regexp(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, false, true), fx)
+    (start_isearch(ed, Direction::Backward, MatchKind::Regex), fx)
 }
 
-fn start_isearch(ed: Editor, forward: bool, regex: bool) -> Editor {
+fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
     let origin = ed.window().point;
     ed.set_mode(Mode::Isearch(Isearch {
-        forward,
-        regex,
+        direction,
+        kind,
         text: String::new(),
         origin,
         anchor: origin,
@@ -38,29 +46,28 @@ fn start_isearch(ed: Editor, forward: bool, regex: bool) -> Editor {
 
 /// Keys during an incremental search. `C-s` and `C-r` move to the next match
 /// in each direction. Any other non-text key ends the search, then runs normally.
+#[must_use]
 pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Isearch(mut s) = ed.mode().clone() else {
         return (ed, fx);
     };
     if key == Key::ctrl('g') {
         let ed = ed
-            .set_mode(Mode::Normal {
-                prefix: Prefix::None,
-            })
+            .set_mode(Mode::normal())
             .move_point(s.origin)
             .set_message("Quit");
         return (ed, fx);
     }
     if key == Key::plain(Code::Enter) {
-        let ed = ed
-            .set_mode(Mode::Normal {
-                prefix: Prefix::None,
-            })
-            .clear_message();
+        let ed = ed.set_mode(Mode::normal()).clear_message();
         return (ed, fx);
     }
     let (ed, s) = if key == Key::ctrl('s') || key == Key::ctrl('r') {
-        s.forward = key == Key::ctrl('s');
+        s.direction = if key == Key::ctrl('s') {
+            Direction::Forward
+        } else {
+            Direction::Backward
+        };
         let from = ed.window().point;
         isearch_step(ed, s, from, true)
     } else if key == Key::plain(Code::Backspace) {
@@ -73,9 +80,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
         let anchor = s.anchor;
         isearch_step(ed, s, anchor, false)
     } else {
-        let ed = ed.set_mode(Mode::Normal {
-            prefix: Prefix::None,
-        });
+        let ed = ed.set_mode(Mode::normal());
         return crate::core::dispatch::handle_normal_key(ed, Prefix::None, key, fx);
     };
     (ed.set_mode(Mode::Isearch(s)), fx)
@@ -88,10 +93,9 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
         s.failed = false;
         return (ed.set_message("I-search: "), s);
     }
-    let pattern = if s.regex {
-        Pattern::regex(&s.text)
-    } else {
-        Ok(Pattern::literal(&s.text))
+    let pattern = match s.kind {
+        MatchKind::Regex => Pattern::regex(&s.text),
+        MatchKind::Literal => Ok(Pattern::literal(&s.text)),
     };
     let pattern = match pattern {
         Ok(p) => p,
@@ -102,20 +106,32 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     };
     let fold = ed.config().case_fold_search;
     let mut wrapped = false;
-    let mut found = find_in_direction(&ed, &pattern, s.forward, from, fold);
+    let text = ed.buffer().text();
+    let mut found = if !wrap && s.direction == Direction::Backward && from <= text.len() {
+        pattern
+            .match_at(text, from, fold)
+            .map(|end| (from, end))
+            .or_else(|| find_in_direction(&ed, &pattern, s.direction, from, fold))
+    } else {
+        find_in_direction(&ed, &pattern, s.direction, from, fold)
+    };
     if found.is_none() && wrap {
-        let other_end = if s.forward {
+        let other_end = if s.direction == Direction::Forward {
             0
         } else {
             ed.buffer().text().len()
         };
-        found = find_in_direction(&ed, &pattern, s.forward, other_end, fold);
+        found = find_in_direction(&ed, &pattern, s.direction, other_end, fold);
         wrapped = found.is_some();
     }
     s.failed = found.is_none();
     let ed = if let Some((start, end)) = found {
         s.anchor = start;
-        ed.move_point(if s.forward { end } else { start })
+        ed.move_point(if s.direction == Direction::Forward {
+            end
+        } else {
+            start
+        })
     } else {
         ed
     };
@@ -128,15 +144,14 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
 fn find_in_direction(
     ed: &Editor,
     pattern: &Pattern,
-    forward: bool,
+    direction: Direction,
     from: usize,
     fold: bool,
 ) -> Option<(usize, usize)> {
     let text = ed.buffer().text();
-    if forward {
-        search::find_forward(text, pattern, from, fold)
-    } else {
-        search::find_backward(text, pattern, from, fold)
+    match direction {
+        Direction::Forward => search::find_forward(text, pattern, from, fold),
+        Direction::Backward => search::find_backward(text, pattern, from, fold),
     }
 }
 
@@ -145,54 +160,57 @@ pub fn start_query_replace(
     ed: Editor,
     pattern: &str,
     replacement: &str,
-    regex: bool,
+    kind: MatchKind,
 ) -> (Editor, Result<(), String>) {
+    // Checked once here: `view_only` cannot change during a session, and every replacement
+    // is a Delete then an Insert, so `replace_match` never sees a refused half-edit (I-06).
+    if ed.buffer().view_only() {
+        return (ed, Err("Buffer is read-only".to_owned()));
+    }
     if pattern.is_empty() {
         return (ed, Err("empty pattern".to_owned()));
     }
-    let pattern = if regex {
-        match Pattern::regex(pattern) {
+    let pattern = match kind {
+        MatchKind::Regex => match Pattern::regex(pattern) {
             Ok(p) => p,
             Err(e) => return (ed, Err(e)),
-        }
-    } else {
-        Pattern::literal(pattern)
+        },
+        MatchKind::Literal => Pattern::literal(pattern),
     };
-    let mut q = QueryReplace {
+    let fold = ed.config().case_fold_search;
+    let from = ed.window().point;
+    let Some(current) = next_match(&ed, &pattern, fold, from) else {
+        return (ed.set_message("No match"), Ok(()));
+    };
+    let q = QueryReplace {
         pattern,
         replacement: replacement.to_owned(),
-        regex,
-        fold: ed.config().case_fold_search,
-        current: None,
+        kind,
+        fold,
+        current,
         count: 0,
     };
-    let from = ed.window().point;
-    q.current = next_match(&ed, &q, from);
-    if q.current.is_none() {
-        return (ed.set_message("No match"), Ok(()));
-    }
     let ed = ed
         .set_mode(Mode::QueryReplace(q))
         .set_message("Query replacing (y, n, !, q)");
     (ed, Ok(()))
 }
 
-fn next_match(ed: &Editor, q: &QueryReplace, from: usize) -> Option<(usize, usize)> {
+fn next_match(ed: &Editor, pattern: &Pattern, fold: bool, from: usize) -> Option<(usize, usize)> {
     if from > ed.buffer().text().len() {
         return None;
     }
-    search::find_forward(ed.buffer().text(), &q.pattern, from, q.fold)
+    search::find_forward(ed.buffer().text(), pattern, from, fold)
 }
 
 /// Answers for query-replace: `y`/SPC replace, `n`/DEL skip, `!` replace the rest,
 /// `q`/RET/`C-g` stop (A8). The whole session is one undo group.
+#[must_use]
 pub fn query_key(ed: Editor, key: Key) -> Editor {
     let Mode::QueryReplace(mut q) = ed.mode().clone() else {
         return ed;
     };
-    let Some((start, end)) = q.current else {
-        return finish(ed, &q);
-    };
+    let (start, end) = q.current;
     match key.text() {
         Some('y' | ' ') => match replace_match(ed, &q, start, end) {
             (ed, Some(from)) => {
@@ -219,9 +237,8 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
                     break;
                 };
                 q.count += 1;
-                current = next_match(&ed, &q, from);
+                current = next_match(&ed, &q.pattern, q.fold, from);
             }
-            q.current = None;
             finish(ed, &q)
         }
         Some('q' | '\n') => finish(ed, &q),
@@ -239,20 +256,21 @@ fn replace_match(
     end: usize,
 ) -> (Editor, Option<usize>) {
     let matched = ed.buffer().text().bytes(start..end);
-    let replacement = if q.regex {
-        search::expand_replacement(&q.replacement, &matched)
-    } else {
-        q.replacement.as_bytes().to_vec()
+    let replacement = match q.kind {
+        MatchKind::Regex => search::expand_replacement(&q.replacement, &matched),
+        MatchKind::Literal => q.replacement.as_bytes().to_vec(),
     };
     let after = start + replacement.len();
-    let (ed, applied) = ed.apply(Edit::Delete {
+    // `apply` refuses only on `view_only`, which `start_query_replace` already rejected, so a
+    // Delete is never left without its Insert. The `None` arms are defensive.
+    let (ed, applied) = ed.apply(&Edit::Delete {
         pos: start,
         bytes: matched,
     });
     if applied.is_none() {
         return (ed, None);
     }
-    let (ed, applied) = ed.apply(Edit::Insert {
+    let (ed, applied) = ed.apply(&Edit::Insert {
         pos: start,
         bytes: replacement,
     });
@@ -278,26 +296,28 @@ fn resume(ed: &Editor, after: usize, matched_empty: bool) -> usize {
     }
 }
 
-fn step(ed: Editor, mut q: QueryReplace, from: usize) -> Editor {
-    q.current = next_match(&ed, &q, from);
-    if q.current.is_none() {
-        finish(ed, &q)
-    } else {
-        ed.set_mode(Mode::QueryReplace(q))
+fn step(ed: Editor, q: QueryReplace, from: usize) -> Editor {
+    match next_match(&ed, &q.pattern, q.fold, from) {
+        Some(current) => ed.set_mode(Mode::QueryReplace(QueryReplace { current, ..q })),
+        None => finish(ed, &q),
     }
 }
 
 fn finish(ed: Editor, q: &QueryReplace) -> Editor {
-    ed.set_mode(Mode::Normal {
-        prefix: Prefix::None,
-    })
-    .boundary()
-    .set_message(format!("Replaced {} occurrence(s)", q.count))
+    ed.set_mode(Mode::normal())
+        .boundary()
+        .set_message(format!("Replaced {} occurrence(s)", q.count))
 }
 
 pub(crate) fn query_replace_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (
-        prompt(ed, "Query replace: ", Purpose::QueryFrom { regex: false }),
+        prompt(
+            ed,
+            "Query replace: ",
+            Purpose::QueryFrom {
+                kind: MatchKind::Literal,
+            },
+        ),
         fx,
     )
 }
@@ -307,7 +327,9 @@ pub(crate) fn query_replace_regexp_cmd(ed: Editor, fx: Effects) -> (Editor, Effe
         prompt(
             ed,
             "Query replace regexp: ",
-            Purpose::QueryFrom { regex: true },
+            Purpose::QueryFrom {
+                kind: MatchKind::Regex,
+            },
         ),
         fx,
     )
@@ -318,8 +340,8 @@ mod tests {
     use super::*;
     use crate::test_support::{editor, keys, point, run_command, text, typ};
 
-    fn start_query(ed: Editor, pattern: &str, replacement: &str, regex: bool) -> Editor {
-        let (ed, result) = start_query_replace(ed, pattern, replacement, regex);
+    fn start_query(ed: Editor, pattern: &str, replacement: &str, kind: MatchKind) -> Editor {
+        let (ed, result) = start_query_replace(ed, pattern, replacement, kind);
         result.unwrap();
         ed
     }
@@ -370,7 +392,9 @@ mod tests {
     fn query_replace_answers_each_match() {
         let ed = typ(editor(), "foo bar foo baz foo");
         let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| (start_query(e, "foo", "qux", false), fx));
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
+        });
         let ed = keys(ed, "y");
         assert_eq!(text(&ed), "qux bar foo baz foo");
         let ed = keys(ed, "n");
@@ -391,7 +415,9 @@ mod tests {
     fn query_replace_quits_early() {
         let ed = typ(editor(), "foo bar foo");
         let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| (start_query(e, "foo", "qux", false), fx));
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
+        });
         let ed = keys(ed, "y q");
         assert_eq!(text(&ed), "qux bar foo");
         assert_eq!(
@@ -406,7 +432,9 @@ mod tests {
     fn query_replace_empty_matches_terminate() {
         let ed = typ(editor(), "ab");
         let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| (start_query(e, "x*", "-", true), fx));
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "x*", "-", MatchKind::Regex), fx)
+        });
         let ed = keys(ed, "!");
         assert_eq!(text(&ed), "-a-b-");
     }
@@ -415,20 +443,55 @@ mod tests {
     fn query_replace_regexp_bang_and_ampersand() {
         let ed = typ(editor(), "a1 a2");
         let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| (start_query(e, "a[0-9]", "<&>", true), fx));
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "a[0-9]", "<&>", MatchKind::Regex), fx)
+        });
         let ed = keys(ed, "!");
         assert_eq!(text(&ed), "<a1> <a2>");
 
         let lit = typ(editor(), "a1 a2");
         let lit = keys(lit, "C-a");
-        let lit = run_command(lit, |e, fx| (start_query(e, "a1", "<&>", false), fx));
+        let lit = run_command(lit, |e, fx| {
+            (start_query(e, "a1", "<&>", MatchKind::Literal), fx)
+        });
         let lit = keys(lit, "!");
         assert_eq!(text(&lit), "<&> a2");
 
         let esc = typ(editor(), "a1 a2");
         let esc = keys(esc, "C-a");
-        let esc = run_command(esc, |e, fx| (start_query(e, "a[0-9]", "\\&", true), fx));
+        let esc = run_command(esc, |e, fx| {
+            (start_query(e, "a[0-9]", "\\&", MatchKind::Regex), fx)
+        });
         let esc = keys(esc, "!");
         assert_eq!(text(&esc), "& &");
+    }
+
+    #[test]
+    fn query_replace_refuses_view_only() {
+        let ed = typ(editor(), "foo");
+        let ed = ed.with_current_buffer(|b| b.set_view_only(true));
+        let (ed, result) = start_query_replace(ed, "foo", "bar", MatchKind::Literal);
+        assert_eq!(result, Err("Buffer is read-only".to_owned()));
+        assert_eq!(text(&ed), "foo");
+        assert_eq!(
+            ed.mode(),
+            &Mode::Normal {
+                prefix: Prefix::None
+            }
+        );
+    }
+
+    #[test]
+    fn query_replace_ctrl_g_keeps_one_group() {
+        let ed = typ(editor(), "foo foo foo");
+        let ed = keys(ed, "C-a");
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
+        });
+        let ed = keys(ed, "y y C-g");
+        assert_eq!(text(&ed), "qux qux foo");
+        // Replacements made before C-g stay, and one undo restores them all.
+        let ed = keys(ed, "C-/");
+        assert_eq!(text(&ed), "foo foo foo");
     }
 }

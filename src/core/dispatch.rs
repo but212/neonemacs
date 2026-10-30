@@ -7,6 +7,7 @@ use crate::core::effect::{Effect, Effects};
 use crate::core::keymap::{Code, Key};
 
 /// Handles one key press: resolves prefixes, then runs a bound command or inserts text.
+#[must_use]
 pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     match ed.mode() {
         Mode::Normal { prefix } => {
@@ -24,12 +25,11 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 }
 
 /// Answers a yes-or-no question. `y` confirms, `n` and `C-g` cancel, other keys wait.
+#[must_use]
 pub fn answer(mut ed: Editor, question: Confirm, key: Key, fx: Effects) -> (Editor, Effects) {
     let yes = key.text() == Some('y');
     if yes || key.text() == Some('n') || key == Key::ctrl('g') {
-        ed = ed.set_mode(Mode::Normal {
-            prefix: Prefix::None,
-        });
+        ed = ed.set_mode(Mode::normal());
         if yes {
             return commands::confirmed(ed, question, fx);
         }
@@ -45,9 +45,7 @@ pub fn handle_normal_key(
     key: Key,
     fx: Effects,
 ) -> (Editor, Effects) {
-    ed = ed.set_mode(Mode::Normal {
-        prefix: Prefix::None,
-    });
+    ed = ed.set_mode(Mode::normal());
     if key == Key::ctrl('g') {
         ed = ed.set_message("Quit");
         return (ed, fx);
@@ -84,21 +82,21 @@ pub fn handle_normal_key(
 
 /// Runs the command `name`. A built-in runs now. Any other name is sent to Lua as `RunLua`;
 /// its result comes back as `LuaDone`.
+#[must_use]
 pub fn run_named(ed: Editor, name: &str, mut fx: Effects) -> (Editor, Effects) {
     let ed = if matches!(ed.last(), crate::core::editor::LastCommand::Insert { .. }) {
         ed.boundary()
     } else {
         ed
     };
-    match commands::find(name) {
-        Some(run) => command(ed, fx, run),
-        None => {
-            let ed = ed.begin_command();
-            fx.push(Effect::RunLua {
-                name: name.to_owned(),
-            });
-            (ed, fx)
-        }
+    if let Some(run) = commands::find(name) {
+        command(ed, fx, run)
+    } else {
+        let ed = ed.begin_command();
+        fx.push(Effect::RunLua {
+            name: name.to_owned(),
+        });
+        (ed, fx)
     }
 }
 

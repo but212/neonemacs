@@ -5,53 +5,23 @@ use neonemacs::core::commands::{confirmed, request_open};
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Confirm, Editor, Mode, Prefix, Window};
 use neonemacs::core::effect::{Effect, Event};
-use neonemacs::core::file::{Backing, LoadExtent};
-use neonemacs::core::keymap::{Code, Key, parse_keys};
+use neonemacs::core::file::{Backing, FilePath};
+use neonemacs::core::keymap::parse_keys;
 use neonemacs::core::step;
 use neonemacs::shell::file;
-use neonemacs::shell::{handle, perform_all};
+use neonemacs::shell::perform_all;
+use neonemacs::test_support::{editor, keys, point, text, typ};
 use std::fs;
 use std::path::Path;
 
-fn editor() -> Editor {
-    Editor::new(Config::default())
-}
-
-fn keys(mut ed: Editor, s: &str) -> Editor {
-    for k in parse_keys(s).unwrap() {
-        ed = handle(ed, None, Event::Key(k));
-    }
-    ed
-}
-
-fn typ(mut ed: Editor, s: &str) -> Editor {
-    for c in s.chars() {
-        let code = if c == '\n' {
-            Code::Enter
-        } else {
-            Code::Char(c)
-        };
-        ed = handle(ed, None, Event::Key(Key::plain(code)));
-    }
-    ed
-}
-
-fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
-}
-
-fn point(ed: &Editor) -> usize {
-    ed.window().point
-}
-
 fn visit(ed: Editor, path: &Path) -> Editor {
-    let fx = request_open(&ed, path.to_path_buf(), None, true, Vec::new());
+    let fx = request_open(&ed, path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     ed.with_window(|w| Window { point: 0, ..w })
 }
 
 #[test]
-fn truncated_save_confirms_once() {
+fn oversized_file_is_refused_and_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big.txt");
     fs::write(&path, b"0123456789").unwrap();
@@ -59,26 +29,12 @@ fn truncated_save_confirms_once() {
         max_file_size: 4,
         ..*editor().config()
     });
-    let mut ed = visit(ed, &path);
+    let count = ed.buffers().iter().count();
+    let ed = visit(ed, &path);
 
-    ed = keys(ed, "C-x C-s");
-    assert!(matches!(
-        ed.mode(),
-        Mode::Confirm(Confirm::SaveTruncated(_))
-    ));
+    assert_eq!(ed.buffers().iter().count(), count);
+    assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
     assert_eq!(fs::read(&path).unwrap(), b"0123456789");
-    ed = keys(ed, "y");
-    assert_eq!(fs::read(&path).unwrap(), b"0123");
-
-    ed = typ(ed, "x");
-    ed = keys(ed, "C-x C-s");
-    assert_eq!(
-        ed.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-    assert_eq!(fs::read(&path).unwrap(), b"x0123");
 }
 
 #[test]
@@ -103,7 +59,7 @@ fn external_change_asks_before_overwrite() {
     );
     assert_eq!(fs::read(&path).unwrap(), b"external change");
 
-    keys(ed, "C-x C-s y");
+    let _ = keys(ed, "C-x C-s y");
     assert_eq!(fs::read(&path).unwrap(), b"xone");
 }
 
@@ -173,21 +129,6 @@ fn quit_asks_only_with_unsaved_changes() {
 }
 
 #[test]
-fn undo_survives_reopen_when_file_matches() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    fs::write(&path, b"abc").unwrap();
-    let ed = visit(editor(), &path);
-    let ed = keys(ed, "C-e");
-    let ed = typ(ed, "d");
-    let _ = keys(ed, "C-x C-s");
-
-    let again = visit(editor(), &path);
-    let again = keys(again, "C-/");
-    assert_eq!(text(&again), "abc");
-}
-
-#[test]
 fn file_commands_find_goto_revert_write() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
@@ -222,7 +163,7 @@ fn file_commands_find_goto_revert_write() {
     ed = typ(ed, "write-file");
     ed = keys(ed, "RET");
     ed = typ(ed, &copy.display().to_string());
-    keys(ed, "RET");
+    let _ = keys(ed, "RET");
     assert_eq!(fs::read(&copy).unwrap(), b"one\ntwo\nthree\n");
 }
 
@@ -252,7 +193,7 @@ fn save_requests_disk_stat_first() {
 }
 
 #[test]
-fn written_records_disk_and_emits_undo() {
+fn written_records_disk_and_reports_wrote() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
     fs::write(&path, b"abc").unwrap();
@@ -266,6 +207,7 @@ fn written_records_disk_and_emits_undo() {
         ed,
         Event::Written {
             id,
+            path: path.clone(),
             result: Ok(disk),
         },
     );
@@ -273,10 +215,10 @@ fn written_records_disk_and_emits_undo() {
     assert!(!buf.modified());
     assert_eq!(
         *buf.backing(),
-        Backing::file(path.clone(), disk, LoadExtent::Whole)
+        Backing::file(FilePath::resolve(Path::new(""), &path), disk)
     );
-    let bytes = buf.undo().encode(disk).unwrap();
-    assert_eq!(fx, vec![Effect::WriteUndo { id, path, bytes }]);
+    assert_eq!(fx, [] as [Effect; 0]);
+    assert_eq!(ed.message(), format!("Wrote {}", path.display()));
 }
 
 #[test]
@@ -292,10 +234,11 @@ fn write_failure_keeps_buffer_modified() {
         ed,
         Event::Written {
             id,
+            path,
             result: Err("disk full".to_owned()),
         },
     );
-    assert!(fx.is_empty());
+    assert_eq!(fx, [] as [Effect; 0]);
     assert_eq!(ed.message(), "Save failed: disk full");
     assert!(ed.buffer_by_id(id).modified());
 }
@@ -318,27 +261,6 @@ fn confirmed_external_writes_without_recheck() {
             path,
             bytes: b"xabc".to_vec()
         }]
-    );
-}
-
-#[test]
-fn undo_write_failure_is_reported() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    fs::write(&path, b"abc").unwrap();
-    let ed = visit(editor(), &path);
-    let id = ed.window().buffer;
-
-    let (ed, _) = step(
-        ed,
-        Event::UndoWritten {
-            id,
-            result: Err("denied".to_owned()),
-        },
-    );
-    assert_eq!(
-        ed.message(),
-        format!("Wrote {}, undo not saved: denied", path.display())
     );
 }
 

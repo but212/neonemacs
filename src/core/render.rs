@@ -14,6 +14,7 @@ pub struct Cell {
 }
 
 impl Cell {
+    #[must_use]
     pub const fn plain(glyph: String) -> Self {
         Self {
             glyph,
@@ -21,6 +22,7 @@ impl Cell {
         }
     }
 
+    #[must_use]
     pub fn space() -> Self {
         Self::plain(" ".to_owned())
     }
@@ -34,6 +36,7 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[must_use]
     pub fn row_strings(&self) -> Vec<String> {
         self.rows
             .iter()
@@ -102,6 +105,7 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
 }
 
 /// Moves each window's `top` and `left_col` so that its point is visible.
+#[must_use]
 pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
     let tab = usize::from(ed.config().tab_width);
     let windows: Vec<Window> = ed.windows().windows().into_iter().copied().collect();
@@ -284,13 +288,15 @@ fn unit_char(unit: Unit) -> char {
 /// `w` cells for one character: control characters as `^X`, C1 as `\HH`,
 /// tabs as spaces, and wide characters followed by an empty cell.
 fn glyph(c: char, w: usize) -> Vec<String> {
-    let code = c as u32;
     if c == '\t' {
         return vec![" ".to_owned(); w];
     }
-    if code < 0x20 {
-        return vec!["^".to_owned(), char::from(code as u8 + 64).to_string()];
+    if let Ok(b) = u8::try_from(c)
+        && b < 0x20
+    {
+        return vec!["^".to_owned(), char::from(b + 64).to_string()];
     }
+    let code = c as u32;
     if code == 0x7F {
         return vec!["^".to_owned(), "?".to_owned()];
     }
@@ -306,7 +312,9 @@ fn glyph(c: char, w: usize) -> Vec<String> {
 fn status_text(buf: &Buffer, point: usize, width: usize) -> String {
     let mark = if buf.modified() { "**" } else { "--" };
     let view = if buf.view_only() { " (view)" } else { "" };
-    let percent = (point * 100).checked_div(buf.text().len()).unwrap_or(100);
+    let percent = (point as u64 * 100)
+        .checked_div(buf.text().len() as u64)
+        .unwrap_or(100);
     let head = format!("-{mark}-  {}{view}", buf.name());
     let full = format!("{head}  {}  {percent}%", buf.eol().label());
     if text_width(&full) <= width {
@@ -341,15 +349,6 @@ fn fit(s: &str, width: usize, fill: char) -> Vec<String> {
         cells.push(fill.to_string());
     }
     cells
-}
-
-/// Rows that changed, with their new content. An empty `prev` redraws everything.
-pub fn diff(prev: &[Vec<Cell>], next: &[Vec<Cell>]) -> Vec<(usize, Vec<Cell>)> {
-    next.iter()
-        .enumerate()
-        .filter(|(i, row)| prev.get(*i) != Some(row))
-        .map(|(i, row)| (i, (*row).clone()))
-        .collect()
 }
 
 #[cfg(test)]
@@ -442,15 +441,16 @@ mod tests {
     }
 
     #[test]
-    fn diff_only_changed_rows() {
-        let prev = vec![vec![Cell::plain("a".into())], vec![Cell::plain("b".into())]];
-        let next = vec![vec![Cell::plain("a".into())], vec![Cell::plain("c".into())]];
-        assert_eq!(diff(&prev, &next), vec![(1, vec![Cell::plain("c".into())])]);
-    }
-
-    #[test]
-    fn diff_full_redraw_when_no_previous_frame() {
-        let next = vec![vec![Cell::plain("x".into())], vec![Cell::plain("y".into())]];
-        assert_eq!(diff(&[], &next).len(), 2);
+    fn status_line_large_point_percentage_calculation() {
+        let text = Text::from_bytes(b"hello world");
+        let buf = Buffer::new(
+            crate::core::buffer::BufferId(1),
+            "test.txt",
+            text,
+            crate::core::file::Backing::None,
+        );
+        let s = status_text(&buf, 5, 40);
+        // 5 * 100 / 11 = 45%
+        assert!(s.contains("45%"));
     }
 }

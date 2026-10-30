@@ -9,6 +9,7 @@ pub mod effect;
 pub mod eol;
 pub mod file;
 pub mod keymap;
+pub mod kill_ring;
 pub mod mode;
 pub mod render;
 pub mod search;
@@ -22,20 +23,19 @@ use crate::core::editor::Editor;
 use crate::core::effect::{Effects, Event};
 
 /// Applies `event` to the editor. Returns the new editor and the effects the shell must perform.
+#[must_use]
 pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
     let fx = Vec::new();
     match event {
         Event::Key(key) => dispatch::handle_key(ed, key, fx),
         Event::Run(name) => dispatch::run_named(ed, &name, fx),
         Event::Disk { id, state } => commands::disk_checked(ed, id, state, fx),
-        Event::Written { id, result } => commands::written(ed, id, result, fx),
-        Event::UndoWritten { id, result } => (commands::undo_written(ed, id, result), fx),
+        Event::Written { id, path, result } => commands::written(ed, id, &path, result, fx),
         Event::FileRead {
             target,
             path,
             result,
         } => commands::file_read(ed, target, path, result, fx),
-        Event::UndoRead { id, bytes } => (commands::undo_read(ed, id, bytes), fx),
         Event::WalRemoved => (ed, fx),
         Event::ShellDone(result) => (commands::shell_done(ed, result), fx),
         Event::LuaDone(result) => (commands::lua_done(ed, result), fx),
@@ -46,7 +46,7 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::core::effect::Event;
+    use crate::core::effect::{Effect, Event};
     use crate::core::keymap::{Code, Key};
 
     #[test]
@@ -54,6 +54,6 @@ mod tests {
         let ed = Editor::new(Config::default());
         let (ed, fx) = step(ed, Event::Key(Key::plain(Code::Char('a'))));
         assert_eq!(ed.buffer().text().to_bytes(), b"a");
-        assert!(fx.is_empty());
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 }

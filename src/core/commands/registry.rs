@@ -10,23 +10,22 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             commands: BTreeSet::new(),
         }
     }
 
+    #[must_use]
     pub fn insert(mut self, name: impl Into<String>) -> Self {
         self.commands.insert(name.into());
         self
     }
 
+    #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.commands.contains(name)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &str> {
-        self.commands.iter().map(String::as_str)
     }
 
     pub fn completions<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a str> {

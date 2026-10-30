@@ -11,15 +11,14 @@ pub mod lua;
 pub mod session;
 pub mod startup;
 pub mod terminal;
+pub mod terminal_guard;
 pub mod wal;
 
 use crate::core::editor::Editor;
 use crate::core::effect::{Effect, Effects, Event};
 use crate::core::step;
-use crate::core::undo;
 use mlua::Lua;
 use std::cell::RefCell;
-use std::fs;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
@@ -39,6 +38,7 @@ pub enum ShellOutcome {
 }
 
 /// Runs `command` in a background thread without blocking the editor UI (I-24).
+#[must_use]
 pub fn spawn_shell(command: String) -> ShellTask {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -50,6 +50,7 @@ pub fn spawn_shell(command: String) -> ShellTask {
 
 /// Applies `event` in an interactive session. Spawns `RunShell` in the background (I-24)
 /// while performing other effects immediately. If `shell_busy` is true, rejects new shell commands.
+#[must_use]
 pub fn handle_interactive(
     ed: Editor,
     lua: Option<&Lua>,
@@ -82,24 +83,25 @@ pub fn handle_interactive(
 }
 
 /// Applies `event` to the editor and performs the effects it causes. Returns the new editor.
+#[must_use]
 pub fn handle(ed: Editor, lua: Option<&Lua>, event: Event) -> Editor {
     let (ed, effects) = step(ed, event);
     perform_all(ed, lua, effects)
 }
 
 /// Performs `effects` in order, until none are left. Returns the new editor.
+#[must_use]
 pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
     let cell = RefCell::new(Some(ed));
-    let bound = match lua {
+    let bound = if let Some(lua) = lua {
         // The API stays bound for all of `effects`, so every Lua call in them sees the same editor.
-        Some(lua) => lua::with_api(lua, &cell, |lua| {
+        lua::with_api(lua, &cell, |lua| {
             perform_in(&cell, Some(lua), effects);
             Ok(())
-        }),
-        None => {
-            perform_in(&cell, None, effects);
-            Ok(())
-        }
+        })
+    } else {
+        perform_in(&cell, None, effects);
+        Ok(())
     };
     let ed = into_editor(cell);
     match bound {
@@ -110,6 +112,9 @@ pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
 
 /// Applies `event` to the editor in `cell`, then puts the new editor back. The cell is empty
 /// only during this call, since `step` never calls Lua (I-21). Returns the effects to perform.
+///
+/// # Panics
+/// Panics if `cell` does not contain an editor (violating I-21).
 pub fn step_in(cell: &RefCell<Option<Editor>>, event: Event) -> Effects {
     let ed = cell
         .borrow_mut()
@@ -142,6 +147,7 @@ const fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
 }
 
 /// Performs one effect and returns the single event that answers it (I-15).
+#[must_use]
 pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
     match effect {
         Effect::StatDisk { id, path } => Event::Disk {
@@ -153,22 +159,13 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             if result.is_ok() {
                 wal::remove_wal(&path);
             }
-            Event::Written { id, result }
+            Event::Written { id, path, result }
         }
-        Effect::WriteUndo { id, path, bytes } => Event::UndoWritten {
-            id,
-            result: file::save(&undo::undo_path(&path), &bytes)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        },
         Effect::ReadFile {
             target,
             path,
             max_size,
         } => {
-            if matches!(target, crate::core::effect::ReadTarget::Revert(_)) {
-                wal::remove_wal(&path);
-            }
             let result = file::read_raw(&path, max_size).map_err(|e| e.to_string());
             Event::FileRead {
                 target,
@@ -176,10 +173,6 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
                 result,
             }
         }
-        Effect::ReadUndo { id, path } => Event::UndoRead {
-            id,
-            bytes: fs::read(undo::undo_path(&path)).ok(),
-        },
         Effect::RemoveWal { path } => {
             wal::remove_wal(&path);
             Event::WalRemoved
@@ -251,19 +244,10 @@ mod tests {
                 ..
             }
         ));
-        let undo = perform(
-            Effect::WriteUndo {
-                id,
-                path: path.clone(),
-                bytes: b"u".to_vec(),
-            },
-            None,
-        );
-        assert!(matches!(undo, Event::UndoWritten { result: Ok(()), .. }));
         let read = perform(
             Effect::ReadFile {
                 target: ReadTarget::Revert(id),
-                path: path.clone(),
+                path,
                 max_size: 10,
             },
             None,
@@ -275,20 +259,6 @@ mod tests {
                 ..
             }
         ));
-        let undo_read = perform(
-            Effect::ReadUndo {
-                id,
-                path: path.clone(),
-            },
-            None,
-        );
-        assert_eq!(
-            undo_read,
-            Event::UndoRead {
-                id,
-                bytes: Some(b"u".to_vec())
-            }
-        );
         let shell = perform(
             Effect::RunShell {
                 command: "echo hi".to_owned(),

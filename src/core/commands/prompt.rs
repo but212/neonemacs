@@ -1,11 +1,12 @@
 //! Minibuffer prompts, M-x completions, and command submission (§4, §12).
 
-use crate::core::commands::buffer_window::{kill_buffer, split, switch_to};
+use crate::core::commands::buffer_window::{kill_buffer, switch_to};
 use crate::core::commands::file::{find_file, write_file};
 use crate::core::commands::search::start_query_replace;
+use crate::core::commands::shell_output::run_shell;
 use crate::core::commands::table::BUILTINS;
-use crate::core::editor::{Buffer, Dir, Editor, Mode, Prefix, Prompt, Purpose};
-use crate::core::effect::{Effect, Effects};
+use crate::core::editor::{Buffer, Editor, Mode, Prompt, Purpose};
+use crate::core::effect::Effects;
 use crate::core::file::Backing;
 use crate::core::keymap::{Code, Key};
 use crate::core::text::Text;
@@ -78,7 +79,7 @@ fn complete(ed: &Editor, mut p: Prompt) -> (Prompt, Option<String>) {
     match cands.as_slice() {
         [] => (p, Some("No match".to_owned())),
         [(name, _)] => {
-            p.input = name.clone();
+            p.input.clone_from(name);
             (p, None)
         }
         _ => {
@@ -121,24 +122,17 @@ fn common_prefix(names: &[&str]) -> String {
 }
 
 /// Keys inside a prompt: text edits the input, RET submits, C-g cancels, TAB completes.
+#[must_use]
 pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Prompt(mut p) = ed.mode().clone() else {
         return (ed, fx);
     };
     if key == Key::ctrl('g') {
-        let ed = ed
-            .set_mode(Mode::Normal {
-                prefix: Prefix::None,
-            })
-            .set_message("Quit");
+        let ed = ed.set_mode(Mode::normal()).set_message("Quit");
         return (ed, fx);
     }
     if key == Key::plain(Code::Enter) {
-        let ed = ed
-            .set_mode(Mode::Normal {
-                prefix: Prefix::None,
-            })
-            .clear_message();
+        let ed = ed.set_mode(Mode::normal()).clear_message();
         return submit(ed, p, fx);
     }
     let mut note = None;
@@ -167,19 +161,19 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
             let fx = run_shell(&input, fx);
             (ed, fx)
         }
-        Purpose::QueryFrom { regex } => {
+        Purpose::QueryFrom { kind } => {
             if input.is_empty() {
                 (ed.set_message("Query replace needs a pattern"), fx)
             } else {
                 let label = format!("Query replace {input} with: ");
                 (
-                    prompt(ed, &label, Purpose::QueryTo { regex, from: input }),
+                    prompt(ed, &label, Purpose::QueryTo { kind, from: input }),
                     fx,
                 )
             }
         }
-        Purpose::QueryTo { regex, from } => crate::core::dispatch::command(ed, fx, |e, fx| {
-            let (e, result) = start_query_replace(e, &from, &input, regex);
+        Purpose::QueryTo { kind, from } => crate::core::dispatch::command(ed, fx, |e, fx| {
+            let (e, result) = start_query_replace(e, &from, &input, kind);
             let e = match result {
                 Ok(()) => e,
                 Err(msg) => e.set_message(msg),
@@ -193,17 +187,12 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     if name.is_empty() {
         return ed;
     }
-    let found = ed
-        .buffers()
-        .iter()
-        .find(|b| b.name() == name)
-        .map(Buffer::id);
-    match found {
-        Some(id) => switch_to(ed, id),
-        None => {
-            let (ed, id) = ed.add_buffer(name, Text::default(), Backing::None);
-            switch_to(ed, id)
-        }
+    let found = ed.buffers().find_by_name(name).map(Buffer::id);
+    if let Some(id) = found {
+        switch_to(ed, id)
+    } else {
+        let (ed, id) = ed.add_buffer(name, Text::default(), Backing::None);
+        switch_to(ed, id)
     }
 }
 
@@ -211,10 +200,7 @@ fn kill_named(ed: Editor, name: &str, fx: Effects) -> (Editor, Effects) {
     let id = if name.is_empty() {
         Some(ed.window().buffer)
     } else {
-        ed.buffers()
-            .iter()
-            .find(|b| b.name() == name)
-            .map(Buffer::id)
+        ed.buffers().find_by_name(name).map(Buffer::id)
     };
     match id {
         Some(id) => kill_buffer(ed, id, fx),
@@ -230,79 +216,12 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
     ed.move_point(pos)
 }
 
-pub(crate) fn shell_command_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx)
-}
-
-/// Asks the shell to run `command`. The output comes back as `ShellDone`.
-pub(crate) fn run_shell(command: &str, mut fx: Effects) -> Effects {
-    if command.is_empty() {
-        return fx;
-    }
-    fx.push(Effect::RunShell {
-        command: command.to_owned(),
-    });
-    fx
-}
-
-/// Shows the output of a shell command. One line goes to the echo area; more goes to `*Shell Command Output*` (A9).
-pub fn shell_done(ed: Editor, result: Result<String, String>) -> Editor {
-    let output = match result {
-        Ok(output) => output,
-        Err(e) => return ed.set_message(e),
-    };
-    let text = output.replace("\r\n", "\n");
-    let trimmed = text.trim_end_matches('\n');
-    let lines: Vec<&str> = trimmed.lines().collect();
-    match lines.as_slice() {
-        [] => ed.set_message("(no output)"),
-        [only] => ed.set_message(*only),
-        _ => show_output(ed, trimmed),
-    }
-}
-
-/// Puts `text` in the output buffer and shows it in the other window.
-fn show_output(ed: Editor, text: &str) -> Editor {
-    const NAME: &str = "*Shell Command Output*";
-    let found = ed
-        .buffers()
-        .iter()
-        .find(|b| b.name() == NAME)
-        .map(Buffer::id);
-    let (ed, id) = match found {
-        Some(id) => (ed, id),
-        None => ed.add_buffer(NAME, Text::default(), Backing::None),
-    };
-    let mut ed = ed.with_buffer(id, |b| {
-        b.with_text(Text::from_bytes(text.as_bytes()))
-            .set_modified(false)
-    });
-    if ed.leaf_count() == 1 {
-        ed = split(ed, Dir::Below);
-    }
-    let orig = ed.windows().selected();
-    let other = if orig + 1 < ed.leaf_count() {
-        orig + 1
-    } else {
-        orig - 1
-    };
-    let ed = switch_to(ed.with_windows(|wm| wm.set_selected(other)), id);
-    ed.with_windows(|wm| wm.set_selected(orig))
-}
-
-/// Ends a Lua command: shows the first line of its error, then closes its undo group like any command.
-pub fn lua_done(ed: Editor, result: Result<(), String>) -> Editor {
-    let ed = match result {
-        Ok(()) => ed,
-        Err(e) => ed.set_message(e.lines().next().unwrap_or_default()),
-    };
-    ed.end_command()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{editor, keys, run_command, typ};
+    use crate::core::effect::Effect;
+    use crate::core::mode::Prefix;
+    use crate::test_support::{editor, keys, typ};
 
     #[test]
     fn mx_completes_and_cancels() {
@@ -324,23 +243,7 @@ mod tests {
     fn mx_lists_candidates_with_their_keys() {
         let ed = editor();
         assert!(completions(&ed, "und").contains(&("undo".to_owned(), "C-_".to_owned())));
-        assert!(completions(&ed, "zzz").is_empty());
-    }
-
-    #[test]
-    fn shell_command_one_line_echoes_many_lines_open_buffer() {
-        let ed = editor();
-        let ed = run_command(ed, |e, fx| (e, run_shell("echo hi", fx)));
-        assert_eq!(ed.message(), "hi");
-
-        let ed = run_command(ed, |e, fx| (e, run_shell("echo a&& echo b", fx)));
-        let out = ed
-            .buffers()
-            .iter()
-            .find(|b| b.name() == "*Shell Command Output*")
-            .expect("output buffer");
-        assert_eq!(out.text().to_bytes(), b"a\nb");
-        assert_eq!(ed.leaf_count(), 2);
+        assert_eq!(completions(&ed, "zzz"), [] as [(String, String); 0]);
     }
 
     #[test]
@@ -410,62 +313,7 @@ mod tests {
         );
         let (same_ed, same_fx) = prompt_key(ed.clone(), Key::plain(Code::Char('a')), Vec::new());
         assert_eq!(same_ed.mode(), ed.mode());
-        assert!(same_fx.is_empty());
-    }
-
-    #[test]
-    fn shell_done_and_lua_done_hostile_and_edge_branches() {
-        let ed = editor();
-
-        // Empty shell output
-        let ed_empty = shell_done(ed.clone(), Ok(String::new()));
-        assert_eq!(ed_empty.message(), "(no output)");
-        let ed_crlf = shell_done(ed.clone(), Ok("\r\n\r\n".into()));
-        assert_eq!(ed_crlf.message(), "(no output)");
-
-        // Shell error output
-        let ed_err = shell_done(ed.clone(), Err("command failed: 127".into()));
-        assert_eq!(ed_err.message(), "command failed: 127");
-
-        // Shell command with empty string produces no effects
-        let fx = run_shell("", Vec::new());
-        assert!(fx.is_empty());
-
-        // Multi-line shell output when windows are already split
-        let ed_split = split(ed.clone(), Dir::Below);
-        assert_eq!(ed_split.leaf_count(), 2);
-        let ed_out1 = shell_done(ed_split, Ok("line 1\r\nline 2".into()));
-        assert_eq!(ed_out1.leaf_count(), 2);
-        assert_eq!(
-            ed_out1
-                .buffers()
-                .iter()
-                .find(|b| b.name() == "*Shell Command Output*")
-                .map(|b| b.text().to_bytes()),
-            Some(b"line 1\nline 2".to_vec())
-        );
-
-        // Re-running reuses the existing *Shell Command Output* buffer and selects other window from leaf
-        let ed_out2 = shell_done(ed_out1, Ok("new 1\nnew 2\nnew 3".into()));
-        assert_eq!(ed_out2.leaf_count(), 2);
-        assert_eq!(
-            ed_out2
-                .buffers()
-                .iter()
-                .filter(|b| b.name() == "*Shell Command Output*")
-                .count(),
-            1
-        );
-
-        // lua_done success and multi-line error
-        let ed_lua_ok = lua_done(ed.clone(), Ok(()));
-        assert!(ed_lua_ok.message().is_empty());
-
-        let ed_lua_err = lua_done(
-            ed,
-            Err("first error line\nsecond traceback line\nthird line".into()),
-        );
-        assert_eq!(ed_lua_err.message(), "first error line");
+        assert_eq!(same_fx, [] as [Effect; 0]);
     }
 
     #[test]

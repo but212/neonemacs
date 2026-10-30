@@ -8,7 +8,7 @@ use neonemacs::core::editor::Editor;
 use neonemacs::core::effect::Event;
 use neonemacs::core::keymap::parse_keys;
 use neonemacs::shell::lua;
-use neonemacs::shell::session::{ActiveShell, ShellNotice, ShellSession};
+use neonemacs::shell::session::{ActiveShell, ShellSession};
 use neonemacs::shell::{ShellOutcome, handle_interactive, spawn_shell};
 use std::time::{Duration, Instant};
 
@@ -68,9 +68,8 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
         false,
     );
 
-    let task = match outcome {
-        ShellOutcome::Spawned(t) => t,
-        _ => panic!("Expected ShellOutcome::Spawned"),
+    let ShellOutcome::Spawned(task) = outcome else {
+        panic!("Expected ShellOutcome::Spawned")
     };
     assert_eq!(final_ed.message(), "[Running...]");
 
@@ -142,7 +141,7 @@ fn active_shell_tracks_spinner_and_typed_notice() {
     assert!(s1.starts_with("[Running... /]"));
 
     // Set notice
-    active.set_notice(ShellNotice::AlreadyRunning);
+    active.set_already_running();
     let s2 = active.format_status();
     assert!(s2.starts_with("[Running... -] A shell command is already running"));
 }
@@ -151,7 +150,7 @@ fn active_shell_tracks_spinner_and_typed_notice() {
 fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     let press = |code: KeyCode, modifiers: KeyModifiers| {
@@ -165,30 +164,30 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
 
     // Type buffer content, then launch `M-x shell-command RET echo session_async_ok RET`
     for c in "hello world".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
     for c in "shell-command".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     for c in "echo session_async_ok".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "[Running...]");
 
     // Move to beginning of buffer (`C-a`) and start I-search (`C-s`) while shell is running;
     // tick must not overwrite I-search echo even if the background command completes mid-search.
-    session.handle_event_at(press(KeyCode::Char('a'), KeyModifiers::CONTROL), t0);
-    session.handle_event_at(press(KeyCode::Char('s'), KeyModifiers::CONTROL), t0);
-    session.handle_event_at(press(KeyCode::Char('w'), KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Char('a'), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(&press(KeyCode::Char('s'), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(&press(KeyCode::Char('w'), KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "I-search: w");
     session.tick_at(t0 + Duration::from_millis(50));
     assert_eq!(session.ed.message(), "I-search: w");
 
     // Exit I-search with Enter -> back to Normal mode
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
 
     // Poll tick until background command completes
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -206,7 +205,7 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
 fn shell_running_does_not_clobber_status_messages() {
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let mut session = ShellSession::new(ed, lua);
+    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
 
     let press = |code: KeyCode, modifiers: KeyModifiers| {
@@ -219,19 +218,19 @@ fn shell_running_does_not_clobber_status_messages() {
     };
 
     // Launch shell command
-    session.handle_event_at(press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
     for c in "shell-command".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     for c in "echo 1".chars() {
-        session.handle_event_at(press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
-    session.handle_event_at(press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "[Running...]");
 
     // User executes C-SPC (Mark set) while shell is running
-    session.handle_event_at(press(KeyCode::Char(' '), KeyModifiers::CONTROL), t0);
+    session.handle_event_at(&press(KeyCode::Char(' '), KeyModifiers::CONTROL), t0);
     assert_eq!(session.ed.message(), "Mark set");
 
     // 50ms tick occurs: must NOT overwrite "Mark set" with spinner
