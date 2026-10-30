@@ -699,6 +699,27 @@ fn test_comment_dwim_integration() {
 }
 
 #[test]
+fn comment_dwim_preserves_remapped_mark_across_lines() {
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let (ed, id) = ed.add_buffer(
+        "test.rs",
+        crate::core::text::Text::from_bytes(b"aaa\nbbb\nccc\n"),
+        crate::core::file::Backing::None,
+    );
+    let ed = crate::core::commands::buffer_window::switch_to(ed, id);
+    // Point at 0, mark at 8 (start of "ccc\n")
+    let ed = ed.move_point(0).with_current_buffer(|b| b.set_mark(Some(8)));
+    // Comment region over lines 1 and 2
+    let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
+    res.unwrap();
+    // In Rust mode, "// " is prepended to line 1 and line 2 (+3 bytes each = +6 bytes before mark).
+    // Mark should be automatically remapped to 8 + 6 = 14.
+    assert_eq!(ed.buffer().mark(), Some(14));
+}
+
+
+#[test]
 fn test_mark_whole_buffer() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);

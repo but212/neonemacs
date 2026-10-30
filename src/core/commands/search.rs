@@ -106,7 +106,15 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     };
     let fold = ed.config().case_fold_search;
     let mut wrapped = false;
-    let mut found = find_in_direction(&ed, &pattern, s.direction, from, fold);
+    let text = ed.buffer().text();
+    let mut found = if s.direction == Direction::Backward && from <= text.len() {
+        pattern
+            .match_at(text, from, fold)
+            .map(|end| (from, end))
+            .or_else(|| find_in_direction(&ed, &pattern, s.direction, from, fold))
+    } else {
+        find_in_direction(&ed, &pattern, s.direction, from, fold)
+    };
     if found.is_none() && wrap {
         let other_end = if s.direction == Direction::Forward {
             0

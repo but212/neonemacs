@@ -322,7 +322,25 @@ impl Editor {
             .restore_content(path, bytes, eol, line);
         self.documents.buffers = buffers;
         match id {
-            Some(id) => self.snap_windows_for_buffer(id),
+            Some(id) => {
+                if line.is_some() {
+                    let target_point = self.documents.buffers.get_by_id(id).saved_point();
+                    self.documents.windows = self.documents.windows.map_windows(&|w| {
+                        if w.buffer == id {
+                            Window {
+                                point: target_point,
+                                top: 0,
+                                ..w
+                            }
+                        } else {
+                            w
+                        }
+                    });
+                    self
+                } else {
+                    self.snap_windows_for_buffer(id)
+                }
+            }
             None => self,
         }
     }

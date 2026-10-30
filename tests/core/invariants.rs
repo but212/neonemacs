@@ -65,7 +65,7 @@ fn restore_content_snaps_active_window_and_applies_line() {
 
     let recovered = ed.restore_buffer_content(&path, b"a\nb\nc\n", Eol::Lf, Some(2));
     assert_eq!(recovered.buffer_by_id(id).saved_point(), 2);
-    assert_eq!(recovered.window().point, 6);
+    assert_eq!(recovered.window().point, 2);
     assert_eq!(recovered.window().top, 0);
 }
 

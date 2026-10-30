@@ -1,6 +1,5 @@
 //! File operations: save check flow, reading, reverting, and confirmation (§8, ADR 0002).
 
-use crate::core::buffer::BufferPool;
 use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::core::effect::{self, Effect, Effects, ReadTarget};
@@ -26,28 +25,13 @@ pub fn request_open(
     fx
 }
 
-// --- Layer 1: Pure domain primitives ---
-
-/// Returns true if any buffer in the pool has unsaved modifications.
-pub fn has_modified_buffers(pool: &BufferPool) -> bool {
-    pool.iter().any(Buffer::modified)
-}
-
-/// Returns true if the external disk state changed since read (I-04).
-#[must_use]
-pub fn is_external_change(backing_disk: DiskState, disk_now: DiskState) -> bool {
-    matches!(backing_disk, DiskState::Known { .. }) && backing_disk != disk_now
-}
-
-// --- Layer 2: Built-in command adapters ---
-
 pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let id = ed.window().buffer;
     save_buffer(ed, id, fx)
 }
 
 pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    if has_modified_buffers(ed.buffers()) {
+    if ed.buffers().iter().any(Buffer::modified) {
         let ed = ed.confirm(
             Confirm::QuitUnsaved,
             "Modified buffers exist; quit anyway? (y or n)",
@@ -79,7 +63,7 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 #[must_use]
 pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> (Editor, Effects) {
     let disk = ed.buffer_by_id(id).backing().disk();
-    if is_external_change(disk, state) {
+    if matches!(disk, DiskState::Known { .. }) && disk != state {
         let ed = ed.confirm(
             Confirm::SaveExternal(id),
             "File changed on disk since it was read; overwrite? (y or n)",

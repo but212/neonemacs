@@ -312,7 +312,9 @@ fn glyph(c: char, w: usize) -> Vec<String> {
 fn status_text(buf: &Buffer, point: usize, width: usize) -> String {
     let mark = if buf.modified() { "**" } else { "--" };
     let view = if buf.view_only() { " (view)" } else { "" };
-    let percent = (point * 100).checked_div(buf.text().len()).unwrap_or(100);
+    let percent = (point as u64 * 100)
+        .checked_div(buf.text().len() as u64)
+        .unwrap_or(100);
     let head = format!("-{mark}-  {}{view}", buf.name());
     let full = format!("{head}  {}  {percent}%", buf.eol().label());
     if text_width(&full) <= width {
@@ -459,5 +461,19 @@ mod tests {
     fn diff_full_redraw_when_no_previous_frame() {
         let next = vec![vec![Cell::plain("x".into())], vec![Cell::plain("y".into())]];
         assert_eq!(diff(&[], &next).len(), 2);
+    }
+
+    #[test]
+    fn status_line_large_point_percentage_calculation() {
+        let text = Text::from_bytes(b"hello world");
+        let buf = Buffer::new(
+            crate::core::buffer::BufferId(1),
+            "test.txt",
+            text,
+            crate::core::file::Backing::None,
+        );
+        let s = status_text(&buf, 5, 40);
+        // 5 * 100 / 11 = 45%
+        assert!(s.contains("45%"));
     }
 }

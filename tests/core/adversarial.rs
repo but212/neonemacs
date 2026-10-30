@@ -574,3 +574,55 @@ fn prompt_shell_command_adversarial() {
         }
     );
 }
+
+#[test]
+fn isearch_backward_extends_pattern_at_position_zero_and_current_match() {
+    let isearch_backward = find("isearch-backward").unwrap();
+
+    // 1. Backward search from 0 typing letters must not immediately fail
+    let mut ed = typ(editor(), "hello world");
+    ed = ed.move_point(0);
+    let (after_start, _) = isearch_backward(ed, Vec::new());
+    ed = after_start;
+    assert!(matches!(ed.mode(), Mode::Isearch(_)));
+    ed = typ(ed, "h");
+    assert_eq!(point(&ed), 0);
+    assert_eq!(ed.message(), "I-search: h");
+    ed = typ(ed, "e");
+    assert_eq!(point(&ed), 0);
+    assert_eq!(ed.message(), "I-search: he");
+    ed = typ(ed, "l");
+    assert_eq!(point(&ed), 0);
+    assert_eq!(ed.message(), "I-search: hel");
+
+    // 2. Extending pattern on a match found by backward search must stay on current match
+    let mut ed2 = typ(editor(), "test test");
+    ed2 = ed2.move_point(9);
+    let (after_start2, _) = isearch_backward(ed2, Vec::new());
+    ed2 = after_start2;
+    ed2 = typ(ed2, "t");
+    assert_eq!(point(&ed2), 8);
+    ed2 = typ(ed2, "e");
+    assert_eq!(point(&ed2), 5);
+    ed2 = typ(ed2, "s");
+    assert_eq!(point(&ed2), 5, "Extending 'te' to 'tes' jumped backwards unexpectedly");
+    ed2 = typ(ed2, "t");
+    assert_eq!(point(&ed2), 5, "Extending 'tes' to 'test' jumped backwards unexpectedly");
+}
+
+#[test]
+fn find_forward_out_of_bounds_from_does_not_panic() {
+    let t = neonemacs::core::text::Text::from_bytes(b"hello");
+    let pat = neonemacs::core::search::Pattern::regex("^h").unwrap();
+    // from is far beyond text length and initial gap buffer capacity
+    let res = neonemacs::core::search::find_forward(&t, &pat, 100_000, false);
+    assert_eq!(res, None);
+
+    let pat_lit = neonemacs::core::search::Pattern::literal("h");
+    let res_lit = neonemacs::core::search::find_forward(&t, &pat_lit, 100_000, false);
+    assert_eq!(res_lit, None);
+
+    let res_bkwd = neonemacs::core::search::find_backward(&t, &pat, 100_000, false);
+    assert_eq!(res_bkwd, Some((0, 1)));
+}
+

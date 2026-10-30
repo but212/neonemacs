@@ -120,6 +120,9 @@ impl Pattern {
     /// End of the match that starts at `pos`, if any.
     #[must_use]
     pub fn match_at(&self, text: &Text, pos: usize, fold: bool) -> Option<usize> {
+        if pos > text.len() {
+            return None;
+        }
         run(&self.nodes, text, pos, fold)
     }
 }
@@ -192,6 +195,9 @@ fn run(nodes: &[Node], text: &Text, pos: usize, fold: bool) -> Option<usize> {
 /// First match starting at or after `from`. Returns `(start, end)`.
 #[must_use]
 pub fn find_forward(text: &Text, pat: &Pattern, from: usize, fold: bool) -> Option<(usize, usize)> {
+    if from > text.len() {
+        return None;
+    }
     let mut p = from;
     loop {
         if let Some(end) = pat.match_at(text, p, fold) {
@@ -212,7 +218,7 @@ pub fn find_backward(
     from: usize,
     fold: bool,
 ) -> Option<(usize, usize)> {
-    let mut p = from;
+    let mut p = from.min(text.len());
     while p > 0 {
         p = text.prev_boundary(p);
         if let Some(end) = pat.match_at(text, p, fold) {

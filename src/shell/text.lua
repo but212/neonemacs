@@ -332,9 +332,6 @@ local function comment_dwim()
 
     local new_pt = math.max(0, math.min(buffer.len(), orig_pt + delta_at_pt))
     buffer.set_point(new_pt)
-    if has_region then
-        buffer.set_mark(orig_mark)
-    end
 end
 
 command("comment-dwim", comment_dwim)
