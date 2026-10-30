@@ -112,11 +112,6 @@ impl SyntaxRegistry {
     }
 
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.languages.is_empty()
-    }
-
-    #[must_use]
     pub fn register(mut self, def: SyntaxDef) -> Self {
         if let Some(pos) = self.languages.iter().position(|l| l.name == def.name) {
             self.languages[pos] = def;

@@ -611,6 +611,47 @@ fn isearch_backward_extends_pattern_at_position_zero_and_current_match() {
 }
 
 #[test]
+fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
+    let isearch_backward = find("isearch-backward").unwrap();
+
+    // Text: "test alpha test beta test"
+    // Offsets:
+    // 0..4:   "test"
+    // 11..15: "test"
+    // 21..25: "test"
+    let mut ed = typ(editor(), "test alpha test beta test");
+    assert_eq!(ed.buffer().text().len(), 25);
+    ed = ed.move_point(25);
+
+    let (after_start, _) = isearch_backward(ed, Vec::new());
+    ed = after_start;
+    assert!(matches!(ed.mode(), Mode::Isearch(_)));
+
+    // Type "test" -> backward search finds last occurrence at 21..25
+    ed = typ(ed, "test");
+    assert_eq!(point(&ed), 21, "First match should be at offset 21");
+
+    // Press C-r to navigate to previous occurrence (11..15)
+    ed = keys(ed, "C-r");
+    assert_eq!(point(&ed), 11, "Repeat C-r must move to previous match at offset 11");
+
+    // Press C-r to navigate to first occurrence (0..4)
+    ed = keys(ed, "C-r");
+    assert_eq!(point(&ed), 0, "Repeat C-r must move to first match at offset 0");
+
+    // Press C-r at buffer start -> wraps around to last match at 21
+    ed = keys(ed, "C-r");
+    assert_eq!(point(&ed), 21, "C-r at buffer boundary must wrap around to last match at offset 21");
+    assert!(ed.message().contains("Wrapped"), "Message must indicate wrapped search: {}", ed.message());
+
+    // Reverse direction with C-s -> finds next match forward (wrap from 21 back to 0)
+    ed = keys(ed, "C-s");
+    assert_eq!(point(&ed), 25, "C-s from 21 should re-anchor to end of current match (25)");
+    ed = keys(ed, "C-s");
+    assert_eq!(point(&ed), 4, "C-s from 25 must wrap forward to end of first match (4)");
+}
+
+#[test]
 fn find_forward_out_of_bounds_from_does_not_panic() {
     let t = neonemacs::core::text::Text::from_bytes(b"hello");
     let pat = neonemacs::core::search::Pattern::regex("^h").unwrap();

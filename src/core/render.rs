@@ -351,16 +351,6 @@ fn fit(s: &str, width: usize, fill: char) -> Vec<String> {
     cells
 }
 
-/// Rows that changed, with their new content. An empty `prev` redraws everything.
-#[must_use]
-pub fn diff(prev: &[Vec<Cell>], next: &[Vec<Cell>]) -> Vec<(usize, Vec<Cell>)> {
-    next.iter()
-        .enumerate()
-        .filter(|(i, row)| prev.get(*i) != Some(row))
-        .map(|(i, row)| (i, (*row).clone()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,19 +438,6 @@ mod tests {
 
         let r = screen_rows("1\n2\n3\n4\n5", 8, 10, 4);
         assert_eq!(r[0], "5         ");
-    }
-
-    #[test]
-    fn diff_only_changed_rows() {
-        let prev = vec![vec![Cell::plain("a".into())], vec![Cell::plain("b".into())]];
-        let next = vec![vec![Cell::plain("a".into())], vec![Cell::plain("c".into())]];
-        assert_eq!(diff(&prev, &next), vec![(1, vec![Cell::plain("c".into())])]);
-    }
-
-    #[test]
-    fn diff_full_redraw_when_no_previous_frame() {
-        let next = vec![vec![Cell::plain("x".into())], vec![Cell::plain("y".into())]];
-        assert_eq!(diff(&[], &next).len(), 2);
     }
 
     #[test]

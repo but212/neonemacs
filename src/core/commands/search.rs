@@ -107,7 +107,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     let fold = ed.config().case_fold_search;
     let mut wrapped = false;
     let text = ed.buffer().text();
-    let mut found = if s.direction == Direction::Backward && from <= text.len() {
+    let mut found = if !wrap && s.direction == Direction::Backward && from <= text.len() {
         pattern
             .match_at(text, from, fold)
             .map(|end| (from, end))
