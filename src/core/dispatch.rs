@@ -15,7 +15,7 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
             handle_normal_key(ed, prefix, key, fx)
         }
         Mode::Confirm(question) => {
-            let question = *question;
+            let question = question.clone();
             answer(ed, question, key, fx)
         }
         Mode::Isearch(_) => commands::isearch_key(ed, key, fx),

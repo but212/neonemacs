@@ -29,6 +29,8 @@ Multi-line syntax highlighting is a separate, larger change (it revises ADR 0004
 ## Invariants
 
 - **I-04 (revised):** The save sequence checks external change only. Oversized files never reach save because they are refused at open. The check is enforced by the type: `loaded_from` returns `Result`, and no partial-buffer variant exists.
+- **I-04 (extended, `/lean-review repo`):** The check also covers (a) a file created after the buffer opened a missing path (`Unknown` recorded, `Known` found), and (b) `write-file` to a path that holds a file the buffer does not visit. `Effect::StatDisk` and `Event::Disk` carry a `StatTarget` (`Save(id)` or `SaveAs(id)`) and the path. `SaveAs` over an existing file asks `Confirm::OverwriteFile { id, path }` before any `WriteFile`. A first save of a new file (`Unknown` to `Unknown`) still writes without asking.
+- **Revert of a deleted file:** `ReadTarget::Revert` with `Read::Missing` keeps the buffer and its WAL and reports `Revert failed: <path> does not exist`.
 - **I-23 (revised):** The WAL header stores the buffer's EOL (`0` = LF, `1` = CRLF, otherwise invalid).
 - **I-31 (new):** Buffer state that save and recovery depend on (text and EOL) changes only through `Editor::apply(Edit)`. Undo, `modified`, and `wal_dirty` are updated there. `Buffer::set_eol` is used only when a file is loaded, reverted, or restored.
 - **I-06 (reused):** `view_only` is checked by `apply` and at query-replace start.

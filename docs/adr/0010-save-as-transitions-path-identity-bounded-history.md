@@ -40,7 +40,8 @@ Three more are documentation or dead-code drift: the spec said `run` depth 64 wh
 - **I-37 (type + runtime):** The only constructor of `FilePath` is `resolve`, and its output is lexically normal: no `.`, no `..` after a root, and only leading `..` in a relative path. One buffer per path is checked at the two points that can create a second one: `file_read(Open)` and `write_file`. The check is runtime because uniqueness across buffers cannot be expressed in one value. The absolute-path guarantee holds only when `Settings.cwd` is absolute (Decision 3).
 - **I-38 (runtime, `Editor::apply`):** `LastCommand::Yank` is valid only until the next applied edit. `last` is in Interaction and the text is in Documents, so `Editor` (I-32) joins them.
 - **I-26 (extended):** The kill ring keeps at most `KILL_RING_MAX` (120) entries. `KillRing::from_entries` skips that check, so it is `#[cfg(test)]`, and a production ring grows only through `push`.
-- **I-25 (extended):** `write-file` deletes the WAL of the old path only after the write succeeds.
+- **I-25 (extended):** `write-file` deletes the WAL of the old path only after the write succeeds. The WAL of the target path goes only with a write the user allowed: `write-file` over an existing file asks first (ADR 0009, I-04 extended).
+- **WAL write failure (`/lean-review repo`):** A failed idle WAL write leaves the buffer `wal_dirty`, sets `WAL write failed: <path>: <error>` in the echo area (`(+N more)` for several), and retries after another second. `needs_wal_flush` stays true while any file buffer is `wal_dirty`. The message is not set while a question is pending (`Mode` is not `Normal`); the retry still runs.
 - **I-31 (revised):** Text and EOL change through `Editor::apply(Edit)`, or through a whole-text replacement that resets undo (I-34).
 
 ## Consequences
@@ -55,4 +56,4 @@ Three more are documentation or dead-code drift: the spec said `run` depth 64 wh
 - Behavior change: the kill ring drops the oldest entry past 120.
 - API change (internal): `Event::Written` has a `path` field. `Buffer::with_undo` is removed. `UndoLog::new` and `record` change signature. `BufferPool::{new, add, kill}` and `Buffer::{new, replace_from_disk, apply_edit}` lose or gain the limit argument. `Documents::new` takes no limit. `KillRing::from_entries` is `#[cfg(test)]`.
 - Accepted deviations from the plan: `BufferPool::is_empty` stays, because clippy's `len_without_is_empty` lint applies to a public `len`. `restore_buffer_content` keeps its existing path through `BufferPool::restore_content`, which already resets undo via `with_text`, instead of calling `replace_text`.
-- Not in scope: a notice when a WAL cannot be written, double WAL reads in `has_wal`, symbolic-link resolution, and Lua API changes beyond the shell output buffer.
+- Not in scope: double WAL reads in `has_wal`, symbolic-link resolution, and Lua API changes beyond the shell output buffer.

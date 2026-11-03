@@ -150,9 +150,10 @@ const fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
 #[must_use]
 pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
     match effect {
-        Effect::StatDisk { id, path } => Event::Disk {
-            id,
+        Effect::StatDisk { target, path } => Event::Disk {
+            target,
             state: file::disk_state(&path),
+            path,
         },
         Effect::WriteFile { id, path, bytes } => {
             let result = file::save(&path, &bytes).map_err(|e| e.to_string());
@@ -206,7 +207,7 @@ fn run_lua(lua: Option<&Lua>, name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::core::editor::BufferId;
-    use crate::core::effect::{Read, ReadTarget};
+    use crate::core::effect::{Read, ReadTarget, StatTarget};
     use crate::core::file::DiskState;
 
     #[test]
@@ -217,7 +218,7 @@ mod tests {
 
         let stat = perform(
             Effect::StatDisk {
-                id,
+                target: StatTarget::Save(id),
                 path: path.clone(),
             },
             None,
@@ -225,7 +226,8 @@ mod tests {
         assert_eq!(
             stat,
             Event::Disk {
-                id,
+                target: StatTarget::Save(id),
+                path: path.clone(),
                 state: DiskState::Unknown
             }
         );

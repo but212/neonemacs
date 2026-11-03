@@ -80,7 +80,7 @@
 | **I-01** | Cursor and mark are always snapped to valid UTF-8 boundaries in `0..=len` | Runtime (`snap_anchors`) | ADR 0002, ADR 0006 |
 | **I-02** | Gap buffer byte boundaries are strictly local and continuous | Data structure | `src/core/text.rs` |
 | **I-03** | Buffer clean state tracks disk synchronization accuracy | Type / Runtime | `src/core/buffer.rs` |
-| **I-04** | Save sequence checks external disk change; files over `max-file-size` are refused at open, so no partial buffer exists | Type (`loaded_from` → `Result`) / Runtime | ADR 0002, ADR 0009 |
+| **I-04** | Save sequence checks external disk change, including a file created after a missing path was opened; `write-file` over an existing file asks first; files over `max-file-size` are refused at open, so no partial buffer exists | Type (`loaded_from` → `Result`) / Runtime | ADR 0002, ADR 0009 |
 | **I-05** | Successful disk write records fresh metadata (`DiskState`) | Type (`Event::Written`) | ADR 0002 |
 | **I-06** | Modified flag accurately reflects buffer changes vs saved state | Runtime | `src/core/buffer.rs` |
 | **I-07** | Read-only buffers reject mutations and EOL toggling | Runtime (`view_mode`) | Spec §10 |

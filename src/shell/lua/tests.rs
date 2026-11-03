@@ -709,7 +709,9 @@ fn comment_dwim_preserves_remapped_mark_across_lines() {
     );
     let ed = crate::core::commands::buffer_window::switch_to(ed, id);
     // Point at 0, mark at 8 (start of "ccc\n")
-    let ed = ed.move_point(0).with_current_buffer(|b| b.set_mark(Some(8)));
+    let ed = ed
+        .move_point(0)
+        .with_current_buffer(|b| b.set_mark(Some(8)));
     // Comment region over lines 1 and 2
     let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
     res.unwrap();
@@ -717,7 +719,6 @@ fn comment_dwim_preserves_remapped_mark_across_lines() {
     // Mark should be automatically remapped to 8 + 6 = 14.
     assert_eq!(ed.buffer().mark(), Some(14));
 }
-
 
 #[test]
 fn test_mark_whole_buffer() {

@@ -213,10 +213,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&path, "external change from git").unwrap();
 
-        let files = vec![FileArg {
-            path,
-            line: None,
-        }];
+        let files = vec![FileArg { path, line: None }];
         let ed = open_files(Editor::new(Config::default()), None, &files);
         // Stale WAL must not be recovered; disk content loaded
         assert_eq!(ed.buffer().text().to_bytes(), b"external change from git");

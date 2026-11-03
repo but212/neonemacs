@@ -2,6 +2,7 @@
 
 use crate::core::buffer::BufferId;
 use crate::core::search::Pattern;
+use std::path::PathBuf;
 
 /// Kind of a command, for commands that chain (§6, §7, I-09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +71,14 @@ pub enum MatchKind {
 }
 
 /// A yes-or-no question that must be answered before the command continues (I-04).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Confirm {
     SaveExternal(BufferId),
+    /// `write-file` to `path`, where a file already exists (I-04).
+    OverwriteFile {
+        id: BufferId,
+        path: PathBuf,
+    },
     QuitUnsaved,
     KillModified(BufferId),
     RevertModified(BufferId),

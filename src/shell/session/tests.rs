@@ -2,6 +2,7 @@ use super::screen::print_styled_row;
 use super::*;
 use crate::core::commands::request_open;
 use crate::core::config::Config;
+use crate::core::editor::Confirm;
 use crate::core::editor::Editor;
 use crate::core::syntax::TokenKind;
 use crate::core::text::Text;
@@ -271,6 +272,68 @@ fn cursor_motion_does_not_retrigger_or_delay_wal_flush() {
         !session.needs_wal_flush,
         "cursor movement on already-flushed buffer re-armed WAL flush!"
     );
+}
+
+#[test]
+fn wal_write_failure_is_reported_and_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("retry.txt");
+    fs::write(&file, "init").unwrap();
+    // A directory at the WAL path makes the atomic rename fail on every platform.
+    let blocker = wal::wal_path(&file);
+    fs::create_dir(&blocker).unwrap();
+
+    let mut session = make_session();
+    let fx = request_open(&session.ed, &file, None, true, Vec::new());
+    session.ed = perform_all(session.ed, Some(&session.lua), fx);
+
+    let t0 = Instant::now();
+    session.handle_event_at(&press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
+
+    // The write fails: the user is told, and the buffer stays queued for another try.
+    let t1 = t0 + Duration::from_millis(1000);
+    session.tick_at(t1);
+    assert!(session.ed.message().starts_with("WAL write failed: "));
+    assert!(session.ed.message().contains("retry.txt"));
+    assert!(session.needs_wal_flush);
+    assert!(session.has_wal_dirty_file_buffer());
+
+    // No retry before another second has passed.
+    fs::remove_dir(&blocker).unwrap();
+    session.tick_at(t1 + Duration::from_millis(999));
+    assert!(!wal::has_wal(&file));
+
+    session.tick_at(t1 + Duration::from_millis(1000));
+    assert!(wal::has_wal(&file));
+    assert!(!session.needs_wal_flush);
+    assert!(!session.has_wal_dirty_file_buffer());
+}
+
+#[test]
+fn wal_write_failure_keeps_a_pending_confirmation_question() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ask.txt");
+    fs::write(&file, "init").unwrap();
+    fs::create_dir(wal::wal_path(&file)).unwrap();
+
+    let mut session = make_session();
+    let fx = request_open(&session.ed, &file, None, true, Vec::new());
+    session.ed = perform_all(session.ed, Some(&session.lua), fx);
+
+    let t0 = Instant::now();
+    session.handle_event_at(&press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
+    session.ed = session.ed.confirm(
+        Confirm::QuitUnsaved,
+        "Modified buffers exist; quit? (y or n)",
+    );
+
+    session.tick_at(t0 + Duration::from_millis(1000));
+    assert_eq!(
+        session.ed.message(),
+        "Modified buffers exist; quit? (y or n)"
+    );
+    // The failure is still retried.
+    assert!(session.needs_wal_flush);
 }
 
 #[test]

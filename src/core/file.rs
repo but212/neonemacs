@@ -348,9 +348,7 @@ mod tests {
         const ALPHA: [u8; 4] = [b'\r', b'\n', b'a', 0xFF];
         for len in 0..=7u32 {
             for n in 0..4usize.pow(len) {
-                let raw: Vec<u8> = (0..len)
-                    .map(|i| ALPHA[(n / 4usize.pow(i)) % 4])
-                    .collect();
+                let raw: Vec<u8> = (0..len).map(|i| ALPHA[(n / 4usize.pow(i)) % 4]).collect();
                 let lf = memchr_iter(b'\n', &raw).count();
                 let crlf = raw
                     .windows(2)

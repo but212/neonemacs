@@ -2,7 +2,7 @@
 
 use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::core::effect::{self, Effect, Effects, ReadTarget};
+use crate::core::effect::{self, Effect, Effects, ReadTarget, StatTarget};
 use crate::core::file::{Backing, DiskState, loaded_from};
 use crate::core::undo::Edit;
 use std::path::{Path, PathBuf};
@@ -50,7 +50,7 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
         None => (ed.set_message("No file is visiting this buffer"), fx),
         Some(path) => {
             fx.push(Effect::StatDisk {
-                id,
+                target: StatTarget::Save(id),
                 path: path.to_path_buf(),
             });
             (ed, fx)
@@ -58,12 +58,39 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
     }
 }
 
-/// Applies the disk state the shell found for `id`. A change since the read asks first (I-04).
+/// Applies the disk state the shell found for `path` (I-04).
+/// - A save asks when the state differs from the one recorded at the read. A file created
+///   after the buffer opened a missing path counts as a change.
+/// - A `write-file` to another path asks when a file exists there.
+///
 /// A buffer without a file has no disk state to change, so its write is a no-op in `write_buffer`.
 #[must_use]
-pub fn disk_checked(ed: Editor, id: BufferId, state: DiskState, fx: Effects) -> (Editor, Effects) {
-    let disk = ed.buffer_by_id(id).backing().disk();
-    if matches!(disk, DiskState::Known { .. }) && disk != state {
+pub fn disk_checked(
+    ed: Editor,
+    target: StatTarget,
+    path: &Path,
+    state: DiskState,
+    fx: Effects,
+) -> (Editor, Effects) {
+    let id = target.id();
+    let file = ed.resolve_path(path);
+    let own = ed.buffer_by_id(id).file_path() == Some(file.as_path());
+    if matches!(target, StatTarget::SaveAs(_)) && !own {
+        if matches!(state, DiskState::Known { .. }) {
+            let message = format!("File {} exists; overwrite? (y or n)", path.display());
+            let ed = ed.confirm(
+                Confirm::OverwriteFile {
+                    id,
+                    path: path.to_path_buf(),
+                },
+                message,
+            );
+            return (ed, fx);
+        }
+        let fx = write_to(&ed, id, path.to_path_buf(), fx);
+        return (ed, fx);
+    }
+    if ed.buffer_by_id(id).backing().disk() != state {
         let ed = ed.confirm(
             Confirm::SaveExternal(id),
             "File changed on disk since it was read; overwrite? (y or n)",
@@ -81,6 +108,10 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
     match question {
         Confirm::SaveExternal(id) => {
             let fx = write_buffer(&ed, id, fx);
+            (ed, fx)
+        }
+        Confirm::OverwriteFile { id, path } => {
+            let fx = write_to(&ed, id, path, fx);
             (ed, fx)
         }
         Confirm::QuitUnsaved => {
@@ -176,7 +207,7 @@ pub(crate) fn find_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effect
 }
 
 /// Writes the current buffer to a new file name. `written` makes that its file on success (§8).
-pub(crate) fn write_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effects) {
+pub(crate) fn write_file(ed: Editor, input: &str, mut fx: Effects) -> (Editor, Effects) {
     if input.is_empty() {
         return (ed, fx);
     }
@@ -195,7 +226,10 @@ pub(crate) fn write_file(ed: Editor, input: &str, fx: Effects) -> (Editor, Effec
         );
         return (ed.set_message(message), fx);
     }
-    let fx = write_to(&ed, id, path.as_path().to_path_buf(), fx);
+    fx.push(Effect::StatDisk {
+        target: StatTarget::SaveAs(id),
+        path: path.as_path().to_path_buf(),
+    });
     (ed, fx)
 }
 
@@ -274,6 +308,11 @@ pub fn file_read(
         }
         (ReadTarget::Open { .. }, Err(e)) => {
             let ed = ed.set_message(format!("Cannot open {}: {e}", path.display()));
+            (ed, fx)
+        }
+        // A deleted file is not an empty one: keep the buffer and its WAL.
+        (ReadTarget::Revert(_), Ok(effect::Read::Missing)) => {
+            let ed = ed.set_message(format!("Revert failed: {} does not exist", path.display()));
             (ed, fx)
         }
         (ReadTarget::Revert(id), Ok(read)) => match loaded_from(&file, read, max_size) {
@@ -656,6 +695,10 @@ mod tests {
         let id = ed.window().buffer;
         let before = ed.buffer().backing().clone();
         let (ed, fx) = write_file(ed, "missing/b.txt", Vec::new());
+        let [Effect::StatDisk { target, path }] = fx.as_slice() else {
+            panic!("expected StatDisk, got {fx:?}");
+        };
+        let (ed, fx) = disk_checked(ed, *target, path, DiskState::Unknown, Vec::new());
         // Only the write is requested. The old WAL goes only after the write succeeds (I-36).
         assert!(matches!(fx.as_slice(), [Effect::WriteFile { .. }]));
 
@@ -676,7 +719,11 @@ mod tests {
     fn write_file_success_moves_backing_then_removes_old_wal() {
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let id = ed.window().buffer;
-        let (_, fx) = write_file(ed.clone(), "b.txt", Vec::new());
+        let (stat_ed, fx) = write_file(ed.clone(), "b.txt", Vec::new());
+        let [Effect::StatDisk { target, path }] = fx.as_slice() else {
+            panic!("expected StatDisk, got {fx:?}");
+        };
+        let (_, fx) = disk_checked(stat_ed, *target, path, DiskState::Unknown, Vec::new());
         assert!(
             matches!(fx.as_slice(), [Effect::WriteFile { path, .. }] if path == Path::new("b.txt"))
         );
@@ -699,5 +746,150 @@ mod tests {
         assert_eq!(ed.buffer().name(), "b.txt");
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "Wrote b.txt");
+    }
+
+    fn known(size: u64) -> DiskState {
+        DiskState::Known {
+            mtime: std::time::UNIX_EPOCH,
+            size,
+        }
+    }
+
+    /// The `StatDisk` that `write_file` requests for `input`.
+    fn stat_for_write(ed: Editor, input: &str) -> (Editor, StatTarget, PathBuf) {
+        let (ed, fx) = write_file(ed, input, Vec::new());
+        let [Effect::StatDisk { target, path }] = fx.as_slice() else {
+            panic!("expected StatDisk, got {fx:?}");
+        };
+        (ed.clone(), *target, path.clone())
+    }
+
+    #[test]
+    fn write_file_to_existing_unvisited_file_asks() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let id = ed.window().buffer;
+        let (ed, target, path) = stat_for_write(ed, "other.txt");
+        assert_eq!(target, StatTarget::SaveAs(id));
+
+        let (ed, fx) = disk_checked(ed, target, &path, known(9), Vec::new());
+        assert_eq!(fx, [] as [Effect; 0]);
+        assert_eq!(
+            ed.mode(),
+            &crate::core::mode::Mode::Confirm(Confirm::OverwriteFile {
+                id,
+                path: PathBuf::from("other.txt")
+            })
+        );
+        assert_eq!(ed.message(), "File other.txt exists; overwrite? (y or n)");
+    }
+
+    #[test]
+    fn write_file_to_missing_path_writes() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let (ed, target, path) = stat_for_write(ed, "other.txt");
+        let (_, fx) = disk_checked(ed, target, &path, DiskState::Unknown, Vec::new());
+        assert!(
+            matches!(fx.as_slice(), [Effect::WriteFile { path, .. }] if path == Path::new("other.txt"))
+        );
+    }
+
+    #[test]
+    fn write_file_to_own_path_uses_save_check() {
+        // The buffer's file is f.txt with recorded state Known(3).
+        let ed = file_buffer(editor(), b"abc", Eol::Lf).with_current_buffer(|b| {
+            b.set_backing(Backing::file(
+                FilePath::resolve(Path::new(""), Path::new("f.txt")),
+                known(3),
+            ))
+        });
+        let (ed, target, path) = stat_for_write(ed, "f.txt");
+
+        // Unchanged on disk: written without asking.
+        let (same, fx) = disk_checked(ed.clone(), target, &path, known(3), Vec::new());
+        assert!(matches!(fx.as_slice(), [Effect::WriteFile { .. }]));
+        assert!(matches!(
+            same.mode(),
+            crate::core::mode::Mode::Normal { .. }
+        ));
+
+        // Changed on disk: the external-change question, not the overwrite one.
+        let (changed, fx) = disk_checked(ed, target, &path, known(4), Vec::new());
+        assert_eq!(fx, [] as [Effect; 0]);
+        assert!(matches!(
+            changed.mode(),
+            crate::core::mode::Mode::Confirm(Confirm::SaveExternal(_))
+        ));
+    }
+
+    #[test]
+    fn overwrite_confirmation_yes_writes_to_the_asked_path() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let id = ed.window().buffer;
+        let question = Confirm::OverwriteFile {
+            id,
+            path: PathBuf::from("other.txt"),
+        };
+        let (ed, fx) = confirmed(ed, question, Vec::new());
+        assert_eq!(
+            fx,
+            vec![Effect::WriteFile {
+                id,
+                path: PathBuf::from("other.txt"),
+                bytes: b"abc".to_vec()
+            }]
+        );
+        // Only `written` moves the buffer (I-36).
+        assert_eq!(ed.buffer().name(), "f.txt");
+    }
+
+    #[test]
+    fn save_of_missing_opened_file_asks_when_created_externally() {
+        // Opened as missing (Unknown); the file exists by the time of the save.
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let id = ed.window().buffer;
+        let (ed, fx) = disk_checked(
+            ed,
+            StatTarget::Save(id),
+            Path::new("f.txt"),
+            known(5),
+            Vec::new(),
+        );
+        assert_eq!(fx, [] as [Effect; 0]);
+        assert!(matches!(
+            ed.mode(),
+            crate::core::mode::Mode::Confirm(Confirm::SaveExternal(_))
+        ));
+    }
+
+    #[test]
+    fn save_of_new_file_still_writes() {
+        let ed = file_buffer(editor(), b"abc", Eol::Lf);
+        let id = ed.window().buffer;
+        let (_, fx) = disk_checked(
+            ed,
+            StatTarget::Save(id),
+            Path::new("f.txt"),
+            DiskState::Unknown,
+            Vec::new(),
+        );
+        assert!(matches!(fx.as_slice(), [Effect::WriteFile { .. }]));
+    }
+
+    #[test]
+    fn revert_of_deleted_file_keeps_buffer_and_wal() {
+        let ed =
+            file_buffer(editor(), b"abc", Eol::Lf).with_current_buffer(|b| b.set_modified(true));
+        let id = ed.window().buffer;
+        let (ed, fx) = file_read(
+            ed,
+            ReadTarget::Revert(id),
+            PathBuf::from("f.txt"),
+            Ok(Read::Missing),
+            Vec::new(),
+        );
+        assert_eq!(ed.buffer().text().to_bytes(), b"abc");
+        assert!(ed.buffer().modified());
+        assert_eq!(ed.message(), "Revert failed: f.txt does not exist");
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 }

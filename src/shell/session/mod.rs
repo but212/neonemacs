@@ -137,26 +137,42 @@ impl ShellSession {
             && now.saturating_duration_since(self.last_edit_time) >= Duration::from_secs(1)
         {
             let mut flushed_ids = Vec::new();
+            let mut failures = Vec::new();
             for buf in self.ed.buffers() {
                 if buf.is_wal_dirty()
                     && let Some(path) = buf.file_path()
-                    && wal::write_wal(
+                {
+                    match wal::write_wal(
                         path,
                         buf.backing().disk(),
                         buf.eol(),
                         &buf.text().to_bytes(),
-                    )
-                    .is_ok()
-                {
-                    flushed_ids.push(buf.id());
+                    ) {
+                        Ok(()) => flushed_ids.push(buf.id()),
+                        Err(e) => failures.push(format!("{}: {e}", path.display())),
+                    }
                 }
             }
             let mut ed = std::mem::take(&mut self.ed);
             for id in flushed_ids {
                 ed = ed.clear_wal_dirty(id);
             }
+            // A buffer whose write failed stays dirty, so the flush is tried again after another second.
+            if let Some(first) = failures.first() {
+                let more = failures.len() - 1;
+                let suffix = if more > 0 {
+                    format!(" (+{more} more)")
+                } else {
+                    String::new()
+                };
+                // A pending question must stay visible (I-04).
+                if matches!(ed.mode(), Mode::Normal { .. }) {
+                    ed = ed.set_message(format!("WAL write failed: {first}{suffix}"));
+                }
+                self.last_edit_time = now;
+            }
             self.ed = ed;
-            self.needs_wal_flush = false;
+            self.needs_wal_flush = self.has_wal_dirty_file_buffer();
         }
     }
 

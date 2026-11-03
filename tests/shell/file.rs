@@ -4,7 +4,7 @@
 use neonemacs::core::commands::{confirmed, request_open};
 use neonemacs::core::config::Config;
 use neonemacs::core::editor::{Confirm, Editor, Mode, Prefix, Window};
-use neonemacs::core::effect::{Effect, Event};
+use neonemacs::core::effect::{Effect, Event, StatTarget};
 use neonemacs::core::file::{Backing, FilePath};
 use neonemacs::core::keymap::parse_keys;
 use neonemacs::core::step;
@@ -168,6 +168,52 @@ fn file_commands_find_goto_revert_write() {
 }
 
 #[test]
+fn write_file_over_existing_file_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    let other = dir.path().join("other.txt");
+    fs::write(&path, b"abc").unwrap();
+    fs::write(&other, b"precious").unwrap();
+    let mut ed = visit(editor(), &path);
+
+    ed = keys(ed, "M-x");
+    ed = typ(ed, "write-file");
+    ed = keys(ed, "RET");
+    ed = typ(ed, &other.display().to_string());
+    ed = keys(ed, "RET");
+    assert!(matches!(
+        ed.mode(),
+        Mode::Confirm(Confirm::OverwriteFile { .. })
+    ));
+    assert_eq!(fs::read(&other).unwrap(), b"precious");
+
+    ed = keys(ed, "n");
+    assert_eq!(fs::read(&other).unwrap(), b"precious");
+    assert_eq!(ed.buffer().name(), "f.txt");
+
+    ed = keys(ed, "M-x");
+    ed = typ(ed, "write-file");
+    ed = keys(ed, "RET");
+    ed = typ(ed, &other.display().to_string());
+    ed = keys(ed, "RET y");
+    assert_eq!(fs::read(&other).unwrap(), b"abc");
+    assert_eq!(ed.buffer().name(), "other.txt");
+}
+
+#[test]
+fn save_detects_file_created_after_opening_missing_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.txt");
+    let ed = visit(editor(), &path);
+    let mut ed = typ(ed, "mine");
+
+    fs::write(&path, b"theirs").unwrap();
+    ed = keys(ed, "C-x C-s");
+    assert!(matches!(ed.mode(), Mode::Confirm(Confirm::SaveExternal(_))));
+    assert_eq!(fs::read(&path).unwrap(), b"theirs");
+}
+
+#[test]
 fn save_requests_disk_stat_first() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
@@ -185,7 +231,7 @@ fn save_requests_disk_stat_first() {
     assert_eq!(
         fx,
         vec![Effect::StatDisk {
-            id,
+            target: StatTarget::Save(id),
             path: path.clone()
         }]
     );

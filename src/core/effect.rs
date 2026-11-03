@@ -13,7 +13,7 @@ pub type Effects = Vec<Effect>;
 pub enum Effect {
     /// Reads the disk state of `path` (I-04).
     StatDisk {
-        id: BufferId,
+        target: StatTarget,
         path: PathBuf,
     },
     /// Writes `bytes` to `path` atomically. Only after I-04 or a confirmation (I-13).
@@ -49,6 +49,24 @@ impl Effect {
     }
 }
 
+/// Why a disk state was read (I-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatTarget {
+    /// Save buffer `id` to its own file. A change since the read asks first.
+    Save(BufferId),
+    /// Write buffer `id` to the stat path (`write-file`). An existing file asks first.
+    SaveAs(BufferId),
+}
+
+impl StatTarget {
+    #[must_use]
+    pub const fn id(self) -> BufferId {
+        match self {
+            Self::Save(id) | Self::SaveAs(id) => id,
+        }
+    }
+}
+
 /// Why a file was read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadTarget {
@@ -80,7 +98,8 @@ pub enum Event {
     /// Run a command by name. The Lua `run` function sends this.
     Run(String),
     Disk {
-        id: BufferId,
+        target: StatTarget,
+        path: PathBuf,
         state: DiskState,
     },
     Written {

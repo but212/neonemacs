@@ -605,9 +605,17 @@ fn isearch_backward_extends_pattern_at_position_zero_and_current_match() {
     ed2 = typ(ed2, "e");
     assert_eq!(point(&ed2), 5);
     ed2 = typ(ed2, "s");
-    assert_eq!(point(&ed2), 5, "Extending 'te' to 'tes' jumped backwards unexpectedly");
+    assert_eq!(
+        point(&ed2),
+        5,
+        "Extending 'te' to 'tes' jumped backwards unexpectedly"
+    );
     ed2 = typ(ed2, "t");
-    assert_eq!(point(&ed2), 5, "Extending 'tes' to 'test' jumped backwards unexpectedly");
+    assert_eq!(
+        point(&ed2),
+        5,
+        "Extending 'tes' to 'test' jumped backwards unexpectedly"
+    );
 }
 
 #[test]
@@ -633,22 +641,46 @@ fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
 
     // Press C-r to navigate to previous occurrence (11..15)
     ed = keys(ed, "C-r");
-    assert_eq!(point(&ed), 11, "Repeat C-r must move to previous match at offset 11");
+    assert_eq!(
+        point(&ed),
+        11,
+        "Repeat C-r must move to previous match at offset 11"
+    );
 
     // Press C-r to navigate to first occurrence (0..4)
     ed = keys(ed, "C-r");
-    assert_eq!(point(&ed), 0, "Repeat C-r must move to first match at offset 0");
+    assert_eq!(
+        point(&ed),
+        0,
+        "Repeat C-r must move to first match at offset 0"
+    );
 
     // Press C-r at buffer start -> wraps around to last match at 21
     ed = keys(ed, "C-r");
-    assert_eq!(point(&ed), 21, "C-r at buffer boundary must wrap around to last match at offset 21");
-    assert!(ed.message().contains("Wrapped"), "Message must indicate wrapped search: {}", ed.message());
+    assert_eq!(
+        point(&ed),
+        21,
+        "C-r at buffer boundary must wrap around to last match at offset 21"
+    );
+    assert!(
+        ed.message().contains("Wrapped"),
+        "Message must indicate wrapped search: {}",
+        ed.message()
+    );
 
     // Reverse direction with C-s -> finds next match forward (wrap from 21 back to 0)
     ed = keys(ed, "C-s");
-    assert_eq!(point(&ed), 25, "C-s from 21 should re-anchor to end of current match (25)");
+    assert_eq!(
+        point(&ed),
+        25,
+        "C-s from 21 should re-anchor to end of current match (25)"
+    );
     ed = keys(ed, "C-s");
-    assert_eq!(point(&ed), 4, "C-s from 25 must wrap forward to end of first match (4)");
+    assert_eq!(
+        point(&ed),
+        4,
+        "C-s from 25 must wrap forward to end of first match (4)"
+    );
 }
 
 #[test]
@@ -666,4 +698,3 @@ fn find_forward_out_of_bounds_from_does_not_panic() {
     let res_bkwd = neonemacs::core::search::find_backward(&t, &pat, 100_000, false);
     assert_eq!(res_bkwd, Some((0, 1)));
 }
-
