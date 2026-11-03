@@ -23,14 +23,13 @@ fn open_and_recover_single(
     arg: &FileArg,
 ) -> (Editor, Option<String>) {
     let path = ed.resolve_path(&arg.path).as_path().to_path_buf();
-    let has_wal = wal::has_wal(&path);
     // A path already open was recovered by an earlier argument, so it is not recovered again.
     let already_open = ed.buffers().find_by_path(&path).is_some();
     let fx = request_open(&ed, &path, arg.line, false, Vec::new());
     let mut ed = perform_all(ed, lua, fx);
 
     // A refused open (over `max-file-size`) leaves no buffer, so there is nothing to recover into.
-    if has_wal && !already_open && ed.buffers().find_by_path(&path).is_some() {
+    if !already_open && ed.buffers().find_by_path(&path).is_some() {
         let cur_disk = buffer_disk_state(&ed, &path);
         if let Ok(recovered) = wal::read_wal(&path, cur_disk) {
             ed = ed.restore_buffer_content(&path, &recovered.bytes, recovered.eol, arg.line);
