@@ -132,15 +132,8 @@ fn wal_recovery_clears_stale_undo_and_applies_line_offset() {
 
     // Stale undo history from before the crash: the last edit inserted "c" at 2
     let ed = ed.with_buffer(id, |b| {
-        b.apply_edit(
-            Edit::Insert {
-                pos: 2,
-                bytes: b"c".to_vec(),
-            },
-            |a| a,
-            1 << 20,
-        )
-        .0
+        b.apply_edit(Edit::insert(2, b"c".as_slice()), |a| a, 1 << 20)
+            .0
     });
 
     // Recover from WAL: "PRE_LINE\nline 1\nline 2\nline 3\n"

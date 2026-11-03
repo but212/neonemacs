@@ -21,4 +21,9 @@ tempfile = "3"
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
+opt-level = "s"
+incremental = true
+panic = "abort"
+debug = "full"
+split-debuginfo = "packed"
+strip = "symbols"

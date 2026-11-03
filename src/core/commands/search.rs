@@ -261,18 +261,10 @@ fn replace_match(
         MatchKind::Literal => q.replacement.as_bytes().to_vec(),
     };
     let after = start + replacement.len();
-    // `apply` refuses only on `view_only`, which `start_query_replace` already rejected, so a
-    // Delete is never left without its Insert. The `None` arms are defensive.
-    let (ed, applied) = ed.apply(&Edit::Delete {
+    let (ed, applied) = ed.apply(&Edit::Replace {
         pos: start,
-        bytes: matched,
-    });
-    if applied.is_none() {
-        return (ed, None);
-    }
-    let (ed, applied) = ed.apply(&Edit::Insert {
-        pos: start,
-        bytes: replacement,
+        removed: matched,
+        inserted: replacement,
     });
     if applied.is_none() {
         return (ed, None);

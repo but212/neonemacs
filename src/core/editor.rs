@@ -291,12 +291,17 @@ impl Editor {
 
     /// Snaps `point` and resets `top` for every window displaying buffer `id` (I-01).
     #[must_use]
-    pub fn snap_windows_for_buffer(mut self, id: BufferId) -> Self {
+    pub fn snap_windows_for_buffer(self, id: BufferId) -> Self {
+        self.reset_windows_for_buffer(id, |w| w.point)
+    }
+
+    /// Moves every window displaying buffer `id` to `point(window)`, snapped, with `top` reset.
+    fn reset_windows_for_buffer(mut self, id: BufferId, point: impl Fn(&Window) -> usize) -> Self {
         let text = self.documents.buffers.get_by_id(id).text();
         self.documents.windows = self.documents.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
-                    point: snap(text, w.point),
+                    point: snap(text, point(&w)),
                     top: 0,
                     ..w
                 }
@@ -322,25 +327,11 @@ impl Editor {
             .restore_content(path, bytes, eol, line);
         self.documents.buffers = buffers;
         match id {
-            Some(id) => {
-                if line.is_some() {
-                    let target_point = self.documents.buffers.get_by_id(id).saved_point();
-                    self.documents.windows = self.documents.windows.map_windows(&|w| {
-                        if w.buffer == id {
-                            Window {
-                                point: target_point,
-                                top: 0,
-                                ..w
-                            }
-                        } else {
-                            w
-                        }
-                    });
-                    self
-                } else {
-                    self.snap_windows_for_buffer(id)
-                }
+            Some(id) if line.is_some() => {
+                let target = self.documents.buffers.get_by_id(id).saved_point();
+                self.reset_windows_for_buffer(id, |_| target)
             }
+            Some(id) => self.snap_windows_for_buffer(id),
             None => self,
         }
     }
@@ -356,7 +347,6 @@ impl Editor {
     /// Moves point to `pos`, snapped to a unit boundary (I-01).
     #[must_use]
     pub fn move_point(self, pos: usize) -> Self {
-        let pos = snap(self.buffer().text(), pos);
         self.with_window(|w| Window { point: pos, ..w })
     }
 
@@ -409,7 +399,7 @@ mod tests {
     fn with_buffer_updates_only_target() {
         let (ed, b2) =
             editor_with("first").add_buffer("b2", Text::from_bytes(b"second"), Backing::None);
-        let ed = ed.with_buffer(b2, |b| b.set_modified(true));
+        let ed = ed.with_buffer(b2, |b| b.mark_modified());
         assert!(!ed.buffer_by_id(BufferId(0)).modified());
         assert!(ed.buffer_by_id(b2).modified());
     }

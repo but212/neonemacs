@@ -107,7 +107,7 @@
 | **I-28** | [Pruned] Line counting semantics (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
 | **I-29** | [Pruned] UTF-8 inspection slicing (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
 | **I-30** | [Pruned] Cursor inspection coordinates (superseded by ADR 0006 Pareto Spec Normalization) | Pruned | ADR 0006, ADR 0007 |
-| **I-31** | Text and EOL change only through `Editor::apply(Edit)`, which updates undo, `modified`, and `wal_dirty`, or through a whole-text replacement that resets undo (I-34) | Runtime (`Editor::apply`, `Buffer::with_text`) | ADR 0009, ADR 0010 |
+| **I-31** | Text and EOL change only through `Editor::apply(Edit)`, which updates undo, `modified`, and `wal_dirty`, or through a whole-text replacement that resets undo (I-34) | Runtime (`Editor::apply`, `Buffer::with_text`, `Buffer::mark_clean`) | ADR 0009, ADR 0010 |
 | **I-32** | `Editor` groups (Documents, Interaction, Settings) are private to `editor`; a group never writes another group's fields, and cross-group operations are composed in `Editor` methods | Module privacy (`src/core/editor/`) | ADR 0002 |
 | **I-33** | `edit_seq` is owned by Documents and changed only by `Editor::apply` | Runtime (`Editor::apply`) | ADR 0002 |
 | **I-34** | Replacing a buffer's text outside `Editor::apply` resets its undo log, so undo describes the current text | Runtime (`Buffer::with_text`) | ADR 0010 |

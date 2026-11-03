@@ -395,7 +395,7 @@ mod tests {
     fn frame_status_line_shows_name_state_and_percent() {
         let ed = Editor::new(Config::default()).with_current_buffer(|b| {
             b.with_text(Text::from_bytes(b"abc"))
-                .set_modified(true)
+                .mark_modified()
                 .set_view_only(true)
                 .set_name("f.txt")
         });

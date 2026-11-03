@@ -64,7 +64,7 @@ fn recovery_from_wal_restores_unsaved_content() {
         let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
         ed = ed.with_current_buffer(|buf| {
             buf.with_text(neonemacs::core::text::Text::from_bytes(&wal_bytes))
-                .set_modified(true)
+                .mark_modified()
         });
     }
 
@@ -402,7 +402,7 @@ fn failed_write_file_keeps_old_wal() {
     let ed = perform_all(ed, None, fx);
     let ed = ed.with_current_buffer(|buf| {
         buf.with_text(neonemacs::core::text::Text::from_bytes(b"unsaved edits"))
-            .set_modified(true)
+            .mark_modified()
     });
 
     // The parent directory does not exist, so the write fails.
@@ -441,7 +441,7 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
     // Buffer has edits matching WAL
     ed = ed.with_current_buffer(|buf| {
         buf.with_text(neonemacs::core::text::Text::from_bytes(b"modified content"))
-            .set_modified(true)
+            .mark_modified()
     });
 
     // Execute write-file to "new.txt"
