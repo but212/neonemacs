@@ -5,7 +5,35 @@ use super::args::FileArg;
 use crate::core::buffer::Buffer;
 use crate::core::commands::{request_open, switch_to};
 use crate::core::editor::Editor;
-use crate::shell::perform_all;
+use crate::core::effect::WalProbe;
+use crate::core::file::DiskState;
+use crate::shell::{perform_all, wal};
+use std::path::Path;
+
+/// Puts the unsaved text left in the scratch `slot` by an earlier run into the scratch buffer.
+/// An unusable slot is moved aside and reported (I-44). The notice follows an earlier message.
+pub fn restore_scratch(ed: Editor, slot: Option<&Path>) -> Editor {
+    let Some(slot) = slot else {
+        return ed;
+    };
+    let (ed, note) = match wal::probe_file(slot, DiskState::Unknown) {
+        WalProbe::Absent => return ed,
+        WalProbe::Valid(r) => (
+            ed.restore_scratch(&r.bytes, r.eol),
+            "[Recovered *scratch* from WAL]".to_owned(),
+        ),
+        WalProbe::Stale(Ok(kept)) => {
+            let name = kept.file_name().unwrap_or_default().to_string_lossy();
+            (ed, format!("Stale WAL kept as {name}"))
+        }
+        WalProbe::Stale(Err(e)) => (ed, format!("Stale WAL for *scratch* not kept: {e}")),
+    };
+    let message = match ed.message() {
+        "" => note,
+        earlier => format!("{earlier}; {note}"),
+    };
+    ed.set_message(message)
+}
 
 /// Opens one file in the background. Its notice (recovered, stale WAL, refused, unreadable) is
 /// left in the echo area.
@@ -243,6 +271,54 @@ mod tests {
         assert_eq!(buf.text().to_bytes(), b"wal draft");
         assert!(buf.modified());
         assert_eq!(ed.message(), "[Recovered single.txt from WAL]");
+    }
+
+    #[test]
+    fn scratch_slot_restores_into_the_scratch_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = dir.path().join("scratch.wal");
+        wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
+
+        let ed = restore_scratch(Editor::new(Config::default()), Some(&slot));
+        assert_eq!(ed.buffer().name(), "*scratch*");
+        assert_eq!(ed.buffer().text().to_bytes(), b"draft");
+        assert!(ed.buffer().modified());
+        assert!(!ed.buffer().is_wal_dirty());
+        assert_eq!(ed.message(), "[Recovered *scratch* from WAL]");
+    }
+
+    #[test]
+    fn scratch_slot_notice_follows_an_earlier_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = dir.path().join("scratch.wal");
+        wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
+        let ed = Editor::new(Config::default()).set_message("init.lua: boom");
+        let ed = restore_scratch(ed, Some(&slot));
+        assert_eq!(
+            ed.message(),
+            "init.lua: boom; [Recovered *scratch* from WAL]"
+        );
+    }
+
+    #[test]
+    fn no_slot_or_an_empty_one_restores_nothing() {
+        let ed = restore_scratch(Editor::new(Config::default()), None);
+        assert!(!ed.buffer().modified());
+        let dir = tempfile::tempdir().unwrap();
+        let ed = restore_scratch(ed, Some(&dir.path().join("missing.wal")));
+        assert!(!ed.buffer().modified());
+        assert_eq!(ed.message(), "");
+    }
+
+    #[test]
+    fn an_unusable_scratch_slot_is_kept_aside_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = dir.path().join("scratch.wal");
+        fs::write(&slot, b"GARBAGE").unwrap();
+        let ed = restore_scratch(Editor::new(Config::default()), Some(&slot));
+        assert!(!ed.buffer().modified());
+        assert_eq!(ed.message(), "Stale WAL kept as scratch.wal.stale");
+        assert!(dir.path().join("scratch.wal.stale").is_file());
     }
 
     #[test]

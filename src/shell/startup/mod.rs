@@ -6,7 +6,7 @@ mod open;
 
 pub use args::{FileArg, Invocation, USAGE, parse_args};
 pub use init::load_init;
-pub use open::open_files;
+pub use open::{open_files, restore_scratch};
 
 #[cfg(test)]
 fn files_of(args: &[String]) -> Vec<FileArg> {

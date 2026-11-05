@@ -342,6 +342,27 @@ impl Editor {
         }
     }
 
+    /// Puts the text of a recovered scratch WAL into the scratch buffer, as unsaved text (I-23).
+    #[must_use]
+    pub fn restore_scratch(self, bytes: &[u8], eol: Eol) -> Self {
+        let Some(id) = self
+            .documents
+            .buffers
+            .iter()
+            .find(|b| b.backing().is_scratch())
+            .map(Buffer::id)
+        else {
+            return self;
+        };
+        self.with_buffer(id, |b| {
+            b.with_text(Text::from_bytes(bytes))
+                .set_eol(eol)
+                .mark_modified()
+                .clear_wal_dirty()
+        })
+        .snap_windows_for_buffer(id)
+    }
+
     /// Adds a buffer and returns its id. Ids are never reused.
     #[must_use]
     pub fn add_buffer(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {

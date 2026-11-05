@@ -9,6 +9,9 @@ use crate::core::text::Text;
 use crate::core::undo::{Edit, UndoLog};
 use crate::core::window::snap_point as snap;
 
+/// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
+pub const SCRATCH_NAME: &str = "*scratch*";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferId(pub u32);
 
@@ -274,7 +277,12 @@ impl Default for BufferPool {
 impl BufferPool {
     #[must_use]
     pub fn new() -> Self {
-        let scratch = Buffer::new(BufferId(0), "*scratch*", Text::default(), Backing::None);
+        let scratch = Buffer::new(
+            BufferId(0),
+            SCRATCH_NAME,
+            Text::default(),
+            Backing::scratch(),
+        );
         Self {
             buffers: vec![scratch],
             next_id: 1,
@@ -386,9 +394,9 @@ impl BufferPool {
             self.next_id += 1;
             self.buffers.push(Buffer::new(
                 scratch_id,
-                "*scratch*",
+                SCRATCH_NAME,
                 Text::default(),
-                Backing::None,
+                Backing::scratch(),
             ));
         }
         let replacement = self
@@ -414,6 +422,16 @@ impl<'a> IntoIterator for &'a BufferPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pool_scratch_is_scratch_backed_before_and_after_a_kill() {
+        // I-42
+        let pool = BufferPool::new();
+        assert!(pool.get(0).unwrap().backing().is_scratch());
+        let (pool, replacement) = pool.kill(BufferId(0));
+        assert_eq!(pool.get_by_id(replacement).name(), SCRATCH_NAME);
+        assert!(pool.get_by_id(replacement).backing().is_scratch());
+    }
 
     #[test]
     fn buffer_pool_starts_with_scratch() {

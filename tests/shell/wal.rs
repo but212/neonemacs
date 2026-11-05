@@ -186,6 +186,106 @@ fn find_file_keeps_an_unusable_wal_aside_and_says_so() {
     assert!(kept.ends_with(b"draft"));
 }
 
+fn press(session: &mut ShellSession, code: KeyCode, modifiers: KeyModifiers, at: Instant) {
+    session.handle_event_at(
+        &TermEvent::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }),
+        at,
+    );
+}
+
+fn scratch_session(slot: Option<std::path::PathBuf>) -> ShellSession {
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    ShellSession::new(ed, lua).with_scratch_wal(slot)
+}
+
+fn type_x(session: &mut ShellSession, at: Instant) {
+    press(session, KeyCode::Char('x'), KeyModifiers::NONE, at);
+}
+
+#[test]
+fn scratch_is_flushed_to_its_slot_after_one_idle_second() {
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("state").join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+
+    session.tick_at(t0 + Duration::from_millis(999));
+    assert!(!slot.exists());
+    session.tick_at(t0 + Duration::from_millis(1000));
+    assert!(matches!(
+        wal::probe_file(&slot, DiskState::Unknown),
+        neonemacs::core::effect::WalProbe::Valid(r) if r.bytes == b"x"
+    ));
+    assert!(!session.ed.buffer().is_wal_dirty());
+}
+
+#[test]
+fn scratch_without_a_slot_writes_nothing_and_stops_retrying() {
+    let mut session = scratch_session(None);
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    session.tick_at(t0 + Duration::from_secs(2));
+    assert!(!session.ed.buffer().is_wal_dirty());
+}
+
+#[test]
+fn slot_is_dropped_when_the_scratch_is_clean_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    session.tick_at(t0 + Duration::from_secs(1));
+    assert!(slot.exists());
+
+    // Undo back to the empty scratch: nothing is left to protect (I-43).
+    press(&mut session, KeyCode::Char('_'), KeyModifiers::CONTROL, t0);
+    assert!(!session.ed.buffer().modified());
+    assert!(!slot.exists());
+}
+
+#[test]
+fn slot_is_dropped_when_the_user_quits_and_discards() {
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    session.tick_at(t0 + Duration::from_secs(1));
+    assert!(slot.exists());
+
+    press(&mut session, KeyCode::Char('x'), KeyModifiers::CONTROL, t0);
+    press(&mut session, KeyCode::Char('c'), KeyModifiers::CONTROL, t0);
+    assert!(!session.is_quit(), "unsaved scratch asks first");
+    assert!(slot.exists(), "no discard yet");
+    press(&mut session, KeyCode::Char('y'), KeyModifiers::NONE, t0);
+    assert!(session.is_quit());
+    assert!(!slot.exists());
+}
+
+#[test]
+fn an_existing_slot_survives_until_the_scratch_is_clean() {
+    // A crash left the slot; the next run restores it and must not delete it while unsaved.
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("scratch.wal");
+    wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let ed = neonemacs::shell::startup::restore_scratch(ed, Some(&slot));
+    let mut session = ShellSession::new(ed, lua).with_scratch_wal(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    assert!(slot.exists());
+    assert_eq!(session.ed.buffer().text().to_bytes(), b"xdraft".to_vec());
+}
+
 #[test]
 fn typing_and_idle_wal_recording() {
     let dir = tempfile::tempdir().unwrap();
