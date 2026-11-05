@@ -135,7 +135,7 @@
 - **큰 파일**: `max-file-size`를 넘는 파일은 열지 않는다. `C-x C-f`는 `File too large: N bytes (max-file-size M)` 메시지만 띄우고 버퍼를 만들지 않는다. 다시 읽기는 버퍼와 WAL을 그대로 둔다. 잘린 앞부분만 열어 저장하는 경로는 없다.
 - **외부 변경**: 열 때 기록한 디스크 상태 `(mtime, size)`가 현재 디스크와 다르면 저장 전 덮어쓸지 묻는다. 본 편집기가 방금 저장한 결과이거나 이전 상태를 알 수 없는 새 파일은 묻지 않고 저장한다.
 - **종료 (`C-x C-c`)**: 미저장 변경 버퍼가 있으면 이름을 앞에서 3개까지(나머지는 `+N`) 보여 주며 `Modified: a, b, c +2; quit anyway? (y or n)`로 확인한다.
-- **예/아니오 질문 (I-46)**: `y`(`Y`, `ㅛ`)는 실행하고 `n`(`N`, `ㅜ`), `C-g`, `Esc`는 `Quit`으로 취소한다. 다른 키는 `Please answer y or n. <질문>`으로 질문을 반복하고 상태를 바꾸지 않는다. 프롬프트와 증분 검색도 `Esc`를 `C-g`처럼 취소로 받는다. Normal 모드의 `Esc`는 `M-` 접두다.
+- **예/아니오 질문 (I-46)**: `y`(`Y`, 기본 번들 별칭 `ㅛ`)는 실행하고 `n`(`N`, 기본 번들 별칭 `ㅜ`), `C-g`, `Esc`는 `Quit`으로 취소한다. 별칭은 12절 `answer_alias`로 바꾼다. 다른 키는 `Please answer y or n. <질문>`으로 질문을 반복하고 상태를 바꾸지 않는다. 프롬프트와 증분 검색도 `Esc`를 `C-g`처럼 취소로 받는다. Normal 모드의 `Esc`는 `M-` 접두다.
 - **파일 잠금 없음**: `.lock` 파일을 만들지 않으며 저장 직전 디스크 상태 비교만으로 충돌을 감지한다.
 
 ## 9. 검색과 치환
@@ -144,7 +144,7 @@
 - 정규식 검색/치환은 `isearch-forward-regexp`, `isearch-backward-regexp`, `query-replace-regexp`로 호출한다. 대소문자 구분은 `case-fold-search`(기본 `true`)를 따른다.
 - 정규식 문법: `.`, `[...]`, `[^...]`, `*`, `^`, `$`. 매칭은 한 줄 안에서만 수행하며, 빈 매치에서도 무한 루프 없이 전진한다.
 - `query-replace`는 치환 세션 전체가 한 번의 되돌리기 단위다. `C-g`(또는 `q`, `Esc`)로 중단하면 그때까지의 치환은 남는다. 보기 전용 버퍼에서는 시작하지 않고 `Buffer is read-only`를 띄운다.
-- 치환은 커서 위치부터 앞으로만 찾는다. 시작 메시지가 `Query replacing from point (y, n, !, q)`로 이를 밝힌다. 응답 키는 `y`/SPC, `n`/DEL, `!`, `q`/RET이며 대문자와 `ㅛ`·`ㅜ`·`ㅂ`도 받는다. 그 밖의 키는 `Answer y, n, !, or q`를 띄우고 세션을 유지한다 (I-46).
+- 치환은 커서 위치부터 앞으로만 찾는다. 시작 메시지가 `Query replacing from point (y, n, !, q)`로 이를 밝힌다. 응답 키는 `y`/SPC, `n`/DEL, `!`, `q`/RET이며 대문자와 기본 번들 별칭 `ㅛ`·`ㅜ`·`ㅂ`도 받는다. 그 밖의 키는 `Answer y, n, !, or q`를 띄우고 세션을 유지한다 (I-46).
 
 ## 10. 보기 전용
 
@@ -170,6 +170,7 @@
   - `command(name, function)`: 사용자 명령 등록 (내장 명령 재정의 불가)
   - `run(name)`: 내장 또는 Lua 명령 실행 (최대 재귀 깊이 50)
   - `get(name)` / `set(name, value)`: 설정 조회 및 변경 (`fill-column`, `tab-width`, `expand-tabs`, `case-fold-search`, `max-file-size`, `undo-limit`)
+  - `answer_alias(from, to)` / `answer_unalias(from)`: 질문 응답 별칭 등록 및 제거 (`from`은 한 글자, `to`는 `y`·`n`·`q`·`!` 중 하나, 위반 시 Lua 오류, 없는 별칭 제거는 무동작)
   - `message(text)`: 에코 영역 메시지 표시
   - `syntax.register(name, spec)`: 구문 강조 규칙 등록
     - `extensions`: 확장자 배열 (선택, `filenames`와 합산 최소 1개 필수)
@@ -189,7 +190,7 @@
     - `buffer.mark()` / `buffer.set_mark(pos)`: 마크 조회 및 설정(`nil`이면 해제)
     - `buffer.comment_prefix()`: 활성 버퍼 파일명에 매칭되는 한 줄 주석 기호 조회
 - **기본 번들 스크립트**:
-  - 구문 강조(`syntax.lua`: Rust, C/C++, Python, JavaScript/TypeScript, Lua, Go, Shell, Makefile, SQL, TOML, JSON, YAML, Markdown), 파레토 텍스트 편집 명령(`text.lua`), 확장 키맵(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x h`, `C-x u`, `M-y`, `M-q`, `M-d`, `M-DEL`, `M-;`, `C-r`, `M-%`, `M-g`, `M-<`, `M->`, `C-l`, `M-!`)을 바이너리에 내장한다.
+  - 구문 강조(`syntax.lua`: Rust, C/C++, Python, JavaScript/TypeScript, Lua, Go, Shell, Makefile, SQL, TOML, JSON, YAML, Markdown), 파레토 텍스트 편집 명령(`text.lua`), 확장 키맵(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x h`, `C-x u`, `M-y`, `M-q`, `M-d`, `M-DEL`, `M-;`, `C-r`, `M-%`, `M-g`, `M-<`, `M->`, `C-l`, `M-!`)과 질문 응답 별칭(`ㅛ`→`y`, `ㅜ`→`n`, `ㅂ`→`q`)을 바이너리에 내장한다.
   - 내장 스크립트는 `init.lua` 전에 실행되며, `init.lua`에서 재정의하거나 해제할 수 있다.
 - 다중 버퍼 임의 접근, 이벤트 훅, 직접 파일 I/O는 공개하지 않는다.
 
@@ -229,4 +230,4 @@
 - `C-/`는 많은 터미널에서 `C-_`로 전송되므로 두 키를 함께 바인딩한다.
 - 한글 IME 조합 표시는 터미널 구현에 따른다.
 - 같은 파일이나 같은 상태 디렉터리를 쓰는 편집기를 둘 이상 실행하면 WAL과 scratch 슬롯을 서로 덮어쓸 수 있다. 잠금이 없으므로 막지 않는다 (8절).
-- 표시와 질문의 `y`/`n` 한글 자모 인식은 두벌식 `ㅛ`·`ㅜ`·`ㅂ`뿐이다. 다른 입력 배열은 대응하지 않는다.
+- 질문 응답의 기본 별칭은 두벌식 `ㅛ`·`ㅜ`·`ㅂ`뿐이다. 다른 입력 배열은 `init.lua`에서 `answer_alias`로 추가한다. 별칭은 질문 응답에만 적용되고 일반 입력(self-insert)에는 적용되지 않는다 (I-48).

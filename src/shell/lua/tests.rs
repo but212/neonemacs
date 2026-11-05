@@ -384,6 +384,67 @@ fn bundled_keymap_loaded_by_bootstrap() {
 }
 
 #[test]
+fn bundled_keymap_aliases_the_two_set_jamo() {
+    use crate::core::keymap::AnswerKey;
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let a = ed.answer_aliases();
+    assert_eq!(a.get('ㅛ'), Some(AnswerKey::Yes));
+    assert_eq!(a.get('ㅜ'), Some(AnswerKey::No));
+    assert_eq!(a.get('ㅂ'), Some(AnswerKey::Quit));
+}
+
+#[test]
+fn bootstrapped_editor_answers_a_question_with_jamo() {
+    use crate::core::editor::{Confirm, Mode};
+    use crate::test_support::{press, text, typ};
+    let lua = new_state().unwrap();
+    let ed = typ(bootstrap(Editor::new(Config::default()), &lua), "x");
+    let id = ed.window().buffer;
+    let ed = ed.confirm(Confirm::KillModified(id), "Kill? (y or n)");
+    let ed = press(ed, Key::plain(Code::Char('ㅛ')));
+    assert_eq!(ed.mode(), &Mode::normal());
+    assert_eq!(text(&ed), "", "ㅛ confirms after bootstrap");
+}
+
+#[test]
+fn answer_alias_registers_replaces_and_unaliases() {
+    use crate::core::keymap::AnswerKey;
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let (ed, r) = script(
+        &lua,
+        ed,
+        r#"answer_alias("н", "y"); answer_alias("ㅛ", "!"); answer_unalias("ㅂ"); answer_unalias("z")"#,
+    );
+    r.unwrap();
+    let a = ed.answer_aliases();
+    assert_eq!(a.get('н'), Some(AnswerKey::Yes));
+    assert_eq!(a.get('ㅛ'), Some(AnswerKey::All), "re-alias replaces");
+    assert_eq!(a.get('ㅂ'), None, "default alias removed");
+    assert_eq!(a.get('ㅜ'), Some(AnswerKey::No), "others untouched");
+}
+
+#[test]
+fn answer_alias_rejects_bad_input_and_changes_nothing() {
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let before = ed.answer_aliases().clone();
+    for src in [
+        r#"answer_alias("ab", "y")"#,
+        r#"answer_alias("", "y")"#,
+        r#"answer_alias("н", "x")"#,
+        r#"answer_alias("н", "yy")"#,
+        r#"answer_unalias("ab")"#,
+        r#"answer_unalias("")"#,
+    ] {
+        let (next, r) = script(&lua, ed.clone(), src);
+        assert!(r.is_err(), "{src}");
+        assert_eq!(next.answer_aliases(), &before, "{src}");
+    }
+}
+
+#[test]
 fn bundled_keymap_commands_all_exist() {
     let lua = new_state().unwrap();
     let _ed = bootstrap(Editor::new(Config::default()), &lua);

@@ -4,7 +4,7 @@
 use crate::core::commands;
 use crate::core::editor::{Buffer, Editor, Mode, Prefix, Question};
 use crate::core::effect::{Effect, Effects};
-use crate::core::keymap::{Code, Key};
+use crate::core::keymap::{AnswerAliases, AnswerKey, Code, Key};
 
 /// Handles one key press: resolves prefixes, then runs a bound command or inserts text.
 #[must_use]
@@ -24,23 +24,28 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     }
 }
 
-/// The answer character a key means: case folds, and the Korean two-set jamo on the keys
-/// `y`, `n`, `q` count as those letters. Used only where a modal question is answered (I-46).
+/// The answer character a key means: an alias wins, else ASCII case folds. Used only where a
+/// modal question is answered, never for self-insert (I-46, I-48).
 #[must_use]
-pub fn answer_char(key: Key) -> Option<char> {
-    Some(match key.text()? {
-        'ㅛ' => 'y',
-        'ㅜ' => 'n',
-        'ㅂ' => 'q',
-        c => c.to_ascii_lowercase(),
-    })
+pub fn answer_char(aliases: &AnswerAliases, key: Key) -> Option<char> {
+    let c = key.text()?;
+    let folded = {
+        let mut lower = c.to_lowercase();
+        lower.next().filter(|_| lower.next().is_none())
+    };
+    Some(
+        aliases
+            .get(c)
+            .or_else(|| folded.and_then(|l| aliases.get(l)))
+            .map_or_else(|| c.to_ascii_lowercase(), AnswerKey::char),
+    )
 }
 
 /// Answers a yes-or-no question. `y` confirms; `n`, `C-g`, and `Esc` cancel. Any other key
 /// leaves the question open and repeats it (I-46).
 #[must_use]
 pub fn answer(mut ed: Editor, question: Question, key: Key, fx: Effects) -> (Editor, Effects) {
-    let choice = answer_char(key);
+    let choice = answer_char(ed.answer_aliases(), key);
     if choice == Some('y') {
         ed = ed.set_mode(Mode::normal());
         return commands::confirmed(ed, question.kind, fx);
@@ -139,19 +144,47 @@ mod tests {
         ed.confirm(Confirm::KillModified(id), "Kill? (y or n)")
     }
 
+    fn jamo() -> Editor {
+        asking().with_answer_aliases(|a| a.alias('ㅛ', AnswerKey::Yes).alias('ㅜ', AnswerKey::No))
+    }
+
     #[test]
-    fn answer_folds_case_and_korean_jamo() {
-        for c in ['y', 'Y', 'ㅛ'] {
+    fn answer_folds_case() {
+        for c in ['y', 'Y'] {
             let ed = press(asking(), Key::plain(Code::Char(c)));
             assert_eq!(ed.mode(), &Mode::normal(), "{c}");
             assert_eq!(text(&ed), "", "{c} confirms: the modified buffer is killed");
         }
-        for c in ['n', 'N', 'ㅜ'] {
+        for c in ['n', 'N'] {
             let ed = press(asking(), Key::plain(Code::Char(c)));
             assert_eq!(ed.mode(), &Mode::normal(), "{c}");
             assert_eq!(text(&ed), "x", "{c} cancels");
             assert_eq!(ed.message(), "Quit");
         }
+    }
+
+    #[test]
+    fn answer_uses_aliases_and_core_has_none_by_default() {
+        let ed = press(jamo(), Key::plain(Code::Char('ㅛ')));
+        assert_eq!(text(&ed), "", "aliased ㅛ confirms");
+        let ed = press(jamo(), Key::plain(Code::Char('ㅜ')));
+        assert_eq!(text(&ed), "x", "aliased ㅜ cancels");
+        assert_eq!(ed.message(), "Quit");
+        let ed = press(asking(), Key::plain(Code::Char('ㅛ')));
+        assert!(matches!(ed.mode(), Mode::Confirm(_)), "no alias, no answer");
+    }
+
+    #[test]
+    fn alias_matches_the_uppercase_form() {
+        let ed = asking().with_answer_aliases(|a| a.alias('н', AnswerKey::Yes));
+        let ed = press(ed, Key::plain(Code::Char('Н')));
+        assert_eq!(text(&ed), "", "Н confirms through the н alias");
+    }
+
+    #[test]
+    fn alias_does_not_change_self_insert() {
+        let ed = editor().with_answer_aliases(|a| a.alias('ㅛ', AnswerKey::Yes));
+        assert_eq!(text(&typ(ed, "ㅛ")), "ㅛ", "I-48");
     }
 
     #[test]

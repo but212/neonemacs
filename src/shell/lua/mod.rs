@@ -5,6 +5,7 @@
 //!
 //! Each submodule installs one group of functions into the Lua globals.
 
+mod answer;
 mod buffer;
 mod command;
 mod config;
@@ -14,6 +15,7 @@ mod syntax;
 mod tests;
 
 use crate::core::editor::Editor;
+use answer::install_answer_api;
 use buffer::install_buffer_api;
 use command::install_command_api;
 use config::install_config_api;
@@ -109,6 +111,7 @@ pub fn with_api<R>(
     lua.scope(|scope| {
         let g = lua.globals();
         install_keymap_api(scope, &g, cell)?;
+        install_answer_api(scope, &g, cell)?;
         install_command_api(scope, &g, cell, &depth)?;
         install_config_api(scope, &g, cell)?;
         install_syntax_api(lua, scope, &g, cell)?;

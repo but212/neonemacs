@@ -1,7 +1,7 @@
 //! Keys, their normalization from the terminal (I-12), the key-string parser,
 //! and the survival-set bindings (§3).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Code {
@@ -167,6 +167,66 @@ fn parse_key(tok: &str) -> Result<Key, KeyError> {
     Ok(if meta { key.with_meta() } else { key })
 }
 
+/// An answer a modal question understands: `y`, `n`, `q`, or `!` (I-46, I-48).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerKey {
+    Yes,
+    No,
+    Quit,
+    All,
+}
+
+impl AnswerKey {
+    #[must_use]
+    pub const fn char(self) -> char {
+        match self {
+            Self::Yes => 'y',
+            Self::No => 'n',
+            Self::Quit => 'q',
+            Self::All => '!',
+        }
+    }
+
+    /// Parses an answer from its character.
+    ///
+    /// # Errors
+    /// Returns a message unless `s` is exactly `y`, `n`, `q`, or `!`.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "y" => Ok(Self::Yes),
+            "n" => Ok(Self::No),
+            "q" => Ok(Self::Quit),
+            "!" => Ok(Self::All),
+            _ => Err(format!("answer must be one of y, n, q, !: '{s}'")),
+        }
+    }
+}
+
+/// Characters that stand for an answer key. Empty by default (I-48).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AnswerAliases(BTreeMap<char, AnswerKey>);
+
+impl AnswerAliases {
+    /// Makes `from` mean `to`, replacing any earlier alias for `from`.
+    #[must_use]
+    pub fn alias(mut self, from: char, to: AnswerKey) -> Self {
+        self.0.insert(from, to);
+        self
+    }
+
+    /// Removes the alias for `from`. An absent alias is a no-op.
+    #[must_use]
+    pub fn unalias(mut self, from: char) -> Self {
+        self.0.remove(&from);
+        self
+    }
+
+    #[must_use]
+    pub fn get(&self, c: char) -> Option<AnswerKey> {
+        self.0.get(&c).copied()
+    }
+}
+
 /// Maps key sequences to command names.
 #[derive(Debug, Default, Clone)]
 pub struct Keymap {
@@ -303,6 +363,30 @@ mod tests {
 
         let unmapped = map.unbind(&key);
         assert_eq!(unmapped.lookup(&key), None);
+    }
+
+    #[test]
+    fn answer_key_parses_only_the_four_answers() {
+        assert_eq!(AnswerKey::parse("y"), Ok(AnswerKey::Yes));
+        assert_eq!(AnswerKey::parse("n"), Ok(AnswerKey::No));
+        assert_eq!(AnswerKey::parse("q"), Ok(AnswerKey::Quit));
+        assert_eq!(AnswerKey::parse("!"), Ok(AnswerKey::All));
+        for bad in ["x", "", "yy", "Y"] {
+            assert!(AnswerKey::parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn answer_aliases_alias_replace_and_unalias() {
+        let a = AnswerAliases::default();
+        assert_eq!(a.get('н'), None);
+        let a = a.alias('н', AnswerKey::Yes);
+        assert_eq!(a.get('н'), Some(AnswerKey::Yes));
+        let a = a.alias('н', AnswerKey::No);
+        assert_eq!(a.get('н'), Some(AnswerKey::No));
+        let a = a.unalias('н');
+        assert_eq!(a.get('н'), None);
+        assert_eq!(a.clone().unalias('н'), a, "absent alias is a no-op");
     }
 
     #[test]

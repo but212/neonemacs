@@ -32,3 +32,8 @@ bind("C-l", "recenter")
 
 -- Shell execution
 bind("M-!", "shell-command")
+
+-- Korean two-set jamo on the y, n, q keys answer questions (I-46)
+answer_alias("ㅛ", "y")
+answer_alias("ㅜ", "n")
+answer_alias("ㅂ", "q")

@@ -212,7 +212,7 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
         return ed;
     };
     let (start, end) = q.current;
-    match answer_char(key) {
+    match answer_char(ed.answer_aliases(), key) {
         Some('y' | ' ') => match replace_match(ed, &q, start, end) {
             (ed, Some(from)) => {
                 q.count += 1;
@@ -361,10 +361,15 @@ mod tests {
         );
     }
 
+    fn with_jamo() -> Editor {
+        use crate::core::keymap::AnswerKey;
+        editor().with_answer_aliases(|a| a.alias('ㅜ', AnswerKey::No).alias('ㅂ', AnswerKey::Quit))
+    }
+
     #[test]
     fn query_replace_folds_answers_and_esc_stops() {
         for stop in ["ESC", "ㅂ", "Q"] {
-            let ed = typ(editor(), "foo foo");
+            let ed = typ(with_jamo(), "foo foo");
             let ed = keys(ed, "C-a");
             let ed = run_command(ed, |e, fx| {
                 (start_query(e, "foo", "qux", MatchKind::Literal), fx)
@@ -379,7 +384,7 @@ mod tests {
             assert_eq!(ed.mode(), &Mode::normal(), "{stop}");
             assert_eq!(ed.message(), "Replaced 1 occurrence(s)", "{stop}");
         }
-        let ed = typ(editor(), "foo foo");
+        let ed = typ(with_jamo(), "foo foo");
         let ed = keys(ed, "C-a");
         let ed = run_command(ed, |e, fx| {
             (start_query(e, "foo", "qux", MatchKind::Literal), fx)
