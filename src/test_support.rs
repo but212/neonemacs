@@ -31,6 +31,12 @@ pub fn keys(mut ed: Editor, s: &str) -> Editor {
     ed
 }
 
+/// Sets the mark at point the way a user without a key for it does: `M-x set-mark-command RET`.
+#[must_use]
+pub fn set_mark(ed: Editor) -> Editor {
+    keys(typ(keys(ed, "M-x"), "set-mark-command"), "RET")
+}
+
 /// Types `s` as plain characters. A newline is RET.
 #[must_use]
 pub fn typ(mut ed: Editor, s: &str) -> Editor {

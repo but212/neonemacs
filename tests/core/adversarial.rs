@@ -4,7 +4,7 @@
 use neonemacs::core::commands::find;
 use neonemacs::core::commands::table::BUILTINS;
 use neonemacs::core::editor::{Mode, Prefix, Window};
-use neonemacs::test_support::{editor, keys, point, text, typ};
+use neonemacs::test_support::{editor, keys, point, set_mark, text, typ};
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {
@@ -79,7 +79,7 @@ fn prompt_hostile_backspaces_and_cancellation() {
         ed = keys(ed, "DEL");
     }
     if let Mode::Prompt(p) = ed.mode() {
-        assert_eq!(p.input, "");
+        assert_eq!(p.input(), "");
     } else {
         panic!("Prompt mode lost after DEL");
     }
@@ -210,7 +210,8 @@ fn kill_ring_empty_and_illegal_operations() {
 
     // 5. Normal kill-ring-save (M-w) with mark sets kill ring but keeps text
     let mut ed5 = typ(editor(), "hello world");
-    ed5 = keys(ed5, "C-a C-SPC C-f C-f C-f C-f C-f"); // mark "hello"
+    ed5 = set_mark(keys(ed5, "C-a"));
+    ed5 = keys(ed5, "C-f C-f C-f C-f C-f"); // mark "hello"
     let (ed5, _) = kill_ring_save(ed5, Vec::new());
     assert_eq!(text(&ed5), "hello world");
     assert_eq!(ed5.kill_ring().entries(), &[b"hello".to_vec()]);
@@ -332,7 +333,7 @@ fn hostile_fuzz_sequence_no_panic() {
     let hostile_inputs = [
         "C-x", "C-g", "M-x", "C-g", "C-s", "C-g", "C-w", "M-w", "C-y", "M-y", "C-k", "C-/", "C-a",
         "C-e", "C-n", "C-p", "DEL", "RET", "C-x b", "C-g", "C-x k", "C-g", "C-x 1", "C-x 2",
-        "C-x 3", "C-x o", "C-d", "C-SPC", "C-x C-s",
+        "C-x 3", "C-x o", "C-d", "C-x C-s",
     ];
 
     // Execute arbitrary hostile interleavings
@@ -357,7 +358,7 @@ fn prompt_hostile_tab_completion_and_common_prefix() {
     // Spam TAB on empty prompt: candidate note produced without crash or input corruption
     ed = keys(ed, "TAB TAB TAB");
     if let Mode::Prompt(p) = ed.mode() {
-        assert_eq!(p.input, "");
+        assert_eq!(p.input(), "");
     } else {
         panic!("Prompt mode lost on empty TAB spam");
     }
@@ -366,7 +367,7 @@ fn prompt_hostile_tab_completion_and_common_prefix() {
     ed = typ(ed, "is");
     ed = keys(ed, "TAB");
     if let Mode::Prompt(p) = ed.mode() {
-        assert_eq!(p.input, "isearch-");
+        assert_eq!(p.input(), "isearch-");
     }
     // Candidate list note must include options with their key bindings
     assert!(ed.message().contains("isearch-forward"));
@@ -375,21 +376,21 @@ fn prompt_hostile_tab_completion_and_common_prefix() {
     // Repeated TAB on already-common prefix must be idempotent
     ed = keys(ed, "TAB");
     if let Mode::Prompt(p) = ed.mode() {
-        assert_eq!(p.input, "isearch-");
+        assert_eq!(p.input(), "isearch-");
     }
 
     // Narrow down with 'b' -> isearch-b -> TAB expands to isearch-backward
     ed = typ(ed, "b");
     ed = keys(ed, "TAB");
     if let Mode::Prompt(p) = ed.mode() {
-        assert_eq!(p.input, "isearch-backward");
+        assert_eq!(p.input(), "isearch-backward");
     }
 
     // Narrow down to unique candidate "-r" -> isearch-backward-regexp
     ed = typ(ed, "-r");
     ed = keys(ed, "TAB");
     if let Mode::Prompt(p) = ed.mode() {
-        assert_eq!(p.input, "isearch-backward-regexp");
+        assert_eq!(p.input(), "isearch-backward-regexp");
     }
 
     // Completely nonexistent prefix TAB reports "No match" without destroying input
@@ -397,7 +398,7 @@ fn prompt_hostile_tab_completion_and_common_prefix() {
     ed = keys(ed, "TAB");
     assert_eq!(ed.message(), "No match");
     if let Mode::Prompt(p) = ed.mode() {
-        assert_eq!(p.input, "isearch-backward-regexpxyz_not_a_command");
+        assert_eq!(p.input(), "isearch-backward-regexpxyz_not_a_command");
     }
 
     // C-g cancels gracefully
@@ -438,7 +439,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     let e = typ(e, "work_l");
     let mut e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
-        assert_eq!(p.input, "work_log_");
+        assert_eq!(p.input(), "work_log_");
     }
     assert!(e.message().contains("work_log_2026"));
     assert!(e.message().contains("work_log_archive"));
@@ -447,7 +448,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     e = typ(e, "2");
     e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
-        assert_eq!(p.input, "work_log_2026");
+        assert_eq!(p.input(), "work_log_2026");
     }
     ed = keys(e, "RET");
     assert_eq!(ed.buffer().name(), "work_log_2026");
@@ -457,7 +458,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     let e = typ(e, "한글_");
     let mut e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
-        assert_eq!(p.input, "한글_문서_");
+        assert_eq!(p.input(), "한글_문서_");
     }
     assert!(e.message().contains("한글_문서_1"));
     assert!(e.message().contains("한글_문서_2"));
@@ -466,7 +467,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     e = typ(e, "1");
     e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
-        assert_eq!(p.input, "한글_문서_1");
+        assert_eq!(p.input(), "한글_문서_1");
     }
     ed = keys(e, "RET");
     assert_eq!(ed.buffer().name(), "한글_문서_1");
@@ -484,7 +485,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     let e = typ(e, "work_log_a");
     let e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
-        assert_eq!(p.input, "work_log_archive");
+        assert_eq!(p.input(), "work_log_archive");
     }
     let initial_count = e.buffers().len();
     ed = keys(e, "RET");

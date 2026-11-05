@@ -17,7 +17,7 @@ Prior to this ADR, text formatting and advanced editing commands were either har
    - `buffer.kill(start, end)` deletes text and pushes it to the kill ring, merging consecutive kills into a single kill ring entry (I-09).
 2. **Bundle Pareto-core `src/shell/text.lua` (§6, §12):**
    - Implement only the highest-frequency, essential editing commands in Lua:
-     - Word navigation & deletion: `forward-word` (`M-f`), `backward-word` (`M-b`), `kill-word` (`M-d`), `backward-kill-word` (`M-DEL`).
+     - Word navigation & deletion: `forward-word`, `backward-word` (no default keys; `M-f`/`M-b` unbound later because terminals reserve them), `kill-word` (`M-d`), `backward-kill-word` (`M-DEL`).
      - Buffer navigation: `beginning-of-buffer` (`M-<`), `end-of-buffer` (`M->`).
      - Paragraph formatting: `fill-paragraph` (`M-q`) respecting `fill-column`, display width, tab width, and indentation.
      - Commenting: `comment-dwim` (`M-;`) with auto-detection of buffer syntax comment prefixes.

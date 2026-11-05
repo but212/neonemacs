@@ -1,7 +1,8 @@
 //! Cursor motion and mark setting commands (§3, §6).
 
-use crate::core::editor::{Editor, LastCommand};
+use crate::core::editor::{Editor, LastCommand, Window};
 use crate::core::effect::Effects;
+use crate::core::text::Text;
 use crate::core::width::{column, pos_at_column};
 
 /// Helper for region lookup on `Editor`.
@@ -77,6 +78,26 @@ fn vertical(ed: Editor, down: bool) -> Editor {
     ed.set_last(LastCommand::Vertical { col: goal })
 }
 
+/// Start of the line `n` lines before the line holding `start`; stops at the first line.
+fn lines_back(text: &Text, start: usize, n: usize) -> usize {
+    let mut s = text.line_start(start);
+    for _ in 0..n {
+        if s == 0 {
+            break;
+        }
+        s = text.line_start(s - 1);
+    }
+    s
+}
+
+/// `recenter` (C-l): puts the line holding point on the middle row. Text and point are unchanged.
+pub(crate) fn recenter(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    let half = ed.window().height / 2;
+    let text = ed.buffer().text();
+    let top = lines_back(text, ed.window().point, half);
+    (ed.with_window(|w| Window { top, ..w }), fx)
+}
+
 pub(crate) fn set_mark_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
     let ed = ed
@@ -97,7 +118,7 @@ pub(crate) fn exchange_point_and_mark(ed: Editor, fx: Effects) -> (Editor, Effec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{editor, keys, point, run_command, typ};
+    use crate::test_support::{editor, keys, point, run_command, set_mark, typ};
 
     #[test]
     fn motion_hangul_moves_by_character() {
@@ -133,9 +154,60 @@ mod tests {
     #[test]
     fn exchange_point_and_mark_swaps() {
         let ed = typ(editor(), "abc");
-        let ed = keys(ed, "C-a C-SPC C-e");
+        let ed = set_mark(keys(ed, "C-a"));
+        let ed = keys(ed, "C-e");
         let ed = run_command(ed, exchange_point_and_mark);
         assert_eq!(point(&ed), 0);
         assert_eq!(ed.buffer().mark(), Some(3));
+    }
+
+    fn numbered(n: usize) -> String {
+        (0..n).map(|i| format!("l{i}\n")).collect()
+    }
+
+    /// Byte offset of line `i` in `numbered`: three bytes per line below 10, four from 10.
+    fn ls(i: usize) -> usize {
+        if i < 10 { 3 * i } else { 30 + 4 * (i - 10) }
+    }
+
+    fn with_height(ed: Editor, height: usize) -> Editor {
+        ed.with_window(|w| Window { height, ..w })
+    }
+
+    fn top(ed: &Editor) -> usize {
+        ed.window().top
+    }
+
+    #[test]
+    fn recenter_is_safe_before_first_render() {
+        let ed = typ(editor(), &numbered(5));
+        assert_eq!(ed.window().height, 0);
+        let ed = run_command(ed, recenter);
+        // With no known height the point's own line becomes the top.
+        assert_eq!(top(&ed), ed.buffer().text().line_start(point(&ed)));
+    }
+
+    #[test]
+    fn recenter_puts_point_line_on_middle_row_without_editing() {
+        let ed = with_height(typ(editor(), &numbered(30)), 10);
+        let ed = ed.with_window(|w| Window {
+            point: 0,
+            top: 0,
+            ..w
+        });
+        let ed = ed.with_window(|w| Window { point: ls(20), ..w });
+        let before = ed.buffer().text().len();
+        let ed = run_command(ed, recenter);
+        assert_eq!(top(&ed), ls(15));
+        assert_eq!(point(&ed), ls(20));
+        assert_eq!(ed.buffer().text().len(), before);
+    }
+
+    #[test]
+    fn recenter_clamps_to_buffer_start() {
+        let ed = with_height(typ(editor(), &numbered(30)), 10);
+        let ed = ed.with_window(|w| Window { point: 3 * 2, ..w });
+        let ed = run_command(ed, recenter);
+        assert_eq!(top(&ed), 0);
     }
 }

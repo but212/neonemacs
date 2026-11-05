@@ -20,7 +20,7 @@ While these additions provided broad Emacs feature parity, they expanded `text.l
 ## Historical Decisions
 
 1. **Word & Buffer Movement and Transposition (Former ADR 0007)**:
-   - Implemented `forward-word` (`M-f`), `backward-word` (`M-b`), `beginning-of-buffer` (`M-<`), `end-of-buffer` (`M->`).
+   - Implemented `forward-word`, `backward-word` (no default keys since `M-f`/`M-b` were unbound), `beginning-of-buffer` (`M-<`), `end-of-buffer` (`M->`).
    - Implemented line-bounded character transposition (`transpose-chars`, `C-t`), word swapping (`transpose-words`, `M-t`), `open-line` (`C-o`), and line joining (`delete-indentation` / `join-line`, `M-^`).
 2. **Paragraph, Sentence, and Mark FFI (Former ADR 0008)**:
    - Added `buffer.mark()` and `buffer.set_mark(pos)` FFI to query and update the active buffer mark.
@@ -42,7 +42,7 @@ While these additions provided broad Emacs feature parity, they expanded `text.l
 In accordance with specification normalization and the Pareto (80/20) rule:
 
 - **Retained & Consolidated into ADR 0006**:
-  - `forward-word` (`M-f`), `backward-word` (`M-b`), `beginning-of-buffer` (`M-<`), `end-of-buffer` (`M->`).
+  - `forward-word`, `backward-word` (no default keys since `M-f`/`M-b` were unbound), `beginning-of-buffer` (`M-<`), `end-of-buffer` (`M->`).
   - `mark-whole-buffer` (`C-x h`).
   - `buffer.mark()` and `buffer.set_mark(pos)` FFI.
 - **Pruned from Core & Shell**:

@@ -4,6 +4,7 @@
 use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
 use crate::core::effect::Effects;
 use crate::core::undo::Edit;
+use crate::core::width::column;
 
 /// Typed characters that share one undo group.
 const TYPED_GROUP: usize = 20;
@@ -126,9 +127,15 @@ impl Editor {
                 1
             }
         };
-        let bytes = c.to_string().into_bytes();
-        let len = bytes.len();
         let at = snap(self.buffer().text(), self.window().point);
+        let bytes = if c == '\t' && self.settings.config.expand_tabs {
+            let tab = usize::from(self.settings.config.tab_width);
+            let col = column(self.buffer().text(), at, tab);
+            " ".repeat(tab - col % tab).into_bytes()
+        } else {
+            c.to_string().into_bytes()
+        };
+        let len = bytes.len();
         let (ed, applied) = self.apply(&Edit::insert(at, bytes));
         if applied.is_none() {
             return ed;
@@ -382,5 +389,47 @@ mod tests {
         let ed = ed.kill_range(0, 10);
         assert_eq!(ed.buffer().text().to_bytes(), b"world");
         assert_eq!(ed.kill_ring().entries(), &[b"hello wonderful ".to_vec()]);
+    }
+
+    fn soft_tabs(s: &str) -> Editor {
+        let config = Config {
+            expand_tabs: true,
+            ..Config::default()
+        };
+        Editor::new(config).with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
+    }
+
+    #[test]
+    fn expand_tabs_inserts_spaces_to_next_stop_as_one_undo_step() {
+        for (before, spaces) in [("", 8), ("abc", 5), ("abcdefg", 1), ("가", 6)] {
+            let ed = soft_tabs(before);
+            let ed = ed.with_window(|w| Window {
+                point: before.len(),
+                ..w
+            });
+            let ed = type_char(ed, '\t');
+            assert_eq!(text(&ed), format!("{before}{}", " ".repeat(spaces)));
+            assert_eq!(ed.window().point, before.len() + spaces);
+            assert_eq!(text(&undo(ed)), before);
+        }
+    }
+
+    #[test]
+    fn tab_is_literal_when_expand_tabs_is_off_and_other_chars_are_unchanged() {
+        let ed = type_char(editor_with(""), '\t');
+        assert_eq!(text(&ed), "\t");
+        let ed = type_char(soft_tabs(""), 'x');
+        assert_eq!(text(&ed), "x");
+    }
+
+    #[test]
+    fn expand_tabs_follows_tab_width() {
+        let config = Config {
+            expand_tabs: true,
+            tab_width: 4,
+            ..Config::default()
+        };
+        let ed = type_char(Editor::new(config), '\t');
+        assert_eq!(text(&ed), "    ");
     }
 }

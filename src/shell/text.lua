@@ -113,13 +113,13 @@ local function backward_word_start(p)
     return w_start or 0
 end
 
--- forward-word: move point forward to end of next word (M-f)
+-- forward-word: move point forward to end of next word
 command("forward-word", function()
     local p = buffer.point()
     buffer.set_point(forward_word_end(p))
 end)
 
--- backward-word: move point backward to start of previous word (M-b)
+-- backward-word: move point backward to start of previous word
 command("backward-word", function()
     local p = buffer.point()
     buffer.set_point(backward_word_start(p))

@@ -229,8 +229,12 @@ fn shell_running_does_not_clobber_status_messages() {
     session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "[Running...]");
 
-    // User executes C-SPC (Mark set) while shell is running
-    session.handle_event_at(&press(KeyCode::Char(' '), KeyModifiers::CONTROL), t0);
+    // User executes set-mark-command through M-x (Mark set) while shell is running
+    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    for c in "set-mark-command".chars() {
+        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+    }
+    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
     assert_eq!(session.ed.message(), "Mark set");
 
     // 50ms tick occurs: must NOT overwrite "Mark set" with spinner

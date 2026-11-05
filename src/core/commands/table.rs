@@ -12,7 +12,7 @@ use crate::core::commands::file::{
 };
 use crate::core::commands::motion::{
     backward_char, exchange_point_and_mark, forward_char, move_beginning_of_line, move_end_of_line,
-    next_line, previous_line, set_mark_command,
+    next_line, previous_line, recenter, set_mark_command,
 };
 use crate::core::commands::prompt::{
     execute_extended_command, find_file_cmd, goto_line_cmd, kill_buffer_cmd, switch_to_buffer_cmd,
@@ -64,6 +64,7 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
     ("previous-line", previous_line as Builtin),
     ("query-replace", query_replace_cmd as Builtin),
     ("query-replace-regexp", query_replace_regexp_cmd as Builtin),
+    ("recenter", recenter as Builtin),
     ("revert-buffer", revert_buffer as Builtin),
     ("save-buffer", save_buffer_cmd as Builtin),
     (

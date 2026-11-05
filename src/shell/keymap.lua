@@ -26,10 +26,9 @@ bind("M-;", "comment-dwim")
 bind("C-r", "isearch-backward")
 bind("M-%", "query-replace")
 bind("M-g", "goto-line")
-bind("M-f", "forward-word")
-bind("M-b", "backward-word")
 bind("M-<", "beginning-of-buffer")
 bind("M->", "end-of-buffer")
+bind("C-l", "recenter")
 
 -- Shell execution
 bind("M-!", "shell-command")

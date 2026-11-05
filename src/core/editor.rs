@@ -61,6 +61,7 @@ impl Editor {
             point: 0,
             top: 0,
             left_col: 0,
+            height: 0,
         };
         Self {
             documents: Documents::new(initial_window),

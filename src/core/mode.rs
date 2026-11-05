@@ -2,6 +2,7 @@
 
 use crate::core::buffer::BufferId;
 use crate::core::search::Pattern;
+use crate::core::width::char_width;
 use std::path::PathBuf;
 
 /// Kind of a command, for commands that chain (§6, §7, I-09).
@@ -38,8 +39,46 @@ pub enum Prefix {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
     pub label: String,
-    pub input: String,
+    /// Input before the cursor.
+    pub before: String,
+    /// Input after the cursor.
+    pub after: String,
     pub purpose: Purpose,
+}
+
+impl Prompt {
+    /// An empty prompt with the cursor after the label.
+    #[must_use]
+    pub fn new(label: &str, purpose: Purpose) -> Self {
+        Self {
+            label: label.to_owned(),
+            before: String::new(),
+            after: String::new(),
+            purpose,
+        }
+    }
+
+    /// The whole input line.
+    #[must_use]
+    pub fn input(&self) -> String {
+        format!("{}{}", self.before, self.after)
+    }
+
+    /// The echo-area text: label and input.
+    #[must_use]
+    pub fn echo(&self) -> String {
+        format!("{}{}{}", self.label, self.before, self.after)
+    }
+
+    /// Display column of the cursor in the echo area.
+    #[must_use]
+    pub fn cursor_width(&self) -> usize {
+        self.label
+            .chars()
+            .chain(self.before.chars())
+            .map(char_width)
+            .sum()
+    }
 }
 
 /// What a submitted prompt does.
