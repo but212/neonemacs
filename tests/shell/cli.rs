@@ -24,11 +24,27 @@ fn run_in_pty(bin: &str, args: &[&Path], xdg_config_home: &Path) -> u32 {
     let mut child = pair.slave.spawn_command(cmd).expect("spawn in pty");
     drop(pair.slave);
 
+    // ConPTY asks for the cursor position (ESC[6n) at startup and stalls until answered.
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        let mut writer = pair.master.take_writer().expect("take pty writer");
+        writer.write_all(b"\x1b[1;1R").expect("answer cursor query");
+        std::mem::forget(writer);
+    }
+
     // Drain output so the child never blocks on a full pty buffer.
     let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&seen);
     let drain = std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
     });
 
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -38,12 +54,18 @@ fn run_in_pty(bin: &str, args: &[&Path], xdg_config_home: &Path) -> u32 {
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            panic!("neonemacs did not exit within 20s");
+            let out = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
+            std::mem::forget(pair.master);
+            panic!("neonemacs did not exit within 20s; pty output: {out:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    drop(pair.master);
-    let _ = drain.join();
+    // ConPTY can block on close until its output pipe is fully drained, so tear down
+    // off-thread instead of letting a hung close stall the test.
+    std::thread::spawn(move || {
+        drop(pair.master);
+        let _ = drain.join();
+    });
     code
 }
 
