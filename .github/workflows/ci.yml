@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          globs: |
+            **/*.md
+            !target/**
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests (debug, excluding timing-sensitive)
+        run: cargo test --locked -- --skip performance::
+      - name: Performance tests (release)
+        run: cargo test --locked --release --test core_suite performance::
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: msrv
+        run: echo "v=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.v }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets
+
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: sh scripts/build_static.sh
+      - name: Enforce 5 MiB binary limit (spec section 2)
+        run: |
+          size=$(stat -c%s target/x86_64-unknown-linux-musl/release/neonemacs)
+          echo "binary size: $size bytes"
+          test "$size" -le 5242880 || { echo "::error::binary exceeds 5 MiB ($size bytes)"; exit 1; }

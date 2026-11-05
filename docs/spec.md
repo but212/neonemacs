@@ -17,6 +17,7 @@
   - **쉘 (`src/shell`)**: 터미널, 파일 시스템, 백그라운드 프로세스, Lua 런타임(`RefCell::take` 소유권 이동 브리지), 시작 오케스트레이션(`shell::startup`) 등 외부 부수효과를 전담한다. 코어가 발행한 효과 요청(`Effect`)을 실행하고 단일 이벤트(`Event`)로 응답한다.
 - **확장**: Lua 임베딩. Emacs 매크로 문법은 지원하지 않는다.
 - **플랫폼**: Linux, macOS, Windows.
+- **MSRV**: Rust 1.88 (`Cargo.toml`의 `rust-version`).
 - **바이너리**: 릴리스·strip 기준 5MB 이하 (Linux x86_64).
 
 ## 3. 키 체계
