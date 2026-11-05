@@ -3,7 +3,7 @@
 //!
 //! The core returns effects, and this module performs them in order. Each one yields one event,
 //! which goes back to the core. A Lua command runs inside the event that started it: the `run`
-//! function in Lua calls back into the core synchronously, with no `RefCell` borrow held (I-17).
+//! function in Lua calls back into the core synchronously, with no `RefCell` borrow held (I-21).
 
 pub mod atomic;
 pub mod file;
@@ -126,7 +126,7 @@ pub fn step_in(cell: &RefCell<Option<Editor>>, event: Event) -> Effects {
 }
 
 /// Performs `effects` against the editor in `cell`. Each event goes back to the core.
-/// No `RefCell` borrow is held while an effect runs (I-17).
+/// No `RefCell` borrow is held while an effect runs (I-21).
 pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Effects) {
     for effect in effects {
         let event = perform(effect, lua);

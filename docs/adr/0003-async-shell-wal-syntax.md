@@ -41,14 +41,12 @@ Previously:
 - When regular file save (`Event::Written`) succeeds, the corresponding `.wal` file is immediately deleted (**I-25**).
 - At startup, if an unmerged `.wal` file is detected, neonemacs restores the unsaved session with a clear notification.
 
-## Invariant Additions
+## Invariants
 
-| ID | Invariant | Location |
-| :--- | :--- | :--- |
-| I-22 | ANSI codes never interfere with text width, cursor position, or diff | `src/core/render.rs`, `src/main.rs` |
-| I-23 | WAL persistence is an asynchronous shell concern; core state transitions remain pure | `src/shell/wal.rs`, `src/main.rs` |
-| I-24 | Non-blocking shell command execution keeps editor responsive and injects `Event::ShellDone` | `src/shell/mod.rs`, `src/main.rs` |
-| I-25 | Regular save success deletes the sibling `.wal` file | `src/shell/mod.rs`, `src/shell/wal.rs` |
+- **I-22** (new; enforced in `src/core/render.rs`, `src/main.rs`): ANSI codes never interfere with text width, cursor position, or diff
+- **I-23** (new; enforced in `src/shell/wal.rs`, `src/main.rs`): WAL persistence is an asynchronous shell concern; core state transitions remain pure
+- **I-24** (new; enforced in `src/shell/mod.rs`, `src/main.rs`): Non-blocking shell command execution keeps editor responsive and injects `Event::ShellDone`
+- **I-25** (new; enforced in `src/shell/mod.rs`, `src/shell/wal.rs`): Regular save success deletes the sibling `.wal` file
 
 ## Consequences
 

@@ -17,7 +17,7 @@ pub enum Effect {
         target: StatTarget,
         path: PathBuf,
     },
-    /// Writes `bytes` to `path` atomically. Only after I-04 or a confirmation (I-13).
+    /// Writes `bytes` to `path` atomically. Only after the I-04 check or a confirmation.
     WriteFile {
         id: BufferId,
         path: PathBuf,

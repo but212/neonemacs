@@ -149,7 +149,7 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
     }
 }
 
-/// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-13).
+/// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-04).
 pub(crate) fn write_buffer(ed: &Editor, id: BufferId, fx: Effects) -> Effects {
     match ed.buffer_by_id(id).file_path() {
         Some(path) => write_to(ed, id, path.to_path_buf(), fx),

@@ -26,20 +26,18 @@ Command functions performed file, process, and Lua I/O directly. Tests therefore
 2. `Disk` → if the disk state changed since the read, ask; otherwise emit `WriteFile` (I-04, I-13).
 3. `Written` → record the new disk state (I-05) and show `Wrote <path>`. No further effect.
 
-### Invariant locations
+## Invariants
 
-| ID | Invariant | Location |
-| --- | --- | --- |
-| I-04 | Save checks external change; oversized files are refused at open | `core::commands::save_buffer`, `disk_checked` (runtime), `core::file::loaded_from` (type) |
-| I-05 | A successful write records the new disk state | `Event::Written` carries `DiskState` (type) |
-| I-13 | `WriteFile` is emitted only after I-04 or a confirmation | `save_buffer`, `confirmed` (runtime) |
-| I-14 | `core` imports no I/O crate | grep check (runtime) |
-| I-15 | One effect, one event | exhaustive `match` in `shell::perform` (type) |
-| I-17 | No `RefCell` borrow is held across a Lua call | `shell::perform_in`, Lua `run` (runtime) |
-| I-18 | No `&mut` in any `src/core` signature (parameters, return types, `&mut self`, type aliases, fields). `let mut` in bodies is allowed | `tests/core/purity.rs` (runtime, text scan) |
-| I-19 | The selected window index is below the number of `Layout` leaves | `Editor::window`, `Editor::with_window` (runtime) |
-| I-20 | An id passed to `Editor::with_buffer` exists in `buffers` | `Editor::with_buffer` (runtime) |
-| I-21 | The shell's `RefCell<Option<Editor>>` is `None` only during `step` | `shell::step_in`, take/put pair (runtime) |
+- **I-04** (new; enforced at `core::commands::save_buffer`, `disk_checked` (runtime), `core::file::loaded_from` (type)): Save checks external change; oversized files are refused at open
+- **I-05** (new; enforced at `Event::Written` carries `DiskState` (type)): A successful write records the new disk state
+- **I-13** (new; enforced at `save_buffer`, `confirmed` (runtime)): `WriteFile` is emitted only after I-04 or a confirmation
+- **I-14** (new; enforced at grep check (runtime)): `core` imports no I/O crate
+- **I-15** (new; enforced at exhaustive `match` in `shell::perform` (type)): One effect, one event
+- **I-17** (new; enforced at `shell::perform_in`, Lua `run` (runtime)): No `RefCell` borrow is held across a Lua call
+- **I-18** (new; enforced at `tests/core/purity.rs` (runtime, text scan)): No `&mut` in any `src/core` signature (parameters, return types, `&mut self`, type aliases, fields). `let mut` in bodies is allowed
+- **I-19** (new; enforced at `Editor::window`, `Editor::with_window` (runtime)): The selected window index is below the number of `Layout` leaves
+- **I-20** (new; enforced at `Editor::with_buffer` (runtime)): An id passed to `Editor::with_buffer` exists in `buffers`
+- **I-21** (new; enforced at `shell::step_in`, take/put pair (runtime)): The shell's `RefCell<Option<Editor>>` is `None` only during `step`
 
 ## Consequences
 

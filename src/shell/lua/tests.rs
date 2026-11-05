@@ -14,7 +14,7 @@ fn script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
     run_source(ed, lua, src)
 }
 
-/// Syntax lookups by file name, as the editor resolves a buffer's language (I-28).
+/// Syntax lookups by file name, as the editor resolves a buffer's language (I-49).
 fn lang_of<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
     reg.find_by_filename(file).map(|d| d.name.as_str())
 }
