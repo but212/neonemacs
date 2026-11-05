@@ -178,6 +178,11 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             wal::remove_wal(&path);
             Event::WalRemoved
         }
+        Effect::ProbeWal { path, disk, line } => Event::WalProbed {
+            probe: wal::probe(&path, disk),
+            path,
+            line,
+        },
         Effect::RunShell { command } => Event::ShellDone(run_shell(&command)),
         Effect::RunLua { name } => Event::LuaDone(run_lua(lua, &name)),
     }

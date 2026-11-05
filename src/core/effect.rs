@@ -3,6 +3,7 @@
 
 use crate::core::buffer::Buffer;
 use crate::core::editor::BufferId;
+use crate::core::eol::Eol;
 use crate::core::file::DiskState;
 use crate::core::keymap::Key;
 use std::path::PathBuf;
@@ -30,6 +31,13 @@ pub enum Effect {
     },
     RemoveWal {
         path: PathBuf,
+    },
+    /// Looks for the WAL of the file at `path` just opened with `disk` (I-44, I-45). An unusable
+    /// WAL is moved aside, never overwritten. `line` is the `+n` of a start-up file.
+    ProbeWal {
+        path: PathBuf,
+        disk: DiskState,
+        line: Option<usize>,
     },
     RunShell {
         command: String,
@@ -92,6 +100,22 @@ pub struct RawFile {
     pub bytes: Vec<u8>,
 }
 
+/// Unsaved text found in a WAL whose disk state matched: LF-normalized bytes and the line-ending mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recovered {
+    pub eol: Eol,
+    pub bytes: Vec<u8>,
+}
+
+/// What the shell found when it looked for a WAL (I-44).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WalProbe {
+    Absent,
+    Valid(Recovered),
+    /// The WAL does not match the file. It was moved to the given path, or the error says why not.
+    Stale(Result<PathBuf, String>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Key(Key),
@@ -113,6 +137,11 @@ pub enum Event {
         result: Result<Read, String>,
     },
     WalRemoved,
+    WalProbed {
+        path: PathBuf,
+        line: Option<usize>,
+        probe: WalProbe,
+    },
     /// Raw stdout and stderr of a shell command, or the reason it did not start.
     ShellDone(Result<String, String>),
     /// Error text when the Lua command failed. The core shows its first line.

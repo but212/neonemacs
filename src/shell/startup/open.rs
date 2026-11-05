@@ -1,67 +1,40 @@
-//! Opens startup files and restores unsaved WAL content (§12, I-23).
+//! Opens the startup files. Each one is read like `find-file` does, which also recovers its WAL
+//! (I-44, I-45).
 
 use super::args::FileArg;
 use crate::core::buffer::Buffer;
 use crate::core::commands::{request_open, switch_to};
 use crate::core::editor::Editor;
-use crate::core::file::DiskState;
-use crate::shell::{perform_all, wal};
-use std::path::Path;
+use crate::shell::perform_all;
 
-/// Queries the current disk state of the buffer backing the given path.
-fn buffer_disk_state(ed: &Editor, path: &Path) -> DiskState {
-    ed.buffers()
-        .find_by_path(path)
-        .map_or(DiskState::Unknown, |b| b.backing().disk())
-}
-
-/// Opens a single file and restores unsaved WAL content if available (I-23).
-/// Returns the updated editor and the file name if restored from WAL.
-fn open_and_recover_single(
-    ed: Editor,
-    lua: Option<&mlua::Lua>,
-    arg: &FileArg,
-) -> (Editor, Option<String>) {
+/// Opens one file in the background. Its notice (recovered, stale WAL, refused, unreadable) is
+/// left in the echo area.
+fn open_one(ed: Editor, lua: Option<&mlua::Lua>, arg: &FileArg) -> Editor {
     let path = ed.resolve_path(&arg.path).as_path().to_path_buf();
-    // A path already open was recovered by an earlier argument, so it is not recovered again.
-    let already_open = ed.buffers().find_by_path(&path).is_some();
     let fx = request_open(&ed, &path, arg.line, false, Vec::new());
-    let mut ed = perform_all(ed, lua, fx);
-
-    // A refused open (over `max-file-size`) leaves no buffer, so there is nothing to recover into.
-    if !already_open && ed.buffers().find_by_path(&path).is_some() {
-        let cur_disk = buffer_disk_state(&ed, &path);
-        if let Ok(recovered) = wal::read_wal(&path, cur_disk) {
-            ed = ed.restore_buffer_content(&path, &recovered.bytes, recovered.eol, arg.line);
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            return (ed, Some(name));
-        }
-    }
-
-    (ed, None)
+    perform_all(ed, lua, fx)
 }
 
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
-/// Restores content from WAL via pure core transition if an unsaved WAL session is detected (I-23).
+/// The notices of all files are joined by `; `. Without any, the earlier message (for example an
+/// `init.lua` error) stays.
 pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Editor {
     let first_new = ed.buffers().len();
-    let mut recovered = Vec::new();
+    let before = ed.message().to_owned();
+    let mut notes = Vec::new();
 
     for f in files {
-        let (next_ed, rec_name) = open_and_recover_single(ed, lua, f);
-        ed = next_ed;
-        if let Some(name) = rec_name {
-            recovered.push(name);
+        ed = open_one(ed.clear_message(), lua, f);
+        if !ed.message().is_empty() {
+            notes.push(ed.message().to_owned());
         }
     }
 
-    if !recovered.is_empty() {
-        ed = ed.set_message(format!("[Recovered {} from WAL]", recovered.join(", ")));
-    }
+    ed = ed.set_message(if notes.is_empty() {
+        before
+    } else {
+        notes.join("; ")
+    });
 
     match ed.buffers().get(first_new).map(Buffer::id) {
         Some(id) => switch_to(ed, id),
@@ -75,6 +48,7 @@ mod tests {
     use crate::core::config::Config;
     use crate::core::eol::Eol;
     use crate::shell::startup::files_of;
+    use crate::shell::wal;
     use std::fs;
 
     #[test]
@@ -196,7 +170,10 @@ mod tests {
         assert_eq!(buf_b.text().to_bytes(), b"recovered b");
         assert!(buf_b.modified());
 
-        assert_eq!(ed.message(), "[Recovered a.txt, b.txt from WAL]");
+        assert_eq!(
+            ed.message(),
+            "[Recovered a.txt from WAL]; [Recovered b.txt from WAL]"
+        );
     }
 
     #[test]
@@ -217,7 +194,10 @@ mod tests {
         // Stale WAL must not be recovered; disk content loaded
         assert_eq!(ed.buffer().text().to_bytes(), b"external change from git");
         assert!(!ed.buffer().modified());
-        assert_eq!(ed.message(), "");
+        // The draft is not lost: it is moved aside and the user is told (I-44).
+        assert_eq!(ed.message(), "Stale WAL kept as .corrupt.txt.wal.stale");
+        assert!(!wal::has_wal(&dir.path().join("corrupt.txt")));
+        assert!(wal::stale_path(&dir.path().join("corrupt.txt")).is_file());
 
         // 2. Corrupted WAL file (invalid bytes in WAL path)
         let corrupt_path = dir.path().join("bad_wal.txt");
@@ -235,60 +215,45 @@ mod tests {
         let ed2 = open_files(Editor::new(Config::default()), None, &files2);
         assert_eq!(ed2.buffer().text().to_bytes(), b"good disk");
         assert!(!ed2.buffer().modified());
-        assert_eq!(ed2.message(), "");
+        assert_eq!(ed2.message(), "Stale WAL kept as .bad_wal.txt.wal.stale");
     }
 
     #[test]
-    fn buffer_disk_state_matches_known_and_unknown() {
-        let ed = Editor::new(Config::default());
-        let unknown = buffer_disk_state(&ed, Path::new("nonexistent.txt"));
-        assert_eq!(unknown, DiskState::Unknown);
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tracked.txt");
-        fs::write(&path, "tracked content").unwrap();
-
-        let fx = request_open(&ed, &path, None, false, Vec::new());
-        let ed = perform_all(ed, None, fx);
-        let disk = buffer_disk_state(&ed, &path);
-        assert!(matches!(disk, DiskState::Known { .. }));
-    }
-
-    #[test]
-    fn open_and_recover_single_isolated_behavior() {
+    fn open_notices_come_only_from_the_files_that_have_one() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("single.txt");
         fs::write(&path, "initial").unwrap();
-
-        let ed = Editor::new(Config::default());
-        let arg = FileArg {
+        let files = vec![FileArg {
             path: path.clone(),
             line: None,
-        };
+        }];
 
-        // Without WAL: returns (ed, None) and opens in background
-        let (ed, rec) = open_and_recover_single(ed, None, &arg);
-        assert_eq!(rec, None);
-        let buf = ed
-            .buffers()
-            .iter()
-            .find(|b| b.name() == "single.txt")
-            .unwrap();
+        // Without a WAL: opens in the background, no notice.
+        let ed = open_files(Editor::new(Config::default()), None, &files);
+        let buf = ed.buffers().find_by_path(&path).unwrap();
         assert_eq!(buf.text().to_bytes(), b"initial");
         assert!(!buf.modified());
+        assert_eq!(ed.message(), "");
 
-        // With WAL: returns (ed, Some("single.txt")) and recovers text
-        let cur_disk = buffer_disk_state(&ed, &path);
-        wal::write_wal(&path, cur_disk, Eol::Lf, b"wal draft").unwrap();
-        let (ed2, rec2) = open_and_recover_single(Editor::new(Config::default()), None, &arg);
-        assert_eq!(rec2, Some("single.txt".to_string()));
-        let buf2 = ed2
-            .buffers()
-            .iter()
-            .find(|b| b.name() == "single.txt")
-            .unwrap();
-        assert_eq!(buf2.text().to_bytes(), b"wal draft");
-        assert!(buf2.modified());
+        // With a WAL: recovers the text.
+        let disk = crate::shell::file::disk_state(&path);
+        wal::write_wal(&path, disk, Eol::Lf, b"wal draft").unwrap();
+        let ed = open_files(Editor::new(Config::default()), None, &files);
+        let buf = ed.buffers().find_by_path(&path).unwrap();
+        assert_eq!(buf.text().to_bytes(), b"wal draft");
+        assert!(buf.modified());
+        assert_eq!(ed.message(), "[Recovered single.txt from WAL]");
+    }
+
+    #[test]
+    fn an_earlier_message_survives_files_without_notices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        fs::write(&path, "a").unwrap();
+        let files = vec![FileArg { path, line: None }];
+        let ed = Editor::new(Config::default()).set_message("init.lua: boom");
+        let ed = open_files(ed, None, &files);
+        assert_eq!(ed.message(), "init.lua: boom");
     }
 
     #[test]
@@ -308,15 +273,16 @@ mod tests {
             max_file_size: 4,
             ..Config::default()
         });
-        let arg = FileArg {
+        let files = vec![FileArg {
             path: path.clone(),
             line: None,
-        };
-        let (ed, rec) = open_and_recover_single(ed, None, &arg);
+        }];
+        let ed = open_files(ed, None, &files);
 
-        // The open is refused, so there is no buffer to recover into and no `[Recovered]` notice.
-        assert_eq!(rec, None);
+        // The open is refused: no buffer to recover into, the notice says why, and the WAL stays.
         assert!(ed.buffers().find_by_path(&path).is_none());
+        assert!(ed.message().starts_with("File too large"));
+        assert!(wal::has_wal(&path));
     }
 
     #[test]
@@ -327,13 +293,13 @@ mod tests {
         let disk = crate::shell::file::disk_state(&path);
         wal::write_wal(&path, disk, Eol::Crlf, b"a\nb\nc\n").unwrap();
 
-        let arg = FileArg {
+        let files = vec![FileArg {
             path: path.clone(),
             line: None,
-        };
-        let (ed, rec) = open_and_recover_single(Editor::new(Config::default()), None, &arg);
+        }];
+        let ed = open_files(Editor::new(Config::default()), None, &files);
 
-        assert!(rec.is_some());
+        assert_eq!(ed.message(), "[Recovered eol.txt from WAL]");
         let buf = ed.buffers().find_by_path(&path).unwrap();
         assert_eq!(buf.eol(), Eol::Crlf);
         assert_eq!(buf.text().to_bytes(), b"a\nb\nc\n");

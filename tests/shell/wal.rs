@@ -131,12 +131,59 @@ fn revert_buffer_cleans_up_wal() {
     // Revert buffer (M-x revert-buffer RET)
     let (ed, fx_revert) =
         neonemacs::core::commands::table::find("revert-buffer").unwrap()(ed, Vec::new());
-    let _ = perform_all(ed, None, fx_revert);
+    let ed = perform_all(ed, None, fx_revert);
 
+    // Opening recovered the draft (I-45), so it is unsaved text and revert asks first.
+    assert!(ed.buffer().modified());
+    let yes = parse_keys("y").unwrap()[0];
+    let ed = handle(ed, None, Event::Key(yes));
+
+    assert_eq!(ed.buffer().text().to_bytes(), b"disk content");
     assert!(
         !wal::has_wal(&file_path),
         "revert-buffer must delete WAL file (I-25)"
     );
+}
+
+/// Opens `path` with `C-x C-f`, the way a user does inside the editor.
+fn find_file(path: &std::path::Path) -> Editor {
+    use neonemacs::test_support::{keys, typ};
+    let ed = keys(Editor::new(Config::default()), "C-x C-f");
+    keys(typ(ed, &path.display().to_string()), "RET")
+}
+
+#[test]
+fn find_file_recovers_the_wal_like_start_up_does() {
+    // I-45: recovery does not depend on how the file was opened.
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("ff.txt");
+    fs::write(&file_path, "disk").unwrap();
+    wal::write_wal(&file_path, file::disk_state(&file_path), Eol::Lf, b"draft").unwrap();
+
+    let ed = find_file(&file_path);
+    assert_eq!(ed.buffer().name(), "ff.txt");
+    assert_eq!(ed.buffer().text().to_bytes(), b"draft");
+    assert!(ed.buffer().modified());
+    assert_eq!(ed.message(), "[Recovered ff.txt from WAL]");
+}
+
+#[test]
+fn find_file_keeps_an_unusable_wal_aside_and_says_so() {
+    // I-44: a draft for a file that changed is never silently overwritten.
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("ff.txt");
+    fs::write(&file_path, "disk").unwrap();
+    wal::write_wal(&file_path, file::disk_state(&file_path), Eol::Lf, b"draft").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    fs::write(&file_path, "changed elsewhere").unwrap();
+
+    let ed = find_file(&file_path);
+    assert_eq!(ed.buffer().text().to_bytes(), b"changed elsewhere");
+    assert!(!ed.buffer().modified());
+    assert_eq!(ed.message(), "Stale WAL kept as .ff.txt.wal.stale");
+    assert!(!wal::has_wal(&file_path));
+    let kept = fs::read(wal::stale_path(&file_path)).unwrap();
+    assert!(kept.ends_with(b"draft"));
 }
 
 #[test]

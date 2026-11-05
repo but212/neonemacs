@@ -2,7 +2,7 @@
 
 use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::core::effect::{self, Effect, Effects, ReadTarget, StatTarget};
+use crate::core::effect::{self, Effect, Effects, ReadTarget, StatTarget, WalProbe};
 use crate::core::file::{Backing, DiskState, loaded_from};
 use crate::core::undo::Edit;
 use std::path::{Path, PathBuf};
@@ -314,6 +314,12 @@ pub fn file_read(
                     if show {
                         ed = switch_to(ed, id);
                     }
+                    // The only place a WAL is looked for, so every way to open a file recovers (I-45).
+                    fx.push(Effect::ProbeWal {
+                        path: file.as_path().to_path_buf(),
+                        disk: ed.buffer_by_id(id).backing().disk(),
+                        line,
+                    });
                     (ed, fx)
                 }
                 Err(e) => (ed.set_message(e.message()), fx),
@@ -350,11 +356,34 @@ pub fn file_read(
     }
 }
 
+/// Applies what the shell found when it looked for the WAL of the file at `path` (I-44, I-45).
+#[must_use]
+pub fn wal_probed(
+    ed: Editor,
+    path: PathBuf,
+    line: Option<usize>,
+    probe: WalProbe,
+    fx: Effects,
+) -> (Editor, Effects) {
+    let name = name_of(&path);
+    let ed = match probe {
+        WalProbe::Absent => ed,
+        WalProbe::Valid(recovered) => ed
+            .restore_buffer_content(&path, &recovered.bytes, recovered.eol, line)
+            .set_message(format!("[Recovered {name} from WAL]")),
+        WalProbe::Stale(Ok(kept)) => {
+            ed.set_message(format!("Stale WAL kept as {}", name_of(&kept)))
+        }
+        WalProbe::Stale(Err(e)) => ed.set_message(format!("Stale WAL for {name} not kept: {e}")),
+    };
+    (ed, fx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::core::effect::{RawFile, Read};
+    use crate::core::effect::{RawFile, Read, Recovered};
     use crate::core::eol::Eol;
     use crate::core::file::FilePath;
     use crate::core::text::Text;
@@ -573,6 +602,77 @@ mod tests {
         );
         assert_eq!(ed.buffer().eol(), Eol::Crlf);
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
+    }
+
+    fn found(bytes: &[u8], disk: DiskState) -> Result<Read, String> {
+        Ok(Read::Found(RawFile {
+            len: bytes.len() as u64,
+            disk,
+            bytes: bytes.to_vec(),
+        }))
+    }
+
+    #[test]
+    fn open_of_a_new_buffer_probes_its_wal() {
+        // I-45: the one place a WAL is looked for.
+        let disk = known(3);
+        let target = ReadTarget::Open {
+            line: Some(2),
+            show: false,
+        };
+        let (_, fx) = file_read(
+            editor(),
+            target,
+            PathBuf::from("f.txt"),
+            found(b"abc", disk),
+            Vec::new(),
+        );
+        assert_eq!(
+            fx,
+            vec![Effect::ProbeWal {
+                path: PathBuf::from("f.txt"),
+                disk,
+                line: Some(2),
+            }]
+        );
+    }
+
+    fn probed(probe: WalProbe) -> Editor {
+        let ed = file_buffer(editor(), b"disk", Eol::Lf);
+        let (ed, fx) = wal_probed(ed, PathBuf::from("f.txt"), None, probe, Vec::new());
+        assert_eq!(fx, [] as [Effect; 0]);
+        ed
+    }
+
+    #[test]
+    fn no_wal_changes_nothing() {
+        let ed = probed(WalProbe::Absent);
+        assert_eq!(ed.buffer().text().to_bytes(), b"disk");
+        assert!(!ed.buffer().modified());
+        assert_eq!(ed.message(), "");
+    }
+
+    #[test]
+    fn valid_wal_restores_text_and_eol_and_says_so() {
+        let ed = probed(WalProbe::Valid(Recovered {
+            eol: Eol::Crlf,
+            bytes: b"draft".to_vec(),
+        }));
+        assert_eq!(ed.buffer().text().to_bytes(), b"draft");
+        assert_eq!(ed.buffer().eol(), Eol::Crlf);
+        assert!(ed.buffer().modified());
+        assert_eq!(ed.message(), "[Recovered f.txt from WAL]");
+    }
+
+    #[test]
+    fn unusable_wal_is_reported_and_leaves_the_text() {
+        let ed = probed(WalProbe::Stale(Ok(PathBuf::from("dir/.f.txt.wal.stale"))));
+        assert_eq!(ed.buffer().text().to_bytes(), b"disk");
+        assert!(!ed.buffer().modified());
+        assert_eq!(ed.message(), "Stale WAL kept as .f.txt.wal.stale");
+
+        let ed = probed(WalProbe::Stale(Err("denied".to_owned())));
+        assert_eq!(ed.message(), "Stale WAL for f.txt not kept: denied");
     }
 
     #[test]

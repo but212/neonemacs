@@ -1,6 +1,7 @@
 //! Lightweight crash recovery WAL (Write-Ahead Log) for unsaved edits (§7, §14, I-23, I-25).
 //! Operates strictly in the imperative shell layer: persists snapshots/deltas during idle time.
 
+use crate::core::effect::WalProbe;
 use crate::core::eol::Eol;
 use crate::core::file::DiskState;
 use std::fs;
@@ -11,12 +12,7 @@ use std::time::{Duration, UNIX_EPOCH};
 pub const WAL_MAGIC: &[u8; 8] = b"NEONWAL2";
 const HEADER_LEN: usize = 30;
 
-/// A WAL whose disk state matched: the unsaved text (LF-normalized) and its line-ending mode.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Recovered {
-    pub eol: Eol,
-    pub bytes: Vec<u8>,
-}
+pub use crate::core::effect::Recovered;
 
 /// Returns the WAL sibling file path: `.filename.wal`
 #[must_use]
@@ -144,6 +140,35 @@ pub fn read_wal(path: &Path, disk: DiskState) -> io::Result<Recovered> {
         .ok_or_else(|| io::Error::other("WAL format invalid or disk state mismatch"))
 }
 
+/// Where an unusable WAL of `path` is kept: `.filename.wal.stale`.
+#[must_use]
+pub fn stale_path(path: &Path) -> PathBuf {
+    let mut name = wal_path(path).into_os_string();
+    name.push(".stale");
+    PathBuf::from(name)
+}
+
+/// Looks for the WAL of `path`, which was just opened with `disk`. A WAL that does not match
+/// (changed file, damaged, old format) is moved to `stale_path`, replacing an older one, so the
+/// next flush cannot overwrite it (I-44).
+#[must_use]
+pub fn probe(path: &Path, disk: DiskState) -> WalProbe {
+    let wp = wal_path(path);
+    let raw = match fs::read(&wp) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return WalProbe::Absent,
+        Err(e) => return WalProbe::Stale(Err(e.to_string())),
+    };
+    if let Some(recovered) = decode_wal(&raw, disk) {
+        return WalProbe::Valid(recovered);
+    }
+    let stale = stale_path(path);
+    WalProbe::Stale(match fs::rename(&wp, &stale) {
+        Ok(()) => Ok(stale),
+        Err(e) => Err(e.to_string()),
+    })
+}
+
 /// Removes the WAL file upon successful save, revert, or buffer close (I-25).
 pub fn remove_wal(path: &Path) {
     let wp = wal_path(path);
@@ -169,6 +194,84 @@ mod tests {
 
         remove_wal(&target);
         assert!(!has_wal(&target));
+    }
+
+    fn probe_dir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("doc.txt");
+        (dir, target)
+    }
+
+    #[test]
+    fn probe_without_a_wal_is_absent() {
+        let (_dir, target) = probe_dir();
+        assert_eq!(probe(&target, DiskState::Unknown), WalProbe::Absent);
+    }
+
+    #[test]
+    fn probe_of_a_matching_wal_returns_it_and_keeps_the_file() {
+        let (_dir, target) = probe_dir();
+        write_wal(&target, DiskState::Unknown, Eol::Crlf, b"x\n").unwrap();
+        assert_eq!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Valid(Recovered {
+                eol: Eol::Crlf,
+                bytes: b"x\n".to_vec(),
+            })
+        );
+        assert!(has_wal(&target));
+    }
+
+    #[test]
+    fn probe_moves_an_unusable_wal_aside_instead_of_deleting_it() {
+        // I-44
+        let (_dir, target) = probe_dir();
+        let other = DiskState::Known {
+            mtime: UNIX_EPOCH,
+            size: 9,
+        };
+        write_wal(&target, other, Eol::Lf, b"draft").unwrap();
+        let stale = stale_path(&target);
+        assert_eq!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Stale(Ok(stale.clone()))
+        );
+        assert!(!has_wal(&target), "the next flush must not overwrite it");
+        assert_eq!(
+            decode_wal(&fs::read(&stale).unwrap(), other).unwrap().bytes,
+            b"draft"
+        );
+    }
+
+    #[test]
+    fn probe_moves_garbage_and_old_format_aside() {
+        for raw in [b"GARBAGE".to_vec(), {
+            let mut old = encode_wal(DiskState::Unknown, Eol::Lf, b"x");
+            old[..8].copy_from_slice(b"NEONWAL1");
+            old
+        }] {
+            let (_dir, target) = probe_dir();
+            fs::write(wal_path(&target), &raw).unwrap();
+            let stale = stale_path(&target);
+            assert_eq!(
+                probe(&target, DiskState::Unknown),
+                WalProbe::Stale(Ok(stale.clone()))
+            );
+            assert_eq!(fs::read(&stale).unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn a_newer_unusable_wal_replaces_the_older_stale_copy() {
+        let (_dir, target) = probe_dir();
+        let stale = stale_path(&target);
+        fs::write(&stale, b"older").unwrap();
+        fs::write(wal_path(&target), b"newer garbage").unwrap();
+        assert!(matches!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Stale(Ok(_))
+        ));
+        assert_eq!(fs::read(&stale).unwrap(), b"newer garbage");
     }
 
     #[test]
