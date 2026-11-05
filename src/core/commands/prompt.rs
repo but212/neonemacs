@@ -127,7 +127,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Prompt(mut p) = ed.mode().clone() else {
         return (ed, fx);
     };
-    if key == Key::ctrl('g') {
+    if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
         let ed = ed.set_mode(Mode::normal()).set_message("Quit");
         return (ed, fx);
     }
@@ -390,6 +390,14 @@ mod tests {
         let ed = keys(ed, "right right C-d");
         assert_eq!(prompt_of(&ed).input(), "가나");
         assert_eq!(prompt_of(&ed).cursor_width(), 8);
+    }
+
+    #[test]
+    fn esc_cancels_prompt_like_ctrl_g() {
+        let ed = typ_prompt(keys(editor(), "M-x"), "kill");
+        let ed = keys(ed, "ESC");
+        assert_eq!(ed.mode(), &Mode::normal());
+        assert_eq!(ed.message(), "Quit");
     }
 
     fn typ_prompt(ed: Editor, s: &str) -> Editor {

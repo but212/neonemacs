@@ -123,7 +123,10 @@ mod tests {
         let ed = switch_to(ed, BufferId(0));
 
         let (ed, _) = kill_buffer(ed, other, Vec::new());
-        assert!(matches!(ed.mode(), Mode::Confirm(Confirm::KillModified(_))));
+        assert!(matches!(
+            ed.mode(),
+            Mode::Confirm(q) if matches!(q.kind, Confirm::KillModified(_))
+        ));
         let ed = keys(ed, "n");
         assert_eq!(ed.buffers().len(), 2);
         let (ed, _) = kill_buffer(ed, other, Vec::new());

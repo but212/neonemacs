@@ -31,15 +31,28 @@ pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    if ed.buffers().iter().any(Buffer::modified) {
-        let ed = ed.confirm(
-            Confirm::QuitUnsaved,
-            "Modified buffers exist; quit anyway? (y or n)",
-        );
-        (ed, fx)
-    } else {
+    let names: Vec<&str> = ed
+        .buffers()
+        .iter()
+        .filter(|b| b.modified())
+        .map(Buffer::name)
+        .collect();
+    if names.is_empty() {
         (ed.set_quit(true), fx)
+    } else {
+        let question = quit_question(&names);
+        (ed.confirm(Confirm::QuitUnsaved, question), fx)
     }
+}
+
+/// Names the modified buffers a quit would discard: the first three, then `+N` for the rest (P7).
+fn quit_question(names: &[&str]) -> String {
+    const SHOWN: usize = 3;
+    let mut list = names[..names.len().min(SHOWN)].join(", ");
+    if names.len() > SHOWN {
+        list.push_str(&format!(" +{}", names.len() - SHOWN));
+    }
+    format!("Modified: {list}; quit anyway? (y or n)")
 }
 
 /// Saves `id`. A file-backed buffer asks the shell for its disk state first (`StatDisk`);
@@ -377,6 +390,39 @@ mod tests {
             panic!("expected WriteFile");
         };
         bytes.clone()
+    }
+
+    fn quit_message(names: &[&str]) -> String {
+        let mut ed = editor();
+        for name in names {
+            let (next, id) = ed.add_buffer(name, Text::default(), Backing::None);
+            ed = next.with_buffer(id, Buffer::mark_modified);
+        }
+        // The initial `*scratch*` stays clean, so only the named buffers are listed.
+        let (ed, _) = save_buffers_kill_emacs(ed, Vec::new());
+        ed.message().to_owned()
+    }
+
+    #[test]
+    fn quit_question_names_the_modified_buffers() {
+        assert_eq!(
+            quit_message(&["a.rs"]),
+            "Modified: a.rs; quit anyway? (y or n)"
+        );
+        assert_eq!(
+            quit_message(&["a", "b", "c"]),
+            "Modified: a, b, c; quit anyway? (y or n)"
+        );
+        assert_eq!(
+            quit_message(&["a", "b", "c", "d", "e"]),
+            "Modified: a, b, c +2; quit anyway? (y or n)"
+        );
+    }
+
+    #[test]
+    fn quit_with_nothing_modified_asks_nothing() {
+        let (ed, _) = save_buffers_kill_emacs(editor(), Vec::new());
+        assert!(ed.quit());
     }
 
     #[test]
@@ -773,13 +819,13 @@ mod tests {
 
         let (ed, fx) = disk_checked(ed, target, &path, known(9), Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
-        assert_eq!(
+        assert!(matches!(
             ed.mode(),
-            &crate::core::mode::Mode::Confirm(Confirm::OverwriteFile {
+            crate::core::mode::Mode::Confirm(q) if q.kind == Confirm::OverwriteFile {
                 id,
                 path: PathBuf::from("other.txt")
-            })
-        );
+            }
+        ));
         assert_eq!(ed.message(), "File other.txt exists; overwrite? (y or n)");
     }
 
@@ -817,7 +863,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             changed.mode(),
-            crate::core::mode::Mode::Confirm(Confirm::SaveExternal(_))
+            crate::core::mode::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
         ));
     }
 
@@ -857,7 +903,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             ed.mode(),
-            crate::core::mode::Mode::Confirm(Confirm::SaveExternal(_))
+            crate::core::mode::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
         ));
     }
 

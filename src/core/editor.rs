@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 pub use crate::core::buffer::{Buffer, BufferId};
 pub use crate::core::mode::{
     Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
-    QueryReplace,
+    QueryReplace, Question,
 };
 pub use crate::core::window::{Dir, Layout, Window, snap_point as snap};
 
@@ -109,8 +109,13 @@ impl Editor {
     }
 
     #[must_use]
-    pub fn confirm(self, question: Confirm, message: impl Into<String>) -> Self {
-        self.set_mode(Mode::Confirm(question)).set_message(message)
+    pub fn confirm(self, kind: Confirm, message: impl Into<String>) -> Self {
+        let text = message.into();
+        self.set_mode(Mode::Confirm(Question {
+            kind,
+            text: text.clone(),
+        }))
+        .set_message(text)
     }
 
     #[must_use]

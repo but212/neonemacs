@@ -2,7 +2,7 @@
 //! Decouples routing and command execution lifecycle from Editor state management.
 
 use crate::core::commands;
-use crate::core::editor::{Confirm, Editor, Mode, Prefix};
+use crate::core::editor::{Editor, Mode, Prefix, Question};
 use crate::core::effect::{Effect, Effects};
 use crate::core::keymap::{Code, Key};
 
@@ -24,17 +24,32 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     }
 }
 
-/// Answers a yes-or-no question. `y` confirms, `n` and `C-g` cancel, other keys wait.
+/// The answer character a key means: case folds, and the Korean two-set jamo on the keys
+/// `y`, `n`, `q` count as those letters. Used only where a modal question is answered (I-46).
 #[must_use]
-pub fn answer(mut ed: Editor, question: Confirm, key: Key, fx: Effects) -> (Editor, Effects) {
-    let yes = key.text() == Some('y');
-    if yes || key.text() == Some('n') || key == Key::ctrl('g') {
+pub fn answer_char(key: Key) -> Option<char> {
+    Some(match key.text()? {
+        'ㅛ' => 'y',
+        'ㅜ' => 'n',
+        'ㅂ' => 'q',
+        c => c.to_ascii_lowercase(),
+    })
+}
+
+/// Answers a yes-or-no question. `y` confirms; `n`, `C-g`, and `Esc` cancel. Any other key
+/// leaves the question open and repeats it (I-46).
+#[must_use]
+pub fn answer(mut ed: Editor, question: Question, key: Key, fx: Effects) -> (Editor, Effects) {
+    let choice = answer_char(key);
+    if choice == Some('y') {
         ed = ed.set_mode(Mode::normal());
-        if yes {
-            return commands::confirmed(ed, question, fx);
-        }
-        ed = ed.set_message("Cancelled");
+        return commands::confirmed(ed, question.kind, fx);
     }
+    ed = if choice == Some('n') || key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
+        ed.set_mode(Mode::normal()).set_message("Quit")
+    } else {
+        ed.set_message(format!("Please answer y or n. {}", question.text))
+    };
     (ed, fx)
 }
 
@@ -108,4 +123,54 @@ pub fn command(
 ) -> (Editor, Effects) {
     let (ed, fx) = run(ed.begin_command(), fx);
     (ed.end_command(), fx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::editor::Confirm;
+    use crate::test_support::{editor, press, text, typ};
+
+    fn asking() -> Editor {
+        let ed = typ(editor(), "x");
+        let id = ed.window().buffer;
+        ed.confirm(Confirm::KillModified(id), "Kill? (y or n)")
+    }
+
+    #[test]
+    fn answer_folds_case_and_korean_jamo() {
+        for c in ['y', 'Y', 'ㅛ'] {
+            let ed = press(asking(), Key::plain(Code::Char(c)));
+            assert_eq!(ed.mode(), &Mode::normal(), "{c}");
+            assert_eq!(text(&ed), "", "{c} confirms: the modified buffer is killed");
+        }
+        for c in ['n', 'N', 'ㅜ'] {
+            let ed = press(asking(), Key::plain(Code::Char(c)));
+            assert_eq!(ed.mode(), &Mode::normal(), "{c}");
+            assert_eq!(text(&ed), "x", "{c} cancels");
+            assert_eq!(ed.message(), "Quit");
+        }
+    }
+
+    #[test]
+    fn answer_cancels_on_esc_and_ctrl_g_with_one_message() {
+        for key in [Key::plain(Code::Esc), Key::ctrl('g')] {
+            let ed = press(asking(), key);
+            assert_eq!(ed.mode(), &Mode::normal());
+            assert_eq!(text(&ed), "x");
+            assert_eq!(ed.message(), "Quit");
+        }
+    }
+
+    #[test]
+    fn other_keys_keep_the_question_and_say_so() {
+        for key in [Key::plain(Code::Enter), Key::plain(Code::Char('x'))] {
+            let ed = press(asking(), key);
+            assert!(matches!(ed.mode(), Mode::Confirm(_)));
+            assert_eq!(ed.message(), "Please answer y or n. Kill? (y or n)");
+            // A second wrong key does not stack the hint.
+            let ed = press(ed, Key::plain(Code::Char('z')));
+            assert_eq!(ed.message(), "Please answer y or n. Kill? (y or n)");
+        }
+    }
 }

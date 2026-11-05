@@ -123,6 +123,13 @@ pub enum Confirm {
     RevertModified(BufferId),
 }
 
+/// A pending yes-or-no question and the text that asked it, so a wrong answer can repeat it (I-46).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    pub kind: Confirm,
+    pub text: String,
+}
+
 /// An incremental search in progress (§9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Isearch {
@@ -152,7 +159,7 @@ pub struct QueryReplace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Normal { prefix: Prefix },
-    Confirm(Confirm),
+    Confirm(Question),
     Isearch(Isearch),
     QueryReplace(QueryReplace),
     Prompt(Prompt),

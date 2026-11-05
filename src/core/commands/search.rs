@@ -1,6 +1,7 @@
 //! Incremental search and interactive query-replace commands (§9).
 
 use crate::core::commands::prompt::prompt;
+use crate::core::dispatch::answer_char;
 use crate::core::editor::{
     Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
 };
@@ -51,7 +52,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Isearch(mut s) = ed.mode().clone() else {
         return (ed, fx);
     };
-    if key == Key::ctrl('g') {
+    if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
         let ed = ed
             .set_mode(Mode::normal())
             .move_point(s.origin)
@@ -192,7 +193,7 @@ pub fn start_query_replace(
     };
     let ed = ed
         .set_mode(Mode::QueryReplace(q))
-        .set_message("Query replacing (y, n, !, q)");
+        .set_message("Query replacing from point (y, n, !, q)");
     (ed, Ok(()))
 }
 
@@ -211,7 +212,7 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
         return ed;
     };
     let (start, end) = q.current;
-    match key.text() {
+    match answer_char(key) {
         Some('y' | ' ') => match replace_match(ed, &q, start, end) {
             (ed, Some(from)) => {
                 q.count += 1;
@@ -242,8 +243,8 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
             finish(ed, &q)
         }
         Some('q' | '\n') => finish(ed, &q),
-        None if key == Key::ctrl('g') => finish(ed, &q),
-        _ => ed,
+        None if key == Key::ctrl('g') || key == Key::plain(Code::Esc) => finish(ed, &q),
+        _ => ed.set_message("Answer y, n, !, or q"),
     }
 }
 
@@ -358,6 +359,69 @@ mod tests {
                 prefix: Prefix::None
             }
         );
+    }
+
+    #[test]
+    fn query_replace_folds_answers_and_esc_stops() {
+        for stop in ["ESC", "ㅂ", "Q"] {
+            let ed = typ(editor(), "foo foo");
+            let ed = keys(ed, "C-a");
+            let ed = run_command(ed, |e, fx| {
+                (start_query(e, "foo", "qux", MatchKind::Literal), fx)
+            });
+            let ed = if stop == "ESC" {
+                keys(ed, "y ESC")
+            } else {
+                keys(ed, "y")
+            };
+            let ed = if stop == "ESC" { ed } else { typ(ed, stop) };
+            assert_eq!(text(&ed), "qux foo", "{stop}");
+            assert_eq!(ed.mode(), &Mode::normal(), "{stop}");
+            assert_eq!(ed.message(), "Replaced 1 occurrence(s)", "{stop}");
+        }
+        let ed = typ(editor(), "foo foo");
+        let ed = keys(ed, "C-a");
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
+        });
+        let ed = typ(ed, "Y");
+        assert_eq!(text(&ed), "qux foo");
+        let ed = typ(ed, "ㅜ");
+        assert_eq!(ed.mode(), &Mode::normal());
+        assert_eq!(text(&ed), "qux foo");
+    }
+
+    #[test]
+    fn query_replace_start_says_it_searches_from_point() {
+        let ed = typ(editor(), "foo");
+        let ed = keys(ed, "C-a");
+        let ed = start_query(ed, "foo", "qux", MatchKind::Literal);
+        assert_eq!(ed.message(), "Query replacing from point (y, n, !, q)");
+    }
+
+    #[test]
+    fn query_replace_unknown_key_hints_and_keeps_session() {
+        let ed = typ(editor(), "foo");
+        let ed = keys(ed, "C-a");
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
+        });
+        let ed = typ(ed, "z");
+        assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
+        assert_eq!(ed.message(), "Answer y, n, !, or q");
+        assert_eq!(text(&ed), "foo");
+    }
+
+    #[test]
+    fn isearch_esc_cancels_like_ctrl_g() {
+        let ed = typ(editor(), "abc abd");
+        let ed = keys(ed, "C-a C-s");
+        let ed = typ(ed, "b");
+        assert_eq!(point(&ed), 2);
+        let ed = keys(ed, "ESC");
+        assert_eq!(point(&ed), 0);
+        assert_eq!(ed.mode(), &Mode::normal());
+        assert_eq!(ed.message(), "Quit");
     }
 
     #[test]
