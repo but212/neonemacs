@@ -4,8 +4,7 @@ use crate::core::keymap::{Code, Key, ctrl_key};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// Canonical key for a terminal event (I-12). Several terminal encodings
-/// map to one key: `C-_`, `C-/`, and `C-7` all mean undo; `C-SPC`, `C-@`,
-/// and `C-2` all mean mark.
+/// map to one key: `C-_`, `C-/`, and `C-7` all mean undo.
 #[must_use]
 pub const fn from_terminal(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     let meta = mods.contains(KeyModifiers::ALT);
@@ -43,11 +42,6 @@ mod tests {
         assert_eq!(norm(KeyCode::Char('7'), M::CONTROL), undo);
         assert_eq!(norm(KeyCode::Char('/'), M::CONTROL), undo);
         assert_eq!(norm(KeyCode::Char('_'), M::CONTROL), undo);
-
-        let mark = parse_keys("C-SPC").unwrap()[0];
-        assert_eq!(norm(KeyCode::Char(' '), M::CONTROL), mark);
-        assert_eq!(norm(KeyCode::Char('@'), M::CONTROL), mark);
-        assert_eq!(norm(KeyCode::Char('2'), M::CONTROL), mark);
 
         assert_eq!(
             norm(KeyCode::Char('x'), M::ALT),
@@ -161,12 +155,9 @@ mod tests {
         assert!(cm_f.ctrl);
         assert!(cm_f.meta);
 
-        // C-M on undo/mark aliases
+        // C-M on undo aliases
         let cm_undo = from_terminal(KeyCode::Char('7'), M::CONTROL | M::ALT).unwrap();
         assert_eq!(cm_undo, parse_keys("C-M-_").unwrap()[0]);
-
-        let cm_mark = from_terminal(KeyCode::Char('2'), M::CONTROL | M::ALT).unwrap();
-        assert_eq!(cm_mark, parse_keys("C-M-SPC").unwrap()[0]);
 
         // Case folding under Control: C-A should equal C-a
         let ca_upper = from_terminal(KeyCode::Char('A'), M::CONTROL).unwrap();

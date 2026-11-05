@@ -1,7 +1,7 @@
 //! Screen model: window rectangles, per-cell grid, and line diffs (§5, §11, A5).
 //! `scroll` adjusts the view so point stays visible; `frame` is pure.
 
-use crate::core::editor::{Buffer, Dir, Editor, Layout, Window};
+use crate::core::editor::{Buffer, Dir, Editor, Layout, Mode, Window};
 use crate::core::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::core::text::{Text, Unit};
 use crate::core::width::{char_width, column, unit_width};
@@ -127,6 +127,7 @@ pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
 
 fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
     let height = area.h.saturating_sub(1).max(1);
+    w.height = height;
     let width = area.w.max(1);
     let p = w.point.min(text.len());
     if p < w.top {
@@ -160,7 +161,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
-        let status = fit(&status_text(buf, w.point, area.w), area.w, '-');
+        let status = fit(&status_text(buf, w.point, area.w, tab), area.w, '-');
         let status_cells: Vec<Cell> = status.into_iter().map(Cell::plain).collect();
         grid = put(
             grid,
@@ -174,7 +175,18 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     }
 
     if rows > 0 {
-        let echo = fit(ed.message(), cols, ' ');
+        // While a prompt is shown, the cursor sits in the echo area and the tail of a long line stays visible.
+        let message = match ed.mode() {
+            Mode::Prompt(p) if ed.message() == p.echo() => {
+                let want = (p.cursor_width() + 1).saturating_sub(cols);
+                let (rest, skipped) = skip_cells(ed.message(), want);
+                let x = p.cursor_width().saturating_sub(skipped);
+                cursor = (x.min(cols.saturating_sub(1)), rows - 1);
+                rest
+            }
+            _ => ed.message(),
+        };
+        let echo = fit(message, cols, ' ');
         let echo_cells: Vec<Cell> = echo.into_iter().map(Cell::plain).collect();
         grid = put(grid, rows - 1, 0, echo_cells);
     }
@@ -308,20 +320,40 @@ fn glyph(c: char, w: usize) -> Vec<String> {
     cells
 }
 
-/// The status line for a window `width` cells wide. The EOL mode is dropped first when it does not fit.
-fn status_text(buf: &Buffer, point: usize, width: usize) -> String {
+/// The status line for a window `width` cells wide. Line and column are 1-based; the column is the display column.
+/// What does not fit is dropped in this order: the EOL mode, then the percentage.
+fn status_text(buf: &Buffer, point: usize, width: usize, tab: usize) -> String {
     let mark = if buf.modified() { "**" } else { "--" };
     let view = if buf.view_only() { " (view)" } else { "" };
     let percent = (point as u64 * 100)
         .checked_div(buf.text().len() as u64)
         .unwrap_or(100);
+    let text = buf.text();
+    let p = point.min(text.len());
+    let line = text.count_lines(0, p) + 1;
+    let col = column(text, p, tab) + 1;
     let head = format!("-{mark}-  {}{view}", buf.name());
-    let full = format!("{head}  {}  {percent}%", buf.eol().label());
-    if text_width(&full) <= width {
-        full
-    } else {
-        format!("{head}  {percent}%")
+    let eol = buf.eol().label();
+    let pos = format!("{line}:{col}");
+    [
+        format!("{head}  {eol}  {pos}  {percent}%"),
+        format!("{head}  {pos}  {percent}%"),
+    ]
+    .into_iter()
+    .find(|s| text_width(s) <= width)
+    .unwrap_or_else(|| format!("{head}  {pos}"))
+}
+
+/// Drops leading characters until at least `cells` display columns are gone. Returns the rest and the columns dropped.
+fn skip_cells(s: &str, cells: usize) -> (&str, usize) {
+    let mut skipped = 0;
+    for (i, c) in s.char_indices() {
+        if skipped >= cells {
+            return (&s[i..], skipped);
+        }
+        skipped += char_width(c);
     }
+    ("", skipped)
 }
 
 fn text_width(s: &str) -> usize {
@@ -370,6 +402,16 @@ mod tests {
     }
 
     #[test]
+    fn scroll_records_body_height_per_window() {
+        let ed = Editor::new(Config::default());
+        assert_eq!(ed.window().height, 0);
+        let ed = scroll(ed, 20, 6);
+        assert_eq!(ed.window().height, 4);
+        let ed = scroll(ed.with_windows(|wm| wm.split(Dir::Below)), 20, 10);
+        assert!(ed.windows().windows().iter().all(|w| w.height >= 1));
+    }
+
+    #[test]
     fn frame_hangul_and_tab() {
         let r = screen_rows("가나\na\tb", 0, 10, 4);
         assert_eq!(r[0], format!("가나{}", " ".repeat(6)));
@@ -395,14 +437,14 @@ mod tests {
     fn frame_status_line_shows_name_state_and_percent() {
         let ed = Editor::new(Config::default()).with_current_buffer(|b| {
             b.with_text(Text::from_bytes(b"abc"))
-                .set_modified(true)
+                .mark_modified()
                 .set_view_only(true)
                 .set_name("f.txt")
         });
-        let ed = scroll(ed, 30, 3);
-        let f = frame(&ed, 30, 3);
+        let ed = scroll(ed, 40, 3);
+        let f = frame(&ed, 40, 3);
         let r = f.row_strings();
-        assert!(r[1].starts_with("-**-  f.txt (view)  LF  0%"));
+        assert!(r[1].starts_with("-**-  f.txt (view)  LF  1:1  0%"));
         assert!(r[1].ends_with('-'));
     }
 
@@ -416,19 +458,54 @@ mod tests {
 
     #[test]
     fn status_line_shows_eol_mode() {
-        let ed = scroll(status_editor(Eol::Crlf), 21, 3);
-        assert_eq!(frame(&ed, 21, 3).row_strings()[1], "----  f.txt  CRLF  0%");
+        let ed = scroll(status_editor(Eol::Crlf), 26, 3);
+        assert_eq!(
+            frame(&ed, 26, 3).row_strings()[1],
+            "----  f.txt  CRLF  1:1  0%"
+        );
 
-        let ed = scroll(status_editor(Eol::Lf), 19, 3);
-        assert_eq!(frame(&ed, 19, 3).row_strings()[1], "----  f.txt  LF  0%");
+        let ed = scroll(status_editor(Eol::Lf), 24, 3);
+        assert_eq!(
+            frame(&ed, 24, 3).row_strings()[1],
+            "----  f.txt  LF  1:1  0%"
+        );
     }
 
     #[test]
     fn status_line_drops_eol_before_percent_when_narrow() {
-        // Full text is 21 cells. At 20 the EOL goes and the percent stays.
-        let ed = scroll(status_editor(Eol::Crlf), 20, 3);
-        let r = frame(&ed, 20, 3).row_strings();
-        assert_eq!(r[1], format!("{:-<20}", "----  f.txt  0%"));
+        // Full text is 26 cells. At 25 the EOL goes and the position and percent stay.
+        let ed = scroll(status_editor(Eol::Crlf), 25, 3);
+        let r = frame(&ed, 25, 3).row_strings();
+        assert_eq!(r[1], format!("{:-<25}", "----  f.txt  1:1  0%"));
+    }
+
+    #[test]
+    fn status_line_drops_percent_before_position_when_narrower() {
+        // Without EOL and percent the text is 16 cells.
+        let ed = scroll(status_editor(Eol::Crlf), 19, 3);
+        let r = frame(&ed, 19, 3).row_strings();
+        assert_eq!(r[1], format!("{:-<19}", "----  f.txt  1:1"));
+    }
+
+    #[test]
+    fn status_line_position_counts_lines_and_display_columns() {
+        // Line 2 is "가", a tab to column 8, and "b": point at the end sits in display column 9.
+        let text = Text::from_bytes(
+            "a
+가	b"
+                .as_bytes(),
+        );
+        let buf = Buffer::new(
+            crate::core::buffer::BufferId(1),
+            "t",
+            text,
+            crate::core::file::Backing::None,
+        );
+        let end = buf.text().len();
+        assert!(status_text(&buf, end, 60, 8).contains("  2:10  "));
+        assert!(status_text(&buf, 0, 60, 8).contains("  1:1  "));
+        // Point past the end is clamped.
+        assert!(status_text(&buf, end + 99, 60, 8).contains("  2:10  "));
     }
 
     #[test]
@@ -449,8 +526,44 @@ mod tests {
             text,
             crate::core::file::Backing::None,
         );
-        let s = status_text(&buf, 5, 40);
+        let s = status_text(&buf, 5, 40, 8);
         // 5 * 100 / 11 = 45%
         assert!(s.contains("45%"));
+    }
+
+    fn prompt_editor(before: &str, after: &str) -> Editor {
+        use crate::core::editor::{Prompt, Purpose};
+        let p = Prompt {
+            label: "Find file: ".into(),
+            before: before.into(),
+            after: after.into(),
+            purpose: Purpose::FindFile,
+        };
+        let msg = p.echo();
+        Editor::new(Config::default())
+            .set_mode(Mode::Prompt(p))
+            .set_message(msg)
+    }
+
+    #[test]
+    fn prompt_cursor_follows_input_cursor_in_display_columns() {
+        let ed = prompt_editor("가a", "bc");
+        // "Find file: " is 11 columns; "가" is 2 and "a" is 1.
+        assert_eq!(frame(&ed, 40, 4).cursor, (14, 3));
+    }
+
+    #[test]
+    fn prompt_long_input_scrolls_to_keep_cursor_visible() {
+        let ed = prompt_editor(&"x".repeat(30), "");
+        let f = frame(&ed, 20, 4);
+        assert_eq!(f.cursor, (19, 3));
+        let echo = f.row_strings()[3].clone();
+        assert!(echo.starts_with(&"x".repeat(19)), "{echo}");
+    }
+
+    #[test]
+    fn prompt_note_message_leaves_cursor_in_text_area() {
+        let ed = prompt_editor("is", "").set_message("No match");
+        assert_eq!(frame(&ed, 40, 4).cursor, (0, 0));
     }
 }

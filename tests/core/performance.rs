@@ -16,20 +16,14 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
     let (ed, id) = ed.add_buffer("large", Text::from_bytes(&large_bytes), Backing::None);
     let ed = neonemacs::core::commands::buffer_window::switch_to(ed, id);
 
-    let edit = Edit::Insert {
-        pos: 0,
-        bytes: b"x".to_vec(),
-    };
+    let edit = Edit::insert(0, b"x".as_slice());
 
     // First edit initializes the gap
     let (ed, _) = ed.apply(&edit);
 
     // Second edit must be O(1) in-place without deep-cloning the 32MB buffer.
     // If Editor::apply clones the entire Buffer on each keypress, this will take tens of ms.
-    let edit2 = Edit::Insert {
-        pos: 1,
-        bytes: b"y".to_vec(),
-    };
+    let edit2 = Edit::insert(1, b"y".as_slice());
     let start = Instant::now();
     let (ed, _) = ed.apply(&edit2);
     let elapsed = start.elapsed();

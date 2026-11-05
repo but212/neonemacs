@@ -36,11 +36,8 @@ pub(crate) fn goto_line_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn prompt(ed: Editor, label: &str, purpose: Purpose) -> Editor {
-    ed.set_message(label).set_mode(Mode::Prompt(Prompt {
-        label: label.to_owned(),
-        input: String::new(),
-        purpose,
-    }))
+    ed.set_message(label)
+        .set_mode(Mode::Prompt(Prompt::new(label, purpose)))
 }
 
 /// Every built-in command name and registered Lua command with the keys bound to it,
@@ -75,18 +72,21 @@ fn candidates(ed: &Editor, purpose: &Purpose, input: &str) -> Vec<(String, Strin
 /// TAB: extends the input to the common prefix, or lists the candidates.
 /// Returns the prompt and the message to show, if any.
 fn complete(ed: &Editor, mut p: Prompt) -> (Prompt, Option<String>) {
-    let cands = candidates(ed, &p.purpose, &p.input);
+    let input = p.input();
+    let cands = candidates(ed, &p.purpose, &input);
     match cands.as_slice() {
         [] => (p, Some("No match".to_owned())),
         [(name, _)] => {
-            p.input.clone_from(name);
+            p.before.clone_from(name);
+            p.after.clear();
             (p, None)
         }
         _ => {
             let names: Vec<&str> = cands.iter().map(|(n, _)| n.as_str()).collect();
             let common = common_prefix(&names);
-            if common.len() > p.input.len() {
-                p.input = common;
+            if common.len() > input.len() {
+                p.before = common;
+                p.after.clear();
             }
             let list = cands
                 .iter()
@@ -137,19 +137,38 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     }
     let mut note = None;
     if key == Key::plain(Code::Backspace) {
-        p.input.pop();
+        p.before.pop();
     } else if key == Key::plain(Code::Tab) {
         (p, note) = complete(&ed, p);
+    } else if key == Key::ctrl('b') || key == Key::plain(Code::Left) {
+        if let Some(c) = p.before.pop() {
+            p.after.insert(0, c);
+        }
+    } else if key == Key::ctrl('f') || key == Key::plain(Code::Right) {
+        if !p.after.is_empty() {
+            let c = p.after.remove(0);
+            p.before.push(c);
+        }
+    } else if key == Key::ctrl('a') || key == Key::plain(Code::Home) {
+        p.after = p.input();
+        p.before.clear();
+    } else if key == Key::ctrl('e') || key == Key::plain(Code::End) {
+        p.before = p.input();
+        p.after.clear();
+    } else if key == Key::ctrl('d') {
+        if !p.after.is_empty() {
+            p.after.remove(0);
+        }
     } else if let Some(c) = key.text() {
-        p.input.push(c);
+        p.before.push(c);
     }
-    let msg = note.unwrap_or_else(|| format!("{}{}", p.label, p.input));
+    let msg = note.unwrap_or_else(|| p.echo());
     let ed = ed.set_message(msg).set_mode(Mode::Prompt(p));
     (ed, fx)
 }
 
 fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
-    let input = p.input;
+    let input = p.input();
     match p.purpose {
         Purpose::ExecuteCommand => crate::core::dispatch::run_named(ed, &input, fx),
         Purpose::FindFile => find_file(ed, &input, fx),
@@ -229,7 +248,7 @@ mod tests {
         assert!(matches!(ed.mode(), Mode::Prompt(_)));
         let ed = typ(ed, "for");
         let ed = keys(ed, "TAB");
-        assert!(matches!(ed.mode(), Mode::Prompt(p) if p.input == "forward-char"));
+        assert!(matches!(ed.mode(), Mode::Prompt(p) if p.input() == "forward-char"));
         let ed = keys(ed, "C-g");
         assert_eq!(
             ed.mode(),
@@ -268,11 +287,12 @@ mod tests {
         // Multi candidate expands to common prefix and formats candidate notes
         let p = Prompt {
             label: "M-x ".into(),
-            input: "is".into(),
+            before: "is".into(),
+            after: String::new(),
             purpose: Purpose::ExecuteCommand,
         };
         let (p, note) = complete(&ed, p);
-        assert_eq!(p.input, "isearch-");
+        assert_eq!(p.input(), "isearch-");
         let note = note.expect("should produce candidates note");
         assert!(note.contains("isearch-forward"));
         assert!(note.contains("isearch-backward"));
@@ -280,11 +300,12 @@ mod tests {
         // No match candidate
         let p_none = Prompt {
             label: "M-x ".into(),
-            input: "nonexistent_command_prefix".into(),
+            before: "nonexistent_command_prefix".into(),
+            after: String::new(),
             purpose: Purpose::ExecuteCommand,
         };
         let (p_none, note_none) = complete(&ed, p_none);
-        assert_eq!(p_none.input, "nonexistent_command_prefix");
+        assert_eq!(p_none.input(), "nonexistent_command_prefix");
         assert_eq!(note_none.as_deref(), Some("No match"));
 
         // Buffer candidates completion
@@ -292,11 +313,12 @@ mod tests {
         let (ed, _) = ed.add_buffer("alpha_2", Text::default(), Backing::None);
         let p_buf = Prompt {
             label: "Switch to buffer: ".into(),
-            input: "alph".into(),
+            before: "alph".into(),
+            after: String::new(),
             purpose: Purpose::SwitchBuffer,
         };
         let (p_buf, note_buf) = complete(&ed, p_buf);
-        assert_eq!(p_buf.input, "alpha_");
+        assert_eq!(p_buf.input(), "alpha_");
         let note_buf = note_buf.expect("should produce buffer candidates note");
         assert!(note_buf.contains("alpha_1"));
         assert!(note_buf.contains("alpha_2"));
@@ -328,5 +350,60 @@ mod tests {
         assert!(all.iter().any(|(name, _)| name == "forward-word"));
         assert!(all.iter().any(|(name, _)| name == "fill-paragraph"));
         assert!(all.iter().any(|(name, _)| name == "kill-line"));
+    }
+
+    fn prompt_of(ed: &Editor) -> Prompt {
+        match ed.mode() {
+            Mode::Prompt(p) => p.clone(),
+            other => panic!("not a prompt: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_inline_editing_moves_inserts_and_deletes_at_cursor() {
+        let ed = keys(editor(), "M-x");
+        let ed = keys(ed, "a b c");
+        let ed = keys(ed, "C-b C-b");
+        let p = prompt_of(&ed);
+        assert_eq!((p.before.as_str(), p.after.as_str()), ("a", "bc"));
+        let ed = keys(ed, "x");
+        assert_eq!(prompt_of(&ed).input(), "axbc");
+        let ed = keys(ed, "C-d");
+        assert_eq!(prompt_of(&ed).input(), "axc");
+        let ed = keys(ed, "DEL");
+        assert_eq!(prompt_of(&ed).input(), "ac");
+        let ed = keys(ed, "C-a");
+        assert_eq!(prompt_of(&ed).before, "");
+        let ed = keys(ed, "C-d C-e");
+        let p = prompt_of(&ed);
+        assert_eq!((p.before.as_str(), p.after.as_str()), ("c", ""));
+        assert_eq!(ed.message(), "M-x c");
+    }
+
+    #[test]
+    fn prompt_cursor_stops_at_both_ends_and_handles_hangul() {
+        let ed = keys(editor(), "M-x");
+        let ed = typ_prompt(ed, "가나");
+        let ed = keys(ed, "left left left right");
+        let p = prompt_of(&ed);
+        assert_eq!((p.before.as_str(), p.after.as_str()), ("가", "나"));
+        let ed = keys(ed, "right right C-d");
+        assert_eq!(prompt_of(&ed).input(), "가나");
+        assert_eq!(prompt_of(&ed).cursor_width(), 8);
+    }
+
+    fn typ_prompt(ed: Editor, s: &str) -> Editor {
+        s.chars().fold(ed, |ed, c| {
+            prompt_key(ed, Key::plain(Code::Char(c)), Vec::new()).0
+        })
+    }
+
+    #[test]
+    fn prompt_completion_replaces_whole_input_and_moves_cursor_to_end() {
+        let ed = typ_prompt(keys(editor(), "M-x"), "kill-lin");
+        let ed = keys(ed, "C-b");
+        let ed = keys(ed, "TAB");
+        let p = prompt_of(&ed);
+        assert_eq!((p.before.as_str(), p.after.as_str()), ("kill-line", ""));
     }
 }

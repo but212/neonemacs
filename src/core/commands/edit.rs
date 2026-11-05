@@ -104,7 +104,7 @@ pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
 mod tests {
     use super::*;
     use crate::core::editor::KillRing;
-    use crate::test_support::{editor, keys, point, run_command, text, typ};
+    use crate::test_support::{editor, keys, point, run_command, set_mark, text, typ};
 
     #[test]
     fn insert_hangul_saves_utf8() {
@@ -125,7 +125,8 @@ mod tests {
     #[test]
     fn kill_ring_region_and_yank() {
         let ed = typ(editor(), "abc");
-        let ed = keys(ed, "C-a C-SPC C-f C-f");
+        let ed = set_mark(keys(ed, "C-a"));
+        let ed = keys(ed, "C-f C-f");
         let ed = keys(ed, "C-w");
         assert_eq!(text(&ed), "c");
         assert_eq!(point(&ed), 0);

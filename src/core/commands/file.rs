@@ -90,14 +90,14 @@ pub fn disk_checked(
         let fx = write_to(&ed, id, path.to_path_buf(), fx);
         return (ed, fx);
     }
-    if ed.buffer_by_id(id).backing().disk() != state {
+    if ed.buffer_by_id(id).backing().disk() == state {
+        let fx = write_buffer(&ed, id, fx);
+        (ed, fx)
+    } else {
         let ed = ed.confirm(
             Confirm::SaveExternal(id),
             "File changed on disk since it was read; overwrite? (y or n)",
         );
-        (ed, fx)
-    } else {
-        let fx = write_buffer(&ed, id, fx);
         (ed, fx)
     }
 }
@@ -366,7 +366,7 @@ mod tests {
                     DiskState::Unknown,
                 ))
                 .set_eol(eol)
-                .set_modified(false)
+                .mark_clean()
         })
     }
 
@@ -550,8 +550,8 @@ mod tests {
 
     #[test]
     fn oversized_revert_keeps_buffer_and_wal() {
-        let ed = file_buffer(small_limit(), b"ab", Eol::Lf)
-            .with_current_buffer(|b| b.set_modified(true));
+        let ed =
+            file_buffer(small_limit(), b"ab", Eol::Lf).with_current_buffer(Buffer::mark_modified);
         let id = ed.window().buffer;
         let read = Read::Found(RawFile {
             len: 10,
@@ -627,7 +627,7 @@ mod tests {
                     FilePath::resolve(Path::new("/w"), Path::new("a.txt")),
                     DiskState::Unknown,
                 ))
-                .set_modified(false)
+                .mark_clean()
         });
         let count = ed.buffers().iter().count();
         let read = Read::Found(RawFile {
@@ -877,8 +877,7 @@ mod tests {
 
     #[test]
     fn revert_of_deleted_file_keeps_buffer_and_wal() {
-        let ed =
-            file_buffer(editor(), b"abc", Eol::Lf).with_current_buffer(|b| b.set_modified(true));
+        let ed = file_buffer(editor(), b"abc", Eol::Lf).with_current_buffer(Buffer::mark_modified);
         let id = ed.window().buffer;
         let (ed, fx) = file_read(
             ed,

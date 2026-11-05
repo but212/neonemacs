@@ -126,8 +126,16 @@ impl Buffer {
     }
 
     #[must_use]
-    pub const fn set_modified(mut self, modified: bool) -> Self {
-        self.modified = modified;
+    pub const fn mark_modified(mut self) -> Self {
+        self.modified = true;
+        self
+    }
+
+    /// Clears `modified` and `wal_dirty` together, so `wal_dirty` never outlives `modified` (I-31).
+    #[must_use]
+    pub fn mark_clean(mut self) -> Self {
+        self.modified = false;
+        self.backing = self.backing.set_wal_dirty(false);
         self
     }
 
@@ -196,9 +204,15 @@ impl Buffer {
         undo_limit: usize,
     ) -> (Self, usize) {
         match &edit {
-            Edit::Insert { pos, bytes } => self.text = self.text.insert(*pos, bytes),
-            Edit::Delete { pos, bytes } => {
-                self.text = self.text.delete(*pos..*pos + bytes.len());
+            Edit::Replace {
+                pos,
+                removed,
+                inserted,
+            } => {
+                self.text = self
+                    .text
+                    .delete(*pos..*pos + removed.len())
+                    .insert(*pos, inserted);
             }
             Edit::SetEol { to, .. } => self.eol = *to,
         }
@@ -323,7 +337,7 @@ impl BufferPool {
                 let mut buf = buf
                     .with_text(Text::from_bytes(bytes))
                     .set_eol(eol)
-                    .set_modified(true)
+                    .mark_modified()
                     .clear_wal_dirty();
                 if let Some(n) = line {
                     let pos = buf.text.nth_line_start(n);
@@ -408,15 +422,23 @@ mod tests {
     #[test]
     fn backing_none_never_wal_dirty() {
         let buf = Buffer::new(BufferId(0), "*scratch*", Text::default(), Backing::None);
-        let (buf, _) = buf.apply_edit(
-            Edit::Insert {
-                pos: 0,
-                bytes: b"a".to_vec(),
-            },
-            |a| a,
-            1 << 20,
-        );
+        let (buf, _) = buf.apply_edit(Edit::insert(0, b"a".as_slice()), |a| a, 1 << 20);
         assert!(buf.modified());
+        assert!(!buf.is_wal_dirty());
+    }
+
+    #[test]
+    fn mark_clean_clears_wal_dirty() {
+        use crate::core::file::{DiskState, FilePath};
+        let backing = Backing::file(
+            FilePath::resolve(Path::new("/w"), Path::new("a.txt")),
+            DiskState::Unknown,
+        );
+        let buf = Buffer::new(BufferId(0), "a.txt", Text::default(), backing);
+        let (buf, _) = buf.apply_edit(Edit::insert(0, b"a".as_slice()), |a| a, 1 << 20);
+        assert!(buf.modified() && buf.is_wal_dirty());
+        let buf = buf.mark_clean();
+        assert!(!buf.modified());
         assert!(!buf.is_wal_dirty());
     }
 }

@@ -91,7 +91,7 @@ impl Backing {
     }
 
     #[must_use]
-    pub fn set_wal_dirty(self, dirty: bool) -> Self {
+    pub(crate) fn set_wal_dirty(self, dirty: bool) -> Self {
         match self {
             Self::File { path, disk, .. } => Self::File {
                 path,

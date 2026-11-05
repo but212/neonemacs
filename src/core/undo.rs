@@ -4,32 +4,47 @@ use crate::core::eol::Eol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
-    Insert {
+    /// Replaces `removed` at `pos` by `inserted`. An insert has empty `removed`, a delete has
+    /// empty `inserted`, and the inverse swaps the two.
+    Replace {
         pos: usize,
-        bytes: Vec<u8>,
-    },
-    Delete {
-        pos: usize,
-        bytes: Vec<u8>,
+        removed: Vec<u8>,
+        inserted: Vec<u8>,
     },
     /// Changes the save encoding only. The text is unchanged.
-    SetEol {
-        from: Eol,
-        to: Eol,
-    },
+    SetEol { from: Eol, to: Eol },
 }
 
 impl Edit {
     #[must_use]
+    pub fn insert(pos: usize, bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Replace {
+            pos,
+            removed: Vec::new(),
+            inserted: bytes.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn delete(pos: usize, bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Replace {
+            pos,
+            removed: bytes.into(),
+            inserted: Vec::new(),
+        }
+    }
+
+    #[must_use]
     pub fn inverse(&self) -> Self {
         match self {
-            Self::Insert { pos, bytes } => Self::Delete {
+            Self::Replace {
+                pos,
+                removed,
+                inserted,
+            } => Self::Replace {
                 pos: *pos,
-                bytes: bytes.clone(),
-            },
-            Self::Delete { pos, bytes } => Self::Insert {
-                pos: *pos,
-                bytes: bytes.clone(),
+                removed: inserted.clone(),
+                inserted: removed.clone(),
             },
             Self::SetEol { from, to } => Self::SetEol {
                 from: *to,
@@ -40,7 +55,9 @@ impl Edit {
 
     const fn size(&self) -> usize {
         match self {
-            Self::Insert { bytes, .. } | Self::Delete { bytes, .. } => bytes.len(),
+            Self::Replace {
+                removed, inserted, ..
+            } => removed.len() + inserted.len(),
             Self::SetEol { .. } => 0,
         }
     }
@@ -111,9 +128,26 @@ mod tests {
     use super::*;
 
     fn insert(pos: usize, s: &str) -> Edit {
-        Edit::Insert {
-            pos,
-            bytes: s.as_bytes().to_vec(),
+        Edit::insert(pos, s.as_bytes())
+    }
+
+    #[test]
+    fn inverse_is_involution() {
+        let edits = [
+            Edit::insert(2, b"ab".as_slice()),
+            Edit::delete(2, b"ab".as_slice()),
+            Edit::Replace {
+                pos: 1,
+                removed: b"x".to_vec(),
+                inserted: b"yz".to_vec(),
+            },
+            Edit::SetEol {
+                from: Eol::Lf,
+                to: Eol::Crlf,
+            },
+        ];
+        for e in edits {
+            assert_eq!(e.inverse().inverse(), e);
         }
     }
 

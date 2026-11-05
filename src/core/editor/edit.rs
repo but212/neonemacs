@@ -4,6 +4,7 @@
 use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
 use crate::core::effect::Effects;
 use crate::core::undo::Edit;
+use crate::core::width::column;
 
 /// Typed characters that share one undo group.
 const TYPED_GROUP: usize = 20;
@@ -53,17 +54,13 @@ impl Editor {
     #[must_use]
     pub fn delete_range(self, start: usize, end: usize) -> (Self, Vec<u8>) {
         let text = self.buffer().text();
-        let len = text.len();
-        let start = snap(text, start.min(len));
-        let end = snap_end(text, end.min(len));
+        let start = snap(text, start);
+        let end = snap_end(text, end);
         if start >= end {
             return (self, Vec::new());
         }
         let bytes = self.buffer().text().bytes(start..end);
-        let (ed, _) = self.apply(&Edit::Delete {
-            pos: start,
-            bytes: bytes.clone(),
-        });
+        let (ed, _) = self.apply(&Edit::delete(start, bytes.clone()));
         (ed, bytes)
     }
 
@@ -88,11 +85,8 @@ impl Editor {
     /// Inserts `bytes` at `pos` and moves point after them.
     #[must_use]
     pub fn insert_at(self, pos: usize, bytes: &[u8]) -> Self {
-        let pos = snap(self.buffer().text(), pos.min(self.buffer().text().len()));
-        let (ed, applied) = self.apply(&Edit::Insert {
-            pos,
-            bytes: bytes.to_vec(),
-        });
+        let pos = snap(self.buffer().text(), pos);
+        let (ed, applied) = self.apply(&Edit::insert(pos, bytes));
         if applied.is_some() {
             ed.move_point(pos + bytes.len())
         } else {
@@ -133,10 +127,16 @@ impl Editor {
                 1
             }
         };
-        let bytes = c.to_string().into_bytes();
-        let len = bytes.len();
         let at = snap(self.buffer().text(), self.window().point);
-        let (ed, applied) = self.apply(&Edit::Insert { pos: at, bytes });
+        let bytes = if c == '\t' && self.settings.config.expand_tabs {
+            let tab = usize::from(self.settings.config.tab_width);
+            let col = column(self.buffer().text(), at, tab);
+            " ".repeat(tab - col % tab).into_bytes()
+        } else {
+            c.to_string().into_bytes()
+        };
+        let len = bytes.len();
+        let (ed, applied) = self.apply(&Edit::insert(at, bytes));
         if applied.is_none() {
             return ed;
         }
@@ -184,21 +184,17 @@ impl Editor {
 /// Where an anchor at `a` lands after `edit`.
 fn remap(edit: &Edit, a: usize) -> usize {
     match edit {
-        Edit::Insert { pos, bytes } => {
-            if a > *pos {
-                a + bytes.len()
-            } else {
-                a
-            }
-        }
-        Edit::Delete { pos, bytes } => {
-            let end = pos + bytes.len();
+        Edit::Replace {
+            pos,
+            removed,
+            inserted,
+        } => {
             if a <= *pos {
                 a
-            } else if a <= end {
+            } else if a <= pos + removed.len() {
                 *pos
             } else {
-                a - bytes.len()
+                a - removed.len() + inserted.len()
             }
         }
         Edit::SetEol { .. } => a,
@@ -306,12 +302,48 @@ mod tests {
     }
 
     #[test]
+    fn remap_replace_equals_delete_then_insert() {
+        for pos in 0..6 {
+            for removed in [0, 1, 3] {
+                for inserted in [0, 1, 4] {
+                    let replace = Edit::Replace {
+                        pos,
+                        removed: vec![b'r'; removed],
+                        inserted: vec![b'i'; inserted],
+                    };
+                    let del = Edit::delete(pos, vec![b'r'; removed]);
+                    let ins = Edit::insert(pos, vec![b'i'; inserted]);
+                    for a in 0..14 {
+                        assert_eq!(
+                            remap(&replace, a),
+                            remap(&ins, remap(&del, a)),
+                            "pos={pos} removed={removed} inserted={inserted} a={a}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn replace_undoes_in_one_step() {
+        let ed = editor_with("hello world");
+        let (ed, _) = ed.apply(&Edit::Replace {
+            pos: 6,
+            removed: b"world".to_vec(),
+            inserted: b"there".to_vec(),
+        });
+        assert_eq!(text(&ed), "hello there");
+        assert_eq!(ed.buffer().undo().groups().len(), 1);
+        assert_eq!(ed.buffer().undo().groups()[0].len(), 1);
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "hello world");
+    }
+
+    #[test]
     fn view_mode_blocks_edits() {
         let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
-        let (ed, applied) = ed.apply(&Edit::Insert {
-            pos: 0,
-            bytes: b"x".to_vec(),
-        });
+        let (ed, applied) = ed.apply(&Edit::insert(0, b"x".as_slice()));
         assert!(applied.is_none());
         assert_eq!(ed.interaction.message, "Buffer is read-only");
     }
@@ -321,10 +353,7 @@ mod tests {
         let ed = editor_with("abcdef")
             .with_window(|w| Window { point: 4, ..w })
             .with_current_buffer(|b| b.set_mark(Some(2)).set_saved_point(5));
-        let (ed, _) = ed.apply(&Edit::Insert {
-            pos: 1,
-            bytes: b"XYZ".to_vec(),
-        });
+        let (ed, _) = ed.apply(&Edit::insert(1, b"XYZ".as_slice()));
         assert_eq!(ed.window().point, 7);
         assert_eq!(ed.buffer().mark(), Some(5));
         assert_eq!(ed.buffer().saved_point(), 8);
@@ -333,10 +362,7 @@ mod tests {
     #[test]
     fn anchor_snaps_to_unit_start() {
         let ed = editor_with("a\r\nb").with_window(|w| Window { point: 1, ..w });
-        let (ed, _) = ed.apply(&Edit::Insert {
-            pos: 0,
-            bytes: b"x".to_vec(),
-        });
+        let (ed, _) = ed.apply(&Edit::insert(0, b"x".as_slice()));
         assert_eq!(ed.window().point, 2);
     }
 
@@ -363,5 +389,47 @@ mod tests {
         let ed = ed.kill_range(0, 10);
         assert_eq!(ed.buffer().text().to_bytes(), b"world");
         assert_eq!(ed.kill_ring().entries(), &[b"hello wonderful ".to_vec()]);
+    }
+
+    fn soft_tabs(s: &str) -> Editor {
+        let config = Config {
+            expand_tabs: true,
+            ..Config::default()
+        };
+        Editor::new(config).with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
+    }
+
+    #[test]
+    fn expand_tabs_inserts_spaces_to_next_stop_as_one_undo_step() {
+        for (before, spaces) in [("", 8), ("abc", 5), ("abcdefg", 1), ("가", 6)] {
+            let ed = soft_tabs(before);
+            let ed = ed.with_window(|w| Window {
+                point: before.len(),
+                ..w
+            });
+            let ed = type_char(ed, '\t');
+            assert_eq!(text(&ed), format!("{before}{}", " ".repeat(spaces)));
+            assert_eq!(ed.window().point, before.len() + spaces);
+            assert_eq!(text(&undo(ed)), before);
+        }
+    }
+
+    #[test]
+    fn tab_is_literal_when_expand_tabs_is_off_and_other_chars_are_unchanged() {
+        let ed = type_char(editor_with(""), '\t');
+        assert_eq!(text(&ed), "\t");
+        let ed = type_char(soft_tabs(""), 'x');
+        assert_eq!(text(&ed), "x");
+    }
+
+    #[test]
+    fn expand_tabs_follows_tab_width() {
+        let config = Config {
+            expand_tabs: true,
+            tab_width: 4,
+            ..Config::default()
+        };
+        let ed = type_char(Editor::new(config), '\t');
+        assert_eq!(text(&ed), "    ");
     }
 }

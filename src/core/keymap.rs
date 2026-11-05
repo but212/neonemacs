@@ -91,7 +91,6 @@ impl Key {
 pub const fn ctrl_key(c: char) -> Key {
     let code = match c.to_ascii_lowercase() {
         '_' | '/' | '7' => Code::Char('_'),
-        ' ' | '@' | '2' => Code::Char(' '),
         other => Code::Char(other),
     };
     Key {
@@ -242,7 +241,6 @@ impl Keymap {
             ("end", "move-end-of-line"),
             ("DEL", "delete-backward-char"),
             ("C-d", "delete-char"),
-            ("C-SPC", "set-mark-command"),
             ("C-w", "kill-region"),
             ("M-w", "kill-ring-save"),
             ("C-y", "yank"),
@@ -261,6 +259,7 @@ impl Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn parses_sequences_and_rejects_garbage() {
         assert_eq!(
@@ -294,10 +293,6 @@ mod tests {
         );
         assert_eq!(map.lookup(&parse_keys("C-_").unwrap()), Some("undo"));
         assert_eq!(map.lookup(&parse_keys("C-/").unwrap()), Some("undo"));
-        assert_eq!(
-            map.lookup(&parse_keys("C-SPC").unwrap()),
-            Some("set-mark-command")
-        );
     }
 
     #[test]

@@ -16,6 +16,8 @@ pub struct Window {
     pub point: usize,
     pub top: usize,
     pub left_col: usize,
+    /// Body rows at the last layout. 0 until the first render.
+    pub height: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +253,7 @@ mod tests {
             point: 0,
             top: 0,
             left_col: 0,
+            height: 0,
         });
         assert_eq!(wm.leaf_count(), 1);
         assert_eq!(wm.selected(), 0);
@@ -264,6 +267,7 @@ mod tests {
             point: 0,
             top: 0,
             left_col: 0,
+            height: 0,
         });
         let wm = wm.split(Dir::Below);
         assert_eq!(wm.leaf_count(), 2);
@@ -288,6 +292,7 @@ mod tests {
             point: 0,
             top: 0,
             left_col: 0,
+            height: 0,
         });
         let _ = wm.set_selected(5);
     }
