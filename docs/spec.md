@@ -39,6 +39,7 @@
 | 취소 | `C-g` |
 
 - 번들 키맵은 `C-l`을 `recenter`에 연결한다.
+- 접두 키(`C-x`, `Esc`)나 `Ctrl`/`Alt`와 함께 눌린 문자 키가 바인딩에 없으면, 자판 별칭(12절 `key_alias`)으로 바꾼 키로 한 번 더 찾는다. 번들 별칭이 두벌식 자모를 QWERTY 키로 바꾸므로 한글 상태에서도 `C-x ㅠ`가 `C-x b`로, `Alt+ㅌ`와 `Esc ㅌ`가 `M-x`로 동작한다. 명시 바인딩이 먼저이고, 일반 글자 입력에는 적용하지 않는다.
 - 마크 설정(`set-mark-command`)에는 기본 키가 없으며 `M-x`로 호출하거나 `bind`로 직접 연결한다. `C-SPC`는 입력기와, `C-v`는 터미널 붙여넣기와, `M-f`/`M-v`는 터미널 메뉴 접근 키와 충돌할 수 있어 기본 제공하지 않는다.
 
 ## 4. 명령 실행 (M-x)
@@ -135,7 +136,7 @@
 - **큰 파일**: `max-file-size`를 넘는 파일은 열지 않는다. `C-x C-f`는 `File too large: N bytes (max-file-size M)` 메시지만 띄우고 버퍼를 만들지 않는다. 다시 읽기는 버퍼와 WAL을 그대로 둔다. 잘린 앞부분만 열어 저장하는 경로는 없다.
 - **외부 변경**: 열 때 기록한 디스크 상태 `(mtime, size)`가 현재 디스크와 다르면 저장 전 덮어쓸지 묻는다. 본 편집기가 방금 저장한 결과이거나 이전 상태를 알 수 없는 새 파일은 묻지 않고 저장한다.
 - **종료 (`C-x C-c`)**: 미저장 변경 버퍼가 있으면 이름을 앞에서 3개까지(나머지는 `+N`) 보여 주며 `Modified: a, b, c +2; quit anyway? (y or n)`로 확인한다.
-- **예/아니오 질문 (I-46)**: `y`(`Y`, 기본 번들 별칭 `ㅛ`)는 실행하고 `n`(`N`, 기본 번들 별칭 `ㅜ`), `C-g`, `Esc`는 `Quit`으로 취소한다. 별칭은 12절 `answer_alias`로 바꾼다. 다른 키는 `Please answer y or n. <질문>`으로 질문을 반복하고 상태를 바꾸지 않는다. 프롬프트와 증분 검색도 `Esc`를 `C-g`처럼 취소로 받는다. Normal 모드의 `Esc`는 `M-` 접두다.
+- **예/아니오 질문 (I-46)**: `y`(`Y`, 기본 번들 별칭 `ㅛ`)는 실행하고 `n`(`N`, 기본 번들 별칭 `ㅜ`), `C-g`, `Esc`는 `Quit`으로 취소한다. 별칭은 12절 `key_alias`로 바꾼다. 다른 키는 `Please answer y or n. <질문>`으로 질문을 반복하고 상태를 바꾸지 않는다. 프롬프트와 증분 검색도 `Esc`를 `C-g`처럼 취소로 받는다. Normal 모드의 `Esc`는 `M-` 접두다.
 - **파일 잠금 없음**: `.lock` 파일을 만들지 않으며 저장 직전 디스크 상태 비교만으로 충돌을 감지한다.
 
 ## 9. 검색과 치환
@@ -170,7 +171,7 @@
   - `command(name, function)`: 사용자 명령 등록 (내장 명령 재정의 불가)
   - `run(name)`: 내장 또는 Lua 명령 실행 (최대 재귀 깊이 50)
   - `get(name)` / `set(name, value)`: 설정 조회 및 변경 (`fill-column`, `tab-width`, `expand-tabs`, `case-fold-search`, `max-file-size`, `undo-limit`)
-  - `answer_alias(from, to)` / `answer_unalias(from)`: 질문 응답 별칭 등록 및 제거 (`from`은 한 글자, `to`는 `y`·`n`·`q`·`!` 중 하나, 위반 시 Lua 오류, 없는 별칭 제거는 무동작)
+  - `key_alias(from, to)` / `key_unalias(from)`: 자판 별칭 등록 및 제거 (`from`은 한 글자, `to`는 ASCII 그래픽 문자 한 글자, 위반 시 Lua 오류, 없는 별칭 제거는 무동작). 질문 응답과, 정확히 일치하는 바인딩이 없는 접두·수정 키의 바인딩 조회(3절)에 적용된다. 일반 글자 입력, 프롬프트 입력, 검색어에는 적용하지 않는다.
   - `message(text)`: 에코 영역 메시지 표시
   - `syntax.register(name, spec)`: 구문 강조 규칙 등록
     - `extensions`: 확장자 배열 (선택, `filenames`와 합산 최소 1개 필수)
@@ -190,7 +191,7 @@
     - `buffer.mark()` / `buffer.set_mark(pos)`: 마크 조회 및 설정(`nil`이면 해제)
     - `buffer.comment_prefix()`: 활성 버퍼 파일명에 매칭되는 한 줄 주석 기호 조회
 - **기본 번들 스크립트**:
-  - 구문 강조(`syntax.lua`: Rust, C/C++, Python, JavaScript/TypeScript, Lua, Go, Shell, Makefile, SQL, TOML, JSON, YAML, Markdown), 파레토 텍스트 편집 명령(`text.lua`), 확장 키맵(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x h`, `C-x u`, `M-y`, `M-q`, `M-d`, `M-DEL`, `M-;`, `C-r`, `M-%`, `M-g`, `M-<`, `M->`, `C-l`, `M-!`)과 질문 응답 별칭(`ㅛ`→`y`, `ㅜ`→`n`, `ㅂ`→`q`)을 바이너리에 내장한다.
+  - 구문 강조(`syntax.lua`: Rust, C/C++, Python, JavaScript/TypeScript, Lua, Go, Shell, Makefile, SQL, TOML, JSON, YAML, Markdown), 파레토 텍스트 편집 명령(`text.lua`), 확장 키맵(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x h`, `C-x u`, `M-y`, `M-q`, `M-d`, `M-DEL`, `M-;`, `C-r`, `M-%`, `M-g`, `M-<`, `M->`, `C-l`, `M-!`)과 두벌식 자판 별칭(자모 26자와 Shift 자모 7자를 QWERTY 키로, 예: `ㅛ`→`y`, `ㅜ`→`n`, `ㅂ`→`q`, `ㅠ`→`b`)을 바이너리에 내장한다.
   - 내장 스크립트는 `init.lua` 전에 실행되며, `init.lua`에서 재정의하거나 해제할 수 있다.
 - 다중 버퍼 임의 접근, 이벤트 훅, 직접 파일 I/O는 공개하지 않는다.
 
@@ -230,4 +231,5 @@
 - `C-/`는 많은 터미널에서 `C-_`로 전송되므로 두 키를 함께 바인딩한다.
 - 한글 IME 조합 표시는 터미널 구현에 따른다.
 - 같은 파일이나 같은 상태 디렉터리를 쓰는 편집기를 둘 이상 실행하면 WAL과 scratch 슬롯을 서로 덮어쓸 수 있다. 잠금이 없으므로 막지 않는다 (8절).
-- 질문 응답의 기본 별칭은 두벌식 `ㅛ`·`ㅜ`·`ㅂ`뿐이다. 다른 입력 배열은 `init.lua`에서 `answer_alias`로 추가한다. 별칭은 질문 응답에만 적용되고 일반 입력(self-insert)에는 적용되지 않는다 (I-48).
+- 기본 자판 별칭은 두벌식뿐이다. 다른 입력 배열은 `init.lua`에서 `key_alias`로 추가한다. 별칭은 질문 응답과 접두·수정 키의 바인딩 조회에만 적용되고, 일반 입력(self-insert), 프롬프트 입력, 검색어에는 적용되지 않는다 (I-48). 바인딩 조회는 정확히 일치하는 글자만 보므로 대소문자가 있는 배열은 두 형태를 모두 등록해야 한다.
+- 터미널과 입력기에 따라 한글 상태의 `Alt`+자모가 다른 값으로 전달될 수 있다. 그 경우 `Esc` 뒤 자모나 영문 전환을 쓴다.

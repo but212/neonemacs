@@ -33,7 +33,15 @@ bind("C-l", "recenter")
 -- Shell execution
 bind("M-!", "shell-command")
 
--- Korean two-set jamo on the y, n, q keys answer questions (I-46)
-answer_alias("ㅛ", "y")
-answer_alias("ㅜ", "n")
-answer_alias("ㅂ", "q")
+-- Korean two-set (두벌식) jamo stand for the QWERTY key they share (I-46, I-48)
+local function alias_row(jamo, ascii)
+    local i = 1
+    for _, j in utf8.codes(jamo) do
+        key_alias(utf8.char(j), ascii:sub(i, i))
+        i = i + 1
+    end
+end
+alias_row("ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔ", "qwertyuiop")
+alias_row("ㅁㄴㅇㄹㅎㅗㅓㅏㅣ", "asdfghjkl")
+alias_row("ㅋㅌㅊㅍㅠㅜㅡ", "zxcvbnm")
+alias_row("ㅃㅉㄸㄲㅆㅒㅖ", "QWERTOP")

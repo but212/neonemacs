@@ -1,8 +1,8 @@
-//! Lua `answer_alias` and `answer_unalias`: which characters answer y/n/q/! (I-46, I-48).
+//! Lua `key_alias` and `key_unalias`: which characters stand for an ASCII key (I-46, I-48).
 
 use super::mutate_editor;
 use crate::core::editor::Editor;
-use crate::core::keymap::AnswerKey;
+use crate::core::keymap::AliasTarget;
 use mlua::{Scope, Table};
 use std::cell::RefCell;
 
@@ -12,30 +12,30 @@ fn single_char(s: &str) -> mlua::Result<char> {
     match (chars.next(), chars.next()) {
         (Some(c), None) => Ok(c),
         _ => Err(mlua::Error::RuntimeError(format!(
-            "answer alias must be one character: '{s}'"
+            "key alias must be one character: '{s}'"
         ))),
     }
 }
 
-pub(super) fn install_answer_api<'lua, 'scope>(
+pub(super) fn install_alias_api<'lua, 'scope>(
     scope: &'lua Scope<'lua, 'scope>,
     g: &Table,
     cell: &'scope RefCell<Option<Editor>>,
 ) -> mlua::Result<()> {
     g.set(
-        "answer_alias",
+        "key_alias",
         scope.create_function(|_, (from, to): (String, String)| {
             let from = single_char(&from)?;
-            let to = AnswerKey::parse(&to).map_err(mlua::Error::RuntimeError)?;
-            mutate_editor(cell, |ed| ed.with_answer_aliases(|a| a.alias(from, to)));
+            let to = AliasTarget::parse(&to).map_err(mlua::Error::RuntimeError)?;
+            mutate_editor(cell, |ed| ed.with_key_aliases(|a| a.alias(from, to)));
             Ok(())
         })?,
     )?;
     g.set(
-        "answer_unalias",
+        "key_unalias",
         scope.create_function(|_, from: String| {
             let from = single_char(&from)?;
-            mutate_editor(cell, |ed| ed.with_answer_aliases(|a| a.unalias(from)));
+            mutate_editor(cell, |ed| ed.with_key_aliases(|a| a.unalias(from)));
             Ok(())
         })?,
     )?;

@@ -212,7 +212,7 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
         return ed;
     };
     let (start, end) = q.current;
-    match answer_char(ed.answer_aliases(), key) {
+    match answer_char(ed.key_aliases(), key) {
         Some('y' | ' ') => match replace_match(ed, &q, start, end) {
             (ed, Some(from)) => {
                 q.count += 1;
@@ -362,8 +362,9 @@ mod tests {
     }
 
     fn with_jamo() -> Editor {
-        use crate::core::keymap::AnswerKey;
-        editor().with_answer_aliases(|a| a.alias('ㅜ', AnswerKey::No).alias('ㅂ', AnswerKey::Quit))
+        use crate::core::keymap::AliasTarget;
+        let to = |s| AliasTarget::parse(s).unwrap();
+        editor().with_key_aliases(|a| a.alias('ㅜ', to("n")).alias('ㅂ', to("q")))
     }
 
     #[test]

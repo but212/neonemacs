@@ -384,14 +384,46 @@ fn bundled_keymap_loaded_by_bootstrap() {
 }
 
 #[test]
-fn bundled_keymap_aliases_the_two_set_jamo() {
-    use crate::core::keymap::AnswerKey;
+fn bundled_keymap_aliases_the_whole_two_set_layout() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let a = ed.answer_aliases();
-    assert_eq!(a.get('ㅛ'), Some(AnswerKey::Yes));
-    assert_eq!(a.get('ㅜ'), Some(AnswerKey::No));
-    assert_eq!(a.get('ㅂ'), Some(AnswerKey::Quit));
+    let a = ed.key_aliases();
+    let table = [
+        ("ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔ", "qwertyuiop"),
+        ("ㅁㄴㅇㄹㅎㅗㅓㅏㅣ", "asdfghjkl"),
+        ("ㅋㅌㅊㅍㅠㅜㅡ", "zxcvbnm"),
+        ("ㅃㅉㄸㄲㅆㅒㅖ", "QWERTOP"),
+    ];
+    let mut count = 0;
+    for (jamo, ascii) in table {
+        assert_eq!(jamo.chars().count(), ascii.len());
+        for (j, c) in jamo.chars().zip(ascii.chars()) {
+            assert_eq!(a.get(j), Some(c), "{j}");
+            count += 1;
+        }
+    }
+    assert_eq!(count, 33);
+}
+
+#[test]
+fn bootstrapped_editor_runs_ctl_x_and_meta_commands_with_jamo() {
+    use crate::core::editor::Mode;
+    use crate::test_support::press;
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let ed = press(press(ed, Key::ctrl('x')), Key::plain(Code::Char('ㅠ')));
+    assert!(matches!(ed.mode(), Mode::Prompt(_)), "C-x ㅠ ran C-x b");
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let ed = press(ed, Key::plain(Code::Char('ㅌ')).with_meta());
+    assert!(matches!(ed.mode(), Mode::Prompt(_)), "Alt+ㅌ ran M-x");
+}
+
+#[test]
+fn answer_alias_is_gone() {
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let (_, r) = script(&lua, ed, r#"answer_alias("н", "y")"#);
+    assert!(r.is_err());
 }
 
 #[test]
@@ -408,39 +440,40 @@ fn bootstrapped_editor_answers_a_question_with_jamo() {
 }
 
 #[test]
-fn answer_alias_registers_replaces_and_unaliases() {
-    use crate::core::keymap::AnswerKey;
+fn key_alias_registers_replaces_and_unaliases() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, r) = script(
         &lua,
         ed,
-        r#"answer_alias("н", "y"); answer_alias("ㅛ", "!"); answer_unalias("ㅂ"); answer_unalias("z")"#,
+        r#"key_alias("н", "y"); key_alias("ㅛ", "!"); key_unalias("ㅂ"); key_unalias("z")"#,
     );
     r.unwrap();
-    let a = ed.answer_aliases();
-    assert_eq!(a.get('н'), Some(AnswerKey::Yes));
-    assert_eq!(a.get('ㅛ'), Some(AnswerKey::All), "re-alias replaces");
+    let a = ed.key_aliases();
+    assert_eq!(a.get('н'), Some('y'));
+    assert_eq!(a.get('ㅛ'), Some('!'), "re-alias replaces");
     assert_eq!(a.get('ㅂ'), None, "default alias removed");
-    assert_eq!(a.get('ㅜ'), Some(AnswerKey::No), "others untouched");
+    assert_eq!(a.get('ㅜ'), Some('n'), "others untouched");
 }
 
 #[test]
-fn answer_alias_rejects_bad_input_and_changes_nothing() {
+fn key_alias_rejects_bad_input_and_changes_nothing() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let before = ed.answer_aliases().clone();
+    let before = ed.key_aliases().clone();
     for src in [
-        r#"answer_alias("ab", "y")"#,
-        r#"answer_alias("", "y")"#,
-        r#"answer_alias("н", "x")"#,
-        r#"answer_alias("н", "yy")"#,
-        r#"answer_unalias("ab")"#,
-        r#"answer_unalias("")"#,
+        r#"key_alias("ab", "y")"#,
+        r#"key_alias("", "y")"#,
+        r#"key_alias("н", "")"#,
+        r#"key_alias("н", " ")"#,
+        r#"key_alias("н", "ㅛ")"#,
+        r#"key_alias("н", "yy")"#,
+        r#"key_unalias("ab")"#,
+        r#"key_unalias("")"#,
     ] {
         let (next, r) = script(&lua, ed.clone(), src);
         assert!(r.is_err(), "{src}");
-        assert_eq!(next.answer_aliases(), &before, "{src}");
+        assert_eq!(next.key_aliases(), &before, "{src}");
     }
 }
 

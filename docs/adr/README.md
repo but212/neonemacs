@@ -21,7 +21,7 @@
 | [0011](0011-cli-flags.md) | CLI Flags, Version and Help, and End of Options | Accepted | 2026-10-27 | §12 | `Invocation` sum type (I-39), `--` end of options and order-dependent parsing (I-40), unknown `-` options exit 2 |
 | [0012](0012-scratch-durability-and-wal-probe.md) | Durable Scratch and One WAL Probe | Accepted | 2026-11-05 | §7, §12 | `Backing::Scratch` and its WAL slot (I-42, I-43), unusable WALs moved aside (I-44), one `ProbeWal` on every open (I-45) |
 | [0013](0013-save-epoch-modified-tracking.md) | Save Epoch and Clean-by-Undo | Accepted | 2026-11-05 | §7 | Undo back to the saved text restores clean and drops the WAL (I-41) |
-| [0014](0014-lua-answer-aliases.md) | Lua answer aliases | Accepted | 2026-11-06 | §8, §9, §12, §15 | `answer_alias`/`answer_unalias`, jamo defaults in bundled `keymap.lua`, aliases apply only to modal answers (I-46, I-48) |
+| [0014](0014-lua-key-aliases.md) | Lua key aliases | Accepted | 2026-11-06 | §3, §8, §9, §12, §15 | `key_alias`/`key_unalias`, full two-set table in bundled `keymap.lua`, aliases apply to modal answers and to prefixed or modified binding lookups after an exact miss (I-46, I-48) |
 
 ---
 
@@ -125,9 +125,9 @@
 | **I-43** | The scratch WAL slot exists only while a scratch buffer holds unsaved text (a crash may leave it) | Runtime (`ShellSession`) | ADR 0012 |
 | **I-44** | An unusable WAL is never deleted by inference; it is moved to `.stale` (replacing an older `.stale`) and reported before the next flush | Boundary (`wal::probe_file`) | ADR 0012 |
 | **I-45** | A WAL is looked for in one place, when a file read creates a buffer, so every way to open a file recovers | Type (`Effect::ProbeWal` made only in `file_read(Open)`) | ADR 0012 |
-| **I-46** | In a yes-or-no question and in query-replace every key either changes the state or says why it did not; `y`/`n`/`q` fold ASCII case; other characters answer only through `AnswerAliases` (bundled `keymap.lua` maps `ㅛ`/`ㅜ`/`ㅂ`); `Esc` cancels | Runtime (`answer`, `query_key`) | Spec §8, §9, ADR 0014 |
+| **I-46** | In a yes-or-no question and in query-replace every key either changes the state or says why it did not; `y`/`n`/`q` fold ASCII case; other characters answer only through `KeyAliases` (bundled `keymap.lua` maps the two-set layout, so `ㅛ`/`ㅜ`/`ㅂ` answer); `Esc` cancels | Runtime (`answer`, `query_key`) | Spec §8, §9, ADR 0014 |
 | **I-47** | Only an active mark makes a region, and only the selected window draws the region and the current search match in reverse video | Type (`Mark`) + Runtime (`render::frame`) | Spec §5, §6 |
-| **I-48** | An answer alias targets only `y`/`n`/`q`/`!` and applies only where a modal question is answered, never to self-insert | Type (`AnswerKey`) + Boundary (`answer_alias`) + Runtime (`answer_char` call sites) | ADR 0014 |
+| **I-48** | A key alias maps one character to one ASCII graphic character. It applies only where a modal question is answered and to the binding lookup of a prefixed or modified key after an exact miss, never to self-insert, prompt input, or search text | Type (`AliasTarget`) + Boundary (`key_alias`) + Runtime (`answer_char` and `lookup_binding` call sites) | ADR 0014 |
 
 ---
 

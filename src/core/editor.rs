@@ -14,7 +14,7 @@ use crate::core::commands::CommandRegistry;
 use crate::core::config::Config;
 use crate::core::eol::Eol;
 use crate::core::file::{Backing, FilePath};
-use crate::core::keymap::{AnswerAliases, Keymap};
+use crate::core::keymap::{KeyAliases, Keymap};
 pub use crate::core::kill_ring::KillRing;
 use crate::core::syntax::SyntaxRegistry;
 use crate::core::text::Text;
@@ -235,13 +235,13 @@ impl Editor {
     }
 
     #[must_use]
-    pub const fn answer_aliases(&self) -> &AnswerAliases {
-        &self.settings.answer_aliases
+    pub const fn key_aliases(&self) -> &KeyAliases {
+        &self.settings.key_aliases
     }
 
     #[must_use]
-    pub fn with_answer_aliases(mut self, f: impl FnOnce(AnswerAliases) -> AnswerAliases) -> Self {
-        self.settings.answer_aliases = f(self.settings.answer_aliases);
+    pub fn with_key_aliases(mut self, f: impl FnOnce(KeyAliases) -> KeyAliases) -> Self {
+        self.settings.key_aliases = f(self.settings.key_aliases);
         self
     }
 

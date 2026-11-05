@@ -4,7 +4,7 @@
 use crate::core::commands;
 use crate::core::editor::{Buffer, Editor, Mode, Prefix, Question};
 use crate::core::effect::{Effect, Effects};
-use crate::core::keymap::{AnswerAliases, AnswerKey, Code, Key};
+use crate::core::keymap::{Code, Key, KeyAliases};
 
 /// Handles one key press: resolves prefixes, then runs a bound command or inserts text.
 #[must_use]
@@ -24,10 +24,10 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     }
 }
 
-/// The answer character a key means: an alias wins, else ASCII case folds. Used only where a
-/// modal question is answered, never for self-insert (I-46, I-48).
+/// The answer character a key means: an alias wins, else the character itself, then ASCII case
+/// folds. Used only where a modal question is answered, never for self-insert (I-46, I-48).
 #[must_use]
-pub fn answer_char(aliases: &AnswerAliases, key: Key) -> Option<char> {
+pub fn answer_char(aliases: &KeyAliases, key: Key) -> Option<char> {
     let c = key.text()?;
     let folded = {
         let mut lower = c.to_lowercase();
@@ -37,7 +37,8 @@ pub fn answer_char(aliases: &AnswerAliases, key: Key) -> Option<char> {
         aliases
             .get(c)
             .or_else(|| folded.and_then(|l| aliases.get(l)))
-            .map_or_else(|| c.to_ascii_lowercase(), AnswerKey::char),
+            .unwrap_or(c)
+            .to_ascii_lowercase(),
     )
 }
 
@@ -45,7 +46,7 @@ pub fn answer_char(aliases: &AnswerAliases, key: Key) -> Option<char> {
 /// leaves the question open and repeats it (I-46).
 #[must_use]
 pub fn answer(mut ed: Editor, question: Question, key: Key, fx: Effects) -> (Editor, Effects) {
-    let choice = answer_char(ed.answer_aliases(), key);
+    let choice = answer_char(ed.key_aliases(), key);
     if choice == Some('y') {
         ed = ed.set_mode(Mode::normal());
         return commands::confirmed(ed, question.kind, fx);
@@ -91,7 +92,7 @@ pub fn handle_normal_key(
         Prefix::CtlX => vec![Key::ctrl('x'), key],
         Prefix::Meta => vec![key.with_meta()],
     };
-    if let Some(name) = ed.keymap().lookup(&keys).map(str::to_owned) {
+    if let Some(name) = lookup_binding(&ed, prefix, key, &keys) {
         run_named(ed, &name, fx)
     } else if let (Prefix::None, Some(c)) = (prefix, key.text()) {
         command(ed, fx, |e, fx| (e.self_insert(c), fx))
@@ -100,6 +101,25 @@ pub fn handle_normal_key(
         ed = ed.set_message(format!("{} is undefined", seq.join(" ")));
         (ed, fx)
     }
+}
+
+/// The command bound to `keys`, whose last key is `key`. An explicit binding wins. Failing that,
+/// a prefixed or modified `key` is looked up again through its alias. Plain text never is (I-48).
+fn lookup_binding(ed: &Editor, prefix: Prefix, key: Key, keys: &[Key]) -> Option<String> {
+    let keymap = ed.keymap();
+    keymap.lookup(keys).map(str::to_owned).or_else(|| {
+        if prefix == Prefix::None && key.text().is_some() {
+            return None;
+        }
+        let alias = ed.key_aliases().rewrite(key)?;
+        let mut aliased = keys.to_vec();
+        *aliased.last_mut()? = if prefix == Prefix::Meta {
+            alias.with_meta()
+        } else {
+            alias
+        };
+        keymap.lookup(&aliased).map(str::to_owned)
+    })
 }
 
 /// Runs the command `name`. A built-in runs now. Any other name is sent to Lua as `RunLua`;
@@ -136,6 +156,7 @@ pub fn command(
 mod tests {
     use super::*;
     use crate::core::editor::Confirm;
+    use crate::core::keymap::AliasTarget;
     use crate::test_support::{editor, press, text, typ};
 
     fn asking() -> Editor {
@@ -144,8 +165,22 @@ mod tests {
         ed.confirm(Confirm::KillModified(id), "Kill? (y or n)")
     }
 
+    fn to(s: &str) -> AliasTarget {
+        AliasTarget::parse(s).unwrap()
+    }
+
     fn jamo() -> Editor {
-        asking().with_answer_aliases(|a| a.alias('ㅛ', AnswerKey::Yes).alias('ㅜ', AnswerKey::No))
+        asking().with_key_aliases(|a| a.alias('ㅛ', to("y")).alias('ㅜ', to("n")))
+    }
+
+    fn hangul() -> Editor {
+        editor()
+            .with_keymap(|k| k.bind_str("C-x b", "switch-to-buffer").unwrap())
+            .with_key_aliases(|a| a.alias('ㅠ', to("b")).alias('ㅌ', to("x")))
+    }
+
+    fn ch(c: char) -> Key {
+        Key::plain(Code::Char(c))
     }
 
     #[test]
@@ -176,15 +211,76 @@ mod tests {
 
     #[test]
     fn alias_matches_the_uppercase_form() {
-        let ed = asking().with_answer_aliases(|a| a.alias('н', AnswerKey::Yes));
+        let ed = asking().with_key_aliases(|a| a.alias('н', to("y")));
         let ed = press(ed, Key::plain(Code::Char('Н')));
         assert_eq!(text(&ed), "", "Н confirms through the н alias");
     }
 
     #[test]
+    fn alias_to_an_uppercase_target_still_answers() {
+        let ed = asking().with_key_aliases(|a| a.alias('ㅛ', to("Y")));
+        let ed = press(ed, ch('ㅛ'));
+        assert_eq!(text(&ed), "", "the answer folds to y");
+    }
+
+    #[test]
     fn alias_does_not_change_self_insert() {
-        let ed = editor().with_answer_aliases(|a| a.alias('ㅛ', AnswerKey::Yes));
+        let ed = editor().with_key_aliases(|a| a.alias('ㅛ', to("y")));
         assert_eq!(text(&typ(ed, "ㅛ")), "ㅛ", "I-48");
+    }
+
+    #[test]
+    fn ctl_x_prefix_resolves_through_an_alias() {
+        let ed = press(press(hangul(), Key::ctrl('x')), ch('ㅠ'));
+        assert!(
+            matches!(ed.mode(), Mode::Prompt(_)),
+            "C-x ㅠ ran switch-to-buffer"
+        );
+    }
+
+    #[test]
+    fn meta_resolves_through_an_alias_after_esc_and_alt() {
+        let ed = press(press(hangul(), Key::plain(Code::Esc)), ch('ㅌ'));
+        assert!(matches!(ed.mode(), Mode::Prompt(_)), "Esc ㅌ ran M-x");
+        let ed = press(hangul(), ch('ㅌ').with_meta());
+        assert!(matches!(ed.mode(), Mode::Prompt(_)), "Alt+ㅌ ran M-x");
+    }
+
+    #[test]
+    fn explicit_binding_wins_over_the_alias() {
+        let ed = hangul().with_keymap(|k| k.bind_str("C-x ㅠ", "undo").unwrap());
+        let ed = press(press(ed, Key::ctrl('x')), ch('ㅠ'));
+        assert_eq!(
+            ed.mode(),
+            &Mode::normal(),
+            "the explicit C-x ㅠ ran, not C-x b"
+        );
+    }
+
+    #[test]
+    fn unbound_alias_reports_the_original_key() {
+        let ed = press(press(hangul(), Key::ctrl('x')), ch('ㅊ'));
+        assert_eq!(ed.message(), "C-x ㅊ is undefined");
+        let ed = hangul().with_key_aliases(|a| a.alias('ㅊ', to("c")));
+        let ed = press(press(ed, Key::ctrl('x')), ch('ㅊ'));
+        assert_eq!(ed.message(), "C-x ㅊ is undefined", "target unbound too");
+    }
+
+    #[test]
+    fn alias_is_ignored_for_plain_text_after_a_failed_lookup() {
+        let ed = hangul().with_keymap(|k| k.bind_str("b", "undo").unwrap());
+        assert_eq!(text(&typ(ed, "ㅠ")), "ㅠ", "I-48: no lookup for plain text");
+    }
+
+    #[test]
+    fn answer_folds_an_uppercase_alias_target() {
+        let ed = asking().with_key_aliases(|a| a.alias('ㅃ', to("Q")));
+        let ed = press(ed, ch('ㅃ'));
+        assert_eq!(
+            ed.message(),
+            "Please answer y or n. Kill? (y or n)",
+            "q is no yes/no answer"
+        );
     }
 
     #[test]
