@@ -48,9 +48,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Tests (debug, excluding timing-sensitive)
-        run: cargo test --locked -- --skip performance::
+        run: "cargo test --locked -- --skip performance::"
       - name: Performance tests (release)
-        run: cargo test --locked --release --test core_suite performance::
+        run: "cargo test --locked --release --test core_suite performance::"
 
   msrv:
     runs-on: ubuntu-latest
