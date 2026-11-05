@@ -5,6 +5,7 @@ use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::core::effect::{self, Effect, Effects, ReadTarget, StatTarget, WalProbe};
 use crate::core::file::{Backing, DiskState, loaded_from};
 use crate::core::undo::Edit;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 /// Asks the shell to read `path` for a new buffer. The result comes back as `FileRead`.
@@ -50,7 +51,7 @@ fn quit_question(names: &[&str]) -> String {
     const SHOWN: usize = 3;
     let mut list = names[..names.len().min(SHOWN)].join(", ");
     if names.len() > SHOWN {
-        list.push_str(&format!(" +{}", names.len() - SHOWN));
+        let _ = write!(list, " +{}", names.len() - SHOWN);
     }
     format!("Modified: {list}; quit anyway? (y or n)")
 }
@@ -360,16 +361,16 @@ pub fn file_read(
 #[must_use]
 pub fn wal_probed(
     ed: Editor,
-    path: &PathBuf,
+    path: &Path,
     line: Option<usize>,
     probe: WalProbe,
     fx: Effects,
 ) -> (Editor, Effects) {
-    let name = name_of(&path);
+    let name = name_of(path);
     let ed = match probe {
         WalProbe::Absent => ed,
         WalProbe::Valid(recovered) => ed
-            .restore_buffer_content(&path, &recovered.bytes, recovered.eol, line)
+            .restore_buffer_content(path, &recovered.bytes, recovered.eol, line)
             .set_message(format!("[Recovered {name} from WAL]")),
         WalProbe::Stale(Ok(kept)) => {
             ed.set_message(format!("Stale WAL kept as {}", name_of(&kept)))
@@ -604,12 +605,12 @@ mod tests {
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
     }
 
-    fn found(bytes: &[u8], disk: DiskState) -> Result<Read, String> {
-        Ok(Read::Found(RawFile {
+    fn found(bytes: &[u8], disk: DiskState) -> Read {
+        Read::Found(RawFile {
             len: bytes.len() as u64,
             disk,
             bytes: bytes.to_vec(),
-        }))
+        })
     }
 
     #[test]
@@ -624,7 +625,7 @@ mod tests {
             editor(),
             target,
             PathBuf::from("f.txt"),
-            found(b"abc", disk),
+            Ok(found(b"abc", disk)),
             Vec::new(),
         );
         assert_eq!(
