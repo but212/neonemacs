@@ -318,6 +318,17 @@ mod tests {
     }
 
     #[test]
+    fn probe_reports_a_wal_that_cannot_be_read_instead_of_ignoring_it() {
+        // Only a missing file is `Absent`; any other read error must reach the user (I-44).
+        let (_dir, target) = probe_dir();
+        fs::create_dir(wal_path(&target)).unwrap();
+        assert!(matches!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Stale(Err(_))
+        ));
+    }
+
+    #[test]
     fn a_newer_unusable_wal_replaces_the_older_stale_copy() {
         let (_dir, target) = probe_dir();
         let stale = stale_path(&target);

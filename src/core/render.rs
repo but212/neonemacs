@@ -484,6 +484,25 @@ mod tests {
         assert!(f.rows.iter().flatten().all(|c| !c.reverse));
     }
 
+    fn cells_of(s: &str, left: usize, width: usize) -> Vec<String> {
+        let text = Text::from_bytes(s.as_bytes());
+        line_cells(None, &text, 0..text.len(), left, width, 8, &[])
+            .into_iter()
+            .map(|c| c.glyph)
+            .collect()
+    }
+
+    #[test]
+    fn a_combining_mark_joins_the_cell_before_it() {
+        assert_eq!(cells_of("e\u{301}x", 0, 4), ["e\u{301}", "x", " ", " "]);
+    }
+
+    #[test]
+    fn a_combining_mark_at_the_left_edge_is_dropped_not_misplaced() {
+        // The base "e" is scrolled off; its mark sits at column 1 == left and has no cell to join.
+        assert_eq!(cells_of("e\u{301}x", 1, 3), ["x", " ", " "]);
+    }
+
     #[test]
     fn a_region_over_wide_hangul_reverses_both_cells_of_each_glyph() {
         // "가나다": 나 spans bytes 3..6 and cells 2..4.

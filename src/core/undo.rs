@@ -200,4 +200,27 @@ mod tests {
         assert_eq!(log.groups().len(), 1);
         assert_eq!(log.groups()[0].edits(), &[insert(0, "de")]);
     }
+
+    /// Three groups of 8, 4 and 1 bytes. The first is dropped when the second opens (size 10 > limit),
+    /// leaving 4; the third then brings the total to 5.
+    fn trimmed_twice(limit: usize) -> (UndoLog, usize) {
+        let (log, _) = UndoLog::new().record(insert(0, "aaaa"), limit, None);
+        let (log, _) = log.record(insert(4, "aaaa"), limit, None);
+        let (log, d1) = log.close().record(insert(0, "bb"), limit, None);
+        let (log, _) = log.record(insert(2, "bb"), limit, None);
+        let (log, d2) = log.close().record(insert(0, "c"), limit, None);
+        (log, d1 + d2)
+    }
+
+    #[test]
+    fn a_dropped_group_leaves_exactly_its_own_size_out_of_the_total() {
+        // Total after the drop is 4; with the third group 5 <= 5: nothing more is dropped.
+        let (log, dropped) = trimmed_twice(5);
+        assert_eq!(dropped, 1);
+        assert_eq!(log.groups().len(), 2);
+        // Limit 4: 5 > 4, so the second group goes too.
+        let (log, dropped) = trimmed_twice(4);
+        assert_eq!(dropped, 2);
+        assert_eq!(log.groups().len(), 1);
+    }
 }

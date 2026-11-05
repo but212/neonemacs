@@ -423,6 +423,28 @@ mod tests {
     }
 
     #[test]
+    fn chained_undo_stays_on_the_right_group_when_the_log_is_trimmed() {
+        // Limit 3 holds a, b, c. Undoing c records its inverse (size 4) and drops the group of "a".
+        let ed = editor_with("").set_config(Config {
+            undo_limit: 3,
+            ..Config::default()
+        });
+        // A command in between closes each group, so every character is its own undo step.
+        let split = |ed: Editor| {
+            run_command(ed, |e, fx| {
+                let p = e.window().point;
+                (e.move_point(p), fx)
+            })
+        };
+        let ed = type_char(split(type_char(split(type_char(ed, 'a')), 'b')), 'c');
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "ab");
+        // The next undo must reach "b", not repeat "c" because the dropped group was not counted.
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "a");
+    }
+
+    #[test]
     fn refused_undo_in_view_mode_stays_modified() {
         let ed = type_char(saved(""), 'a').with_current_buffer(|b| b.set_view_only(true));
         let ed = undo(ed);

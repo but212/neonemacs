@@ -413,6 +413,20 @@ mod tests {
     }
 
     #[test]
+    fn query_replace_non_character_key_hints_and_keeps_session() {
+        // I-46: a key without a character (an arrow) is answered too, and does not end the session.
+        let ed = typ(editor(), "foo");
+        let ed = keys(ed, "C-a");
+        let ed = run_command(ed, |e, fx| {
+            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
+        });
+        let ed = crate::test_support::press(ed, Key::plain(Code::Up));
+        assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
+        assert_eq!(ed.message(), "Answer y, n, !, or q");
+        assert_eq!(text(&ed), "foo");
+    }
+
+    #[test]
     fn isearch_esc_cancels_like_ctrl_g() {
         let ed = typ(editor(), "abc abd");
         let ed = keys(ed, "C-a C-s");
