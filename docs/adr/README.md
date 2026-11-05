@@ -122,7 +122,7 @@
 | **I-41** | An undo group records the save epoch if it opened on clean text; undoing the whole group restores clean only at that epoch, and a clean buffer never holds modified text. Text equal to the saved text may stay modified after the log was trimmed or replaced | Runtime (`Editor::undo`) | ADR 0013 |
 | **I-42** | `Backing::Scratch` is made only for the buffer named `*scratch*`, and at most one exists | Runtime (`BufferPool`, `switch-to-buffer`) | ADR 0012 |
 | **I-43** | The scratch WAL slot exists only while a scratch buffer holds unsaved text (a crash may leave it) | Runtime (`ShellSession`) | ADR 0012 |
-| **I-44** | An unusable WAL is never deleted or overwritten by inference; it is moved to `.stale` and reported before the next flush | Boundary (`wal::probe_file`) | ADR 0012 |
+| **I-44** | An unusable WAL is never deleted by inference; it is moved to `.stale` (replacing an older `.stale`) and reported before the next flush | Boundary (`wal::probe_file`) | ADR 0012 |
 | **I-45** | A WAL is looked for in one place, when a file read creates a buffer, so every way to open a file recovers | Type (`Effect::ProbeWal` made only in `file_read(Open)`) | ADR 0012 |
 | **I-46** | In a yes-or-no question and in query-replace every key either changes the state or says why it did not; `y`/`n`/`q` fold case and Korean jamo `ㅛ`/`ㅜ`/`ㅂ`; `Esc` cancels | Runtime (`answer`, `query_key`) | Spec §8, §9 |
 | **I-47** | Only an active mark makes a region, and only the selected window draws the region and the current search match in reverse video | Type (`Mark`) + Runtime (`render::frame`) | Spec §5, §6 |

@@ -187,11 +187,9 @@ impl ShellSession {
                 } else if !buf.backing().is_scratch() {
                     continue;
                 } else if let Some(slot) = &self.scratch_wal {
-                    wrote_scratch = true;
-                    (
-                        slot.display().to_string(),
-                        wal::write_scratch(slot, buf.eol(), &bytes),
-                    )
+                    let result = wal::write_scratch(slot, buf.eol(), &bytes);
+                    wrote_scratch |= result.is_ok();
+                    (slot.display().to_string(), result)
                 } else {
                     // No slot: the text lives in memory only, so there is nothing to retry.
                     flushed_ids.push(buf.id());
@@ -202,7 +200,7 @@ impl ShellSession {
                     Err(e) => failures.push(format!("{label}: {e}")),
                 }
             }
-            self.scratch_on_disk |= wrote_scratch && failures.is_empty();
+            self.scratch_on_disk |= wrote_scratch;
             let mut ed = std::mem::take(&mut self.ed);
             for id in flushed_ids {
                 ed = ed.clear_wal_dirty(id);

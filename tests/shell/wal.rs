@@ -271,6 +271,31 @@ fn slot_is_dropped_when_the_user_quits_and_discards() {
 }
 
 #[test]
+fn slot_is_dropped_on_quit_even_if_a_file_wal_failed_in_the_same_flush() {
+    // I-43: a flush that wrote the slot and failed on another buffer still tracks the slot.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, "init").unwrap();
+    fs::create_dir(wal::wal_path(&file)).unwrap();
+    let slot = dir.path().join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    let fx = request_open(&session.ed, &file, None, true, Vec::new());
+    session.ed = perform_all(std::mem::take(&mut session.ed), None, fx);
+    type_x(&mut session, t0);
+
+    session.tick_at(t0 + Duration::from_secs(1));
+    assert!(slot.exists());
+
+    press(&mut session, KeyCode::Char('x'), KeyModifiers::CONTROL, t0);
+    press(&mut session, KeyCode::Char('c'), KeyModifiers::CONTROL, t0);
+    press(&mut session, KeyCode::Char('y'), KeyModifiers::NONE, t0);
+    assert!(session.is_quit());
+    assert!(!slot.exists());
+}
+
+#[test]
 fn an_existing_slot_survives_until_the_scratch_is_clean() {
     // A crash left the slot; the next run restores it and must not delete it while unsaved.
     let dir = tempfile::tempdir().unwrap();

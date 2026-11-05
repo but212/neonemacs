@@ -24,7 +24,7 @@ Two gaps in crash recovery (ADR 0003, I-23, I-25):
 
 - **I-42**: `Backing::Scratch` is made only for the buffer named `*scratch*`, and at most one such buffer exists. It is made in three places and the name is unique; enforced at runtime by name lookup in `switch-to-buffer`.
 - **I-43**: The scratch slot exists only while a scratch buffer holds unsaved text (a crash may leave it). Enforced in the shell session, since it is file-system state.
-- **I-44**: A WAL that cannot be used is never deleted or overwritten by inference. It is moved to `.stale` and reported before the next flush. Enforced at the boundary in `wal::probe_file`.
+- **I-44**: A WAL that cannot be used is never deleted by inference. It is moved to `.stale` (replacing an older `.stale`) and reported before the next flush. Enforced at the boundary in `wal::probe_file`.
 - **I-45**: A WAL is looked for in one place, when a file read creates a buffer. The effect is made only there, so every way to open a file recovers. Enforced by construction in `file_read(Open)`.
 
 ## Consequences
