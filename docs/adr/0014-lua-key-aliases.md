@@ -34,8 +34,8 @@ Two global Lua functions:
 
 ## Invariants
 
-- **I-46:** `y`/`n`/`q` fold ASCII case. Other characters answer only through `KeyAliases`. `Esc` cancels.
-- **I-48:** A key alias maps one character to one ASCII graphic character. It applies only where a modal question is answered and to the binding lookup of a prefixed or modified key after an exact miss. It never applies to self-insert, prompt input, or search text. Enforcement: Type (`AliasTarget`), Boundary (`key_alias`), Runtime (only `answer_char` and `lookup_binding` call the table). The call sites cannot be expressed in a type, so this part stays at runtime.
+- **I-46:** `y`/`n`/`q` fold ASCII case. `Esc` cancels. Other layouts answer through key aliases (I-48).
+- **I-48:** A key alias maps one character to one ASCII graphic character. It applies only where a modal question is answered and to the binding lookup of a prefixed or modified key after an exact miss. It never applies to self-insert, prompt input, or search text. Other characters answer only through `KeyAliases`. Enforcement: Type (`AliasTarget`), Boundary (`key_alias`), Runtime (only `answer_char` and `lookup_binding` call the table). The call sites cannot be expressed in a type, so this part stays at runtime.
 
 ## Consequences
 

@@ -125,9 +125,9 @@
 | **I-43** | The scratch WAL slot exists only while a scratch buffer holds unsaved text (a crash may leave it) | Runtime (`ShellSession`) | ADR 0012 |
 | **I-44** | An unusable WAL is never deleted by inference; it is moved to `.stale` (replacing an older `.stale`) and reported before the next flush | Boundary (`wal::probe_file`) | ADR 0012 |
 | **I-45** | A WAL is looked for in one place, when a file read creates a buffer, so every way to open a file recovers | Type (`Effect::ProbeWal` made only in `file_read(Open)`) | ADR 0012 |
-| **I-46** | In a yes-or-no question and in query-replace every key either changes the state or says why it did not; `y`/`n`/`q` fold ASCII case; other characters answer only through `KeyAliases` (bundled `keymap.lua` maps the two-set layout, so `ㅛ`/`ㅜ`/`ㅂ` answer); `Esc` cancels | Runtime (`answer`, `query_key`) | Spec §8, §9, ADR 0014 |
+| **I-46** | In a yes-or-no question and in query-replace every key either changes the state or says why it did not; `y`/`n`/`q` fold ASCII case; `Esc` cancels; other layouts answer through key aliases (I-48) | Runtime (`answer`, `query_key`) | Spec §8, §9, ADR 0014 |
 | **I-47** | Only an active mark makes a region, and only the selected window draws the region and the current search match in reverse video | Type (`Mark`) + Runtime (`render::frame`) | Spec §5, §6 |
-| **I-48** | A key alias maps one character to one ASCII graphic character. It applies only where a modal question is answered and to the binding lookup of a prefixed or modified key after an exact miss, never to self-insert, prompt input, or search text | Type (`AliasTarget`) + Boundary (`key_alias`) + Runtime (`answer_char` and `lookup_binding` call sites) | ADR 0014 |
+| **I-48** | A key alias maps one character to one ASCII graphic character. It applies only where a modal question is answered and to the binding lookup of a prefixed or modified key after an exact miss, never to self-insert, prompt input, or search text. Other characters answer only through `KeyAliases`; bundled `keymap.lua` maps the two-set layout, so `ㅛ`/`ㅜ`/`ㅂ` answer | Type (`AliasTarget`) + Boundary (`key_alias`) + Runtime (`answer_char` and `lookup_binding` call sites) | ADR 0014 |
 
 ---
 
