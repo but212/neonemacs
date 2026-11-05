@@ -400,7 +400,7 @@ mod tests {
     fn with_buffer_updates_only_target() {
         let (ed, b2) =
             editor_with("first").add_buffer("b2", Text::from_bytes(b"second"), Backing::None);
-        let ed = ed.with_buffer(b2, |b| b.mark_modified());
+        let ed = ed.with_buffer(b2, Buffer::mark_modified);
         assert!(!ed.buffer_by_id(BufferId(0)).modified());
         assert!(ed.buffer_by_id(b2).modified());
     }

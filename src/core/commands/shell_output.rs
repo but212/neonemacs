@@ -50,7 +50,7 @@ fn show_output(ed: Editor, text: &str) -> Editor {
     };
     let mut ed = ed
         .replace_text(id, Text::from_bytes(text.as_bytes()))
-        .with_buffer(id, |b| b.mark_clean());
+        .with_buffer(id, Buffer::mark_clean);
     if ed.leaf_count() == 1 {
         ed = split(ed, Dir::Below);
     }

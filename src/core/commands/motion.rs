@@ -162,7 +162,12 @@ mod tests {
     }
 
     fn numbered(n: usize) -> String {
-        (0..n).map(|i| format!("l{i}\n")).collect()
+        use std::fmt::Write;
+        let mut s = String::new();
+        for i in 0..n {
+            writeln!(s, "l{i}").unwrap();
+        }
+        s
     }
 
     /// Byte offset of line `i` in `numbered`: three bytes per line below 10, four from 10.
