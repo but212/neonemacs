@@ -1,5 +1,6 @@
 //! Minibuffer prompts, M-x completions, and command submission (§4, §12).
 
+use crate::core::buffer::SCRATCH_NAME;
 use crate::core::commands::buffer_window::{kill_buffer, switch_to};
 use crate::core::commands::file::{find_file, write_file};
 use crate::core::commands::search::start_query_replace;
@@ -127,7 +128,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Prompt(mut p) = ed.mode().clone() else {
         return (ed, fx);
     };
-    if key == Key::ctrl('g') {
+    if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
         let ed = ed.set_mode(Mode::normal()).set_message("Quit");
         return (ed, fx);
     }
@@ -210,7 +211,12 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     if let Some(id) = found {
         switch_to(ed, id)
     } else {
-        let (ed, id) = ed.add_buffer(name, Text::default(), Backing::None);
+        let backing = if name == SCRATCH_NAME {
+            Backing::scratch()
+        } else {
+            Backing::None
+        };
+        let (ed, id) = ed.add_buffer(name, Text::default(), backing);
         switch_to(ed, id)
     }
 }
@@ -390,6 +396,26 @@ mod tests {
         let ed = keys(ed, "right right C-d");
         assert_eq!(prompt_of(&ed).input(), "가나");
         assert_eq!(prompt_of(&ed).cursor_width(), 8);
+    }
+
+    #[test]
+    fn switching_to_a_missing_scratch_makes_the_protected_one() {
+        // I-42: the user cannot end up with an unprotected buffer named *scratch*.
+        let (ed, id) = editor().add_buffer("other", Text::default(), Backing::None);
+        let ed = switch_to_named(ed, "other");
+        let (ed, _) = kill_named(ed, "*scratch*", Vec::new());
+        let ed = switch_to_named(ed, "*scratch*");
+        let found = ed.buffers().find_by_name("*scratch*").unwrap();
+        assert!(found.backing().is_scratch());
+        assert_ne!(found.id(), id);
+    }
+
+    #[test]
+    fn esc_cancels_prompt_like_ctrl_g() {
+        let ed = typ_prompt(keys(editor(), "M-x"), "kill");
+        let ed = keys(ed, "ESC");
+        assert_eq!(ed.mode(), &Mode::normal());
+        assert_eq!(ed.message(), "Quit");
     }
 
     fn typ_prompt(ed: Editor, s: &str) -> Editor {

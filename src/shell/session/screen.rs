@@ -3,7 +3,7 @@
 use super::ShellSession;
 use crate::core::render;
 use crate::core::syntax::TokenKind;
-use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::{cursor, queue, terminal};
 use std::io::{self, Write};
 
@@ -66,14 +66,26 @@ pub(super) fn print_styled_row(
     cells: &[crate::core::render::Cell],
 ) -> io::Result<()> {
     let mut current = TokenKind::Normal;
+    let mut reversed = false;
     let mut span = String::new();
 
     for cell in cells {
-        if cell.style != current {
+        if cell.style != current || cell.reverse != reversed {
             if !span.is_empty() {
                 queue!(out, Print(&span))?;
                 span.clear();
             }
+            if cell.reverse != reversed {
+                reversed = cell.reverse;
+                let attribute = if reversed {
+                    Attribute::Reverse
+                } else {
+                    Attribute::NoReverse
+                };
+                queue!(out, SetAttribute(attribute))?;
+            }
+        }
+        if cell.style != current {
             current = cell.style;
             match current {
                 TokenKind::Keyword => queue!(out, SetForegroundColor(Color::Cyan))?,
@@ -88,6 +100,9 @@ pub(super) fn print_styled_row(
     }
     if !span.is_empty() {
         queue!(out, Print(&span))?;
+    }
+    if reversed {
+        queue!(out, SetAttribute(Attribute::NoReverse))?;
     }
     queue!(out, ResetColor)?;
     Ok(())

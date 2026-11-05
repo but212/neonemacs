@@ -2,7 +2,7 @@
 //! to a buffer goes through it, so the read-only check, undo, and anchor moves stay in one place.
 
 use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
-use crate::core::effect::Effects;
+use crate::core::effect::{Effect, Effects};
 use crate::core::undo::Edit;
 use crate::core::width::column;
 
@@ -151,7 +151,7 @@ impl Editor {
     /// Emacs-style undo. Consecutive undos walk back through the log; any other
     /// command starts the next undo from the newest group, which undoes the last undo.
     #[must_use]
-    pub fn undo(self, fx: Effects) -> (Self, Effects) {
+    pub fn undo(self, mut fx: Effects) -> (Self, Effects) {
         let mut ed = self.boundary();
         let id = ed.window().buffer;
         let groups = ed.buffer_by_id(id).undo().groups().len();
@@ -165,15 +165,24 @@ impl Editor {
         };
         let group = ed.buffer_by_id(id).undo().groups()[idx].clone();
         let mut dropped = 0;
-        for edit in group.iter().rev() {
+        let mut complete = true;
+        for edit in group.edits().iter().rev() {
             let (next, applied) = ed.apply(&edit.inverse());
             ed = next;
             match applied {
                 Some(d) => dropped += d,
-                None => break,
+                None => {
+                    complete = false;
+                    break;
+                }
             }
         }
         let mut ed = ed.boundary();
+        // The group opened on text equal to the saved one, so undoing all of it restores that text (I-41).
+        if complete && group.clean_epoch() == Some(ed.buffer_by_id(id).epoch()) {
+            fx.extend(Effect::remove_wal_if_file(ed.buffer_by_id(id)));
+            ed = ed.with_buffer(id, Buffer::restore_clean);
+        }
         ed.interaction.last = LastCommand::Undo {
             next: idx.saturating_sub(dropped),
         };
@@ -325,6 +334,124 @@ mod tests {
         }
     }
 
+    /// A file-backed buffer that was just saved with `saved` as its text.
+    fn saved(saved: &str) -> Editor {
+        use crate::core::file::{Backing, DiskState, FilePath};
+        use std::path::Path;
+        Editor::new(Config::default()).with_current_buffer(|b| {
+            b.with_text(Text::from_bytes(saved.as_bytes()))
+                .set_backing(Backing::file(
+                    FilePath::resolve(Path::new(""), Path::new("f.txt")),
+                    DiskState::Unknown,
+                ))
+                .record_saved(DiskState::Unknown)
+        })
+    }
+
+    fn undo_fx(ed: Editor) -> (Editor, Effects) {
+        crate::core::dispatch::command(ed, Vec::new(), Editor::undo)
+    }
+
+    #[test]
+    fn undo_back_to_saved_text_is_clean_and_drops_the_wal() {
+        // I-41
+        let ed = type_char(saved(""), 'a');
+        assert!(ed.buffer().modified());
+        let (ed, fx) = undo_fx(ed);
+        assert_eq!(text(&ed), "");
+        assert!(!ed.buffer().modified());
+        assert!(!ed.buffer().is_wal_dirty());
+        assert_eq!(
+            fx,
+            vec![crate::core::effect::Effect::RemoveWal {
+                path: std::path::PathBuf::from("f.txt")
+            }]
+        );
+    }
+
+    #[test]
+    fn undo_past_the_saved_text_is_modified() {
+        let ed = type_char(editor_with(""), 'x');
+        let ed = ed.with_current_buffer(|b| b.record_saved(crate::core::file::DiskState::Unknown));
+        let ed = type_char(ed, 'a');
+        let ed = undo(ed);
+        assert!(!ed.buffer().modified());
+        // The chained undo removes the saved "x": now the text differs from the saved one.
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "");
+        assert!(ed.buffer().modified());
+    }
+
+    #[test]
+    fn undoing_an_undo_returns_to_clean_through_the_original_group() {
+        let ed = undo(type_char(saved(""), 'a'));
+        assert!(!ed.buffer().modified());
+        // A command in between breaks the undo chain, so this undo redoes "a".
+        let ed = run_command(ed, |e, fx| (e.move_point(0), fx));
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "a");
+        assert!(ed.buffer().modified());
+        // The chained undo removes "a" through the group opened on the clean text.
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "");
+        assert!(!ed.buffer().modified());
+    }
+
+    #[test]
+    fn a_save_after_the_edit_makes_undo_modified() {
+        let ed = type_char(saved(""), 'a');
+        let ed = ed.with_current_buffer(|b| b.record_saved(crate::core::file::DiskState::Unknown));
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "");
+        assert!(ed.buffer().modified());
+    }
+
+    #[test]
+    fn trimmed_history_never_reports_clean() {
+        // The group opened on the clean text is trimmed away, so equal text stays "modified".
+        let ed = saved("").set_config(Config {
+            undo_limit: 1,
+            ..Config::default()
+        });
+        let ed = type_char(ed, 'a');
+        let ed = run_command(ed, |e, fx| {
+            let (e, _) = e.apply(&Edit::delete(0, b"a".to_vec()));
+            (e, fx)
+        });
+        assert_eq!(text(&ed), "");
+        assert!(ed.buffer().modified());
+    }
+
+    #[test]
+    fn chained_undo_stays_on_the_right_group_when_the_log_is_trimmed() {
+        // Limit 3 holds a, b, c. Undoing c records its inverse (size 4) and drops the group of "a".
+        let ed = editor_with("").set_config(Config {
+            undo_limit: 3,
+            ..Config::default()
+        });
+        // A command in between closes each group, so every character is its own undo step.
+        let split = |ed: Editor| {
+            run_command(ed, |e, fx| {
+                let p = e.window().point;
+                (e.move_point(p), fx)
+            })
+        };
+        let ed = type_char(split(type_char(split(type_char(ed, 'a')), 'b')), 'c');
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "ab");
+        // The next undo must reach "b", not repeat "c" because the dropped group was not counted.
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "a");
+    }
+
+    #[test]
+    fn refused_undo_in_view_mode_stays_modified() {
+        let ed = type_char(saved(""), 'a').with_current_buffer(|b| b.set_view_only(true));
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "a");
+        assert!(ed.buffer().modified());
+    }
+
     #[test]
     fn replace_undoes_in_one_step() {
         let ed = editor_with("hello world");
@@ -335,7 +462,7 @@ mod tests {
         });
         assert_eq!(text(&ed), "hello there");
         assert_eq!(ed.buffer().undo().groups().len(), 1);
-        assert_eq!(ed.buffer().undo().groups()[0].len(), 1);
+        assert_eq!(ed.buffer().undo().groups()[0].edits().len(), 1);
         let ed = undo(ed);
         assert_eq!(text(&ed), "hello world");
     }

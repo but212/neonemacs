@@ -63,10 +63,36 @@ impl Edit {
     }
 }
 
+/// One undo unit: its edits, and the save epoch of the buffer if the group opened on clean text
+/// (I-41).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    edits: Vec<Edit>,
+    clean_epoch: Option<u32>,
+}
+
+impl Group {
+    #[must_use]
+    pub fn edits(&self) -> &[Edit] {
+        &self.edits
+    }
+
+    /// The buffer's save epoch when this group opened on clean text, or `None` if it opened on
+    /// modified text.
+    #[must_use]
+    pub const fn clean_epoch(&self) -> Option<u32> {
+        self.clean_epoch
+    }
+
+    fn size(&self) -> usize {
+        self.edits.iter().map(Edit::size).sum()
+    }
+}
+
 /// Edits grouped into undo units. The last group accepts edits while `open`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct UndoLog {
-    groups: Vec<Vec<Edit>>,
+    groups: Vec<Group>,
     open: bool,
     size: usize,
 }
@@ -82,25 +108,30 @@ impl UndoLog {
     }
 
     #[must_use]
-    pub fn groups(&self) -> &[Vec<Edit>] {
+    pub fn groups(&self) -> &[Group] {
         &self.groups
     }
 
-    /// Appends `edit` to the open group, or starts a new group. `limit` is `Config.undo_limit`,
-    /// the only undo limit (I-35). Returns the new log and the number of oldest groups dropped.
+    /// Appends `edit` to the open group, or starts a new group that remembers `clean_epoch`.
+    /// `limit` is `Config.undo_limit`, the only undo limit (I-35). Returns the new log and the
+    /// number of oldest groups dropped.
     ///
     /// # Panics
     /// Panics if the open group cannot be accessed.
     #[must_use]
-    pub fn record(mut self, edit: Edit, limit: usize) -> (Self, usize) {
+    pub fn record(mut self, edit: Edit, limit: usize, clean_epoch: Option<u32>) -> (Self, usize) {
         if !self.open {
-            self.groups.push(Vec::new());
+            self.groups.push(Group {
+                edits: Vec::new(),
+                clean_epoch,
+            });
             self.open = true;
         }
         self.size += edit.size();
         self.groups
             .last_mut()
             .expect("open group exists")
+            .edits
             .push(edit);
         self.trim(limit)
     }
@@ -116,7 +147,7 @@ impl UndoLog {
         let mut dropped = 0;
         while self.size > limit && self.groups.len() > keep_open {
             let group = self.groups.remove(0);
-            self.size -= group.iter().map(Edit::size).sum::<usize>();
+            self.size -= group.size();
             dropped += 1;
         }
         (self, dropped)
@@ -153,19 +184,43 @@ mod tests {
 
     #[test]
     fn groups_close_explicitly() {
-        let (log, _) = UndoLog::new().record(insert(0, "a"), 1 << 20);
-        let (log, _) = log.record(insert(1, "b"), 1 << 20);
+        let (log, _) = UndoLog::new().record(insert(0, "a"), 1 << 20, None);
+        let (log, _) = log.record(insert(1, "b"), 1 << 20, None);
         assert_eq!(log.groups().len(), 1);
-        let (log, _) = log.close().record(insert(2, "c"), 1 << 20);
+        let (log, _) = log.close().record(insert(2, "c"), 1 << 20, None);
         assert_eq!(log.groups().len(), 2);
     }
 
     #[test]
     fn limit_drops_oldest_groups() {
-        let (log, _) = UndoLog::new().record(insert(0, "abc"), 4);
-        let (log, dropped) = log.close().record(insert(0, "de"), 4);
+        let (log, _) = UndoLog::new().record(insert(0, "abc"), 4, None);
+        let (log, dropped) = log.close().record(insert(0, "de"), 4, None);
         assert_eq!(dropped, 1);
         let log = log.close();
-        assert_eq!(log.groups(), &[vec![insert(0, "de")]]);
+        assert_eq!(log.groups().len(), 1);
+        assert_eq!(log.groups()[0].edits(), &[insert(0, "de")]);
+    }
+
+    /// Three groups of 8, 4 and 1 bytes. The first is dropped when the second opens (size 10 > limit),
+    /// leaving 4; the third then brings the total to 5.
+    fn trimmed_twice(limit: usize) -> (UndoLog, usize) {
+        let (log, _) = UndoLog::new().record(insert(0, "aaaa"), limit, None);
+        let (log, _) = log.record(insert(4, "aaaa"), limit, None);
+        let (log, d1) = log.close().record(insert(0, "bb"), limit, None);
+        let (log, _) = log.record(insert(2, "bb"), limit, None);
+        let (log, d2) = log.close().record(insert(0, "c"), limit, None);
+        (log, d1 + d2)
+    }
+
+    #[test]
+    fn a_dropped_group_leaves_exactly_its_own_size_out_of_the_total() {
+        // Total after the drop is 4; with the third group 5 <= 5: nothing more is dropped.
+        let (log, dropped) = trimmed_twice(5);
+        assert_eq!(dropped, 1);
+        assert_eq!(log.groups().len(), 2);
+        // Limit 4: 5 > 4, so the second group goes too.
+        let (log, dropped) = trimmed_twice(4);
+        assert_eq!(dropped, 2);
+        assert_eq!(log.groups().len(), 1);
     }
 }

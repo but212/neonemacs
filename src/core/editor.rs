@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 pub use crate::core::buffer::{Buffer, BufferId};
 pub use crate::core::mode::{
     Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
-    QueryReplace,
+    QueryReplace, Question,
 };
 pub use crate::core::window::{Dir, Layout, Window, snap_point as snap};
 
@@ -109,8 +109,13 @@ impl Editor {
     }
 
     #[must_use]
-    pub fn confirm(self, question: Confirm, message: impl Into<String>) -> Self {
-        self.set_mode(Mode::Confirm(question)).set_message(message)
+    pub fn confirm(self, kind: Confirm, message: impl Into<String>) -> Self {
+        let text = message.into();
+        self.set_mode(Mode::Confirm(Question {
+            kind,
+            text: text.clone(),
+        }))
+        .set_message(text)
     }
 
     #[must_use]
@@ -335,6 +340,27 @@ impl Editor {
             Some(id) => self.snap_windows_for_buffer(id),
             None => self,
         }
+    }
+
+    /// Puts the text of a recovered scratch WAL into the scratch buffer, as unsaved text (I-23).
+    #[must_use]
+    pub fn restore_scratch(self, bytes: &[u8], eol: Eol) -> Self {
+        let Some(id) = self
+            .documents
+            .buffers
+            .iter()
+            .find(|b| b.backing().is_scratch())
+            .map(Buffer::id)
+        else {
+            return self;
+        };
+        self.with_buffer(id, |b| {
+            b.with_text(Text::from_bytes(bytes))
+                .set_eol(eol)
+                .mark_modified()
+                .clear_wal_dirty()
+        })
+        .snap_windows_for_buffer(id)
     }
 
     /// Adds a buffer and returns its id. Ids are never reused.

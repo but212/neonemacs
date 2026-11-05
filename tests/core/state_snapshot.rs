@@ -155,7 +155,7 @@ fn confirm_round_trip() {
     assert!(matches!(snapshot(&ed).mode, Mode::Confirm(_)));
     let ed = press(ed, Key::plain(Code::Char('n')));
     assert_eq!(snapshot(&ed).mode, normal());
-    assert_eq!(snapshot(&ed).message, "Cancelled");
+    assert_eq!(snapshot(&ed).message, "Quit");
     assert_eq!(text(&ed), "x");
 
     let ed = ed.confirm(Confirm::KillModified(id), "Kill modified buffer? (y or n)");

@@ -123,6 +123,13 @@ pub enum Confirm {
     RevertModified(BufferId),
 }
 
+/// A pending yes-or-no question and the text that asked it, so a wrong answer can repeat it (I-46).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    pub kind: Confirm,
+    pub text: String,
+}
+
 /// An incremental search in progress (§9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Isearch {
@@ -133,7 +140,16 @@ pub struct Isearch {
     pub origin: usize,
     /// Where the next incremental search starts: the start of the current match.
     pub anchor: usize,
-    pub failed: bool,
+    /// The current match as `start..end`, or `None` when the text is empty or nothing matches.
+    pub found: Option<(usize, usize)>,
+}
+
+impl Isearch {
+    /// A non-empty search text with no match.
+    #[must_use]
+    pub const fn failed(&self) -> bool {
+        !self.text.is_empty() && self.found.is_none()
+    }
 }
 
 /// A query-replace session in progress (§9, A8).
@@ -152,7 +168,7 @@ pub struct QueryReplace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Normal { prefix: Prefix },
-    Confirm(Confirm),
+    Confirm(Question),
     Isearch(Isearch),
     QueryReplace(QueryReplace),
     Prompt(Prompt),

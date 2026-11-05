@@ -1,8 +1,11 @@
 //! Lightweight crash recovery WAL (Write-Ahead Log) for unsaved edits (§7, §14, I-23, I-25).
 //! Operates strictly in the imperative shell layer: persists snapshots/deltas during idle time.
 
+use crate::core::effect::WalProbe;
 use crate::core::eol::Eol;
 use crate::core::file::DiskState;
+use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,12 +14,7 @@ use std::time::{Duration, UNIX_EPOCH};
 pub const WAL_MAGIC: &[u8; 8] = b"NEONWAL2";
 const HEADER_LEN: usize = 30;
 
-/// A WAL whose disk state matched: the unsaved text (LF-normalized) and its line-ending mode.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Recovered {
-    pub eol: Eol,
-    pub bytes: Vec<u8>,
-}
+pub use crate::core::effect::Recovered;
 
 /// Returns the WAL sibling file path: `.filename.wal`
 #[must_use]
@@ -123,14 +121,53 @@ pub fn has_wal(path: &Path) -> bool {
     bytes.len() >= HEADER_LEN && &bytes[0..8] == WAL_MAGIC
 }
 
+/// Writes buffer contents with its EOL and base `DiskState` to the WAL file `wp` atomically.
+fn write_at(wp: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
+    let encoded = encode_wal(disk, eol, bytes);
+    crate::shell::atomic::atomic_write(wp, ".", ".wal.tmp", &encoded, None)
+}
+
 /// Writes buffer contents with its EOL and base `DiskState` to WAL atomically via temp file.
 ///
 /// # Errors
 /// Returns `io::Error` if atomic writing of WAL bytes fails.
 pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
-    let wp = wal_path(path);
-    let encoded = encode_wal(disk, eol, bytes);
-    crate::shell::atomic::atomic_write(&wp, ".", ".wal.tmp", &encoded, None)
+    write_at(&wal_path(path), disk, eol, bytes)
+}
+
+/// Writes the unsaved text of the scratch buffer to its slot, creating the slot directory. The
+/// scratch has no file, so its disk state is always `Unknown`.
+///
+/// # Errors
+/// Returns `io::Error` if the directory or the atomic write fails.
+pub fn write_scratch(slot: &Path, eol: Eol, bytes: &[u8]) -> io::Result<()> {
+    if let Some(dir) = slot.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    write_at(slot, DiskState::Unknown, eol, bytes)
+}
+
+/// `$XDG_STATE_HOME/neonemacs/scratch.wal`, else `<home>/.local/state/neonemacs/scratch.wal`,
+/// the same shape as `lua::config_path`.
+#[must_use]
+pub fn scratch_path_from(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    match xdg.filter(|s| !s.is_empty()) {
+        Some(xdg) => Some(PathBuf::from(xdg).join("neonemacs").join("scratch.wal")),
+        None => home.map(|h| {
+            h.join(".local")
+                .join("state")
+                .join("neonemacs")
+                .join("scratch.wal")
+        }),
+    }
+}
+
+/// The scratch slot for this process, from the environment.
+#[must_use]
+pub fn scratch_path() -> Option<PathBuf> {
+    let xdg = env::var_os("XDG_STATE_HOME");
+    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
+    scratch_path_from(xdg.as_deref(), home.as_deref().map(Path::new))
 }
 
 /// Reads the WAL contents if available and matching disk state.
@@ -144,9 +181,53 @@ pub fn read_wal(path: &Path, disk: DiskState) -> io::Result<Recovered> {
         .ok_or_else(|| io::Error::other("WAL format invalid or disk state mismatch"))
 }
 
+/// Where an unusable WAL file `wp` is kept: the same name plus `.stale`.
+fn stale_of(wp: &Path) -> PathBuf {
+    let mut name = wp.as_os_str().to_owned();
+    name.push(".stale");
+    PathBuf::from(name)
+}
+
+/// Where an unusable WAL of `path` is kept: `.filename.wal.stale`.
+#[must_use]
+pub fn stale_path(path: &Path) -> PathBuf {
+    stale_of(&wal_path(path))
+}
+
+/// Looks for the WAL of `path`, which was just opened with `disk` (I-44).
+#[must_use]
+pub fn probe(path: &Path, disk: DiskState) -> WalProbe {
+    probe_file(&wal_path(path), disk)
+}
+
+/// Looks at the WAL file `wp`. One that does not match `disk` (changed file, damaged, old format)
+/// is moved to `wp` plus `.stale`, replacing an older one, so the next flush cannot overwrite it
+/// (I-44).
+#[must_use]
+pub fn probe_file(wp: &Path, disk: DiskState) -> WalProbe {
+    let wp = wp.to_path_buf();
+    let raw = match fs::read(&wp) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return WalProbe::Absent,
+        Err(e) => return WalProbe::Stale(Err(e.to_string())),
+    };
+    if let Some(recovered) = decode_wal(&raw, disk) {
+        return WalProbe::Valid(recovered);
+    }
+    let stale = stale_of(&wp);
+    WalProbe::Stale(match fs::rename(&wp, &stale) {
+        Ok(()) => Ok(stale),
+        Err(e) => Err(e.to_string()),
+    })
+}
+
 /// Removes the WAL file upon successful save, revert, or buffer close (I-25).
 pub fn remove_wal(path: &Path) {
-    let wp = wal_path(path);
+    remove_file(&wal_path(path));
+}
+
+/// Removes the WAL file `wp`. A missing file is not an error.
+pub fn remove_file(wp: &Path) {
     let _ = fs::remove_file(wp);
 }
 
@@ -169,6 +250,150 @@ mod tests {
 
         remove_wal(&target);
         assert!(!has_wal(&target));
+    }
+
+    fn probe_dir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("doc.txt");
+        (dir, target)
+    }
+
+    #[test]
+    fn probe_without_a_wal_is_absent() {
+        let (_dir, target) = probe_dir();
+        assert_eq!(probe(&target, DiskState::Unknown), WalProbe::Absent);
+    }
+
+    #[test]
+    fn probe_of_a_matching_wal_returns_it_and_keeps_the_file() {
+        let (_dir, target) = probe_dir();
+        write_wal(&target, DiskState::Unknown, Eol::Crlf, b"x\n").unwrap();
+        assert_eq!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Valid(Recovered {
+                eol: Eol::Crlf,
+                bytes: b"x\n".to_vec(),
+            })
+        );
+        assert!(has_wal(&target));
+    }
+
+    #[test]
+    fn probe_moves_an_unusable_wal_aside_instead_of_deleting_it() {
+        // I-44
+        let (_dir, target) = probe_dir();
+        let other = DiskState::Known {
+            mtime: UNIX_EPOCH,
+            size: 9,
+        };
+        write_wal(&target, other, Eol::Lf, b"draft").unwrap();
+        let stale = stale_path(&target);
+        assert_eq!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Stale(Ok(stale.clone()))
+        );
+        assert!(!has_wal(&target), "the next flush must not overwrite it");
+        assert_eq!(
+            decode_wal(&fs::read(&stale).unwrap(), other).unwrap().bytes,
+            b"draft"
+        );
+    }
+
+    #[test]
+    fn probe_moves_garbage_and_old_format_aside() {
+        for raw in [b"GARBAGE".to_vec(), {
+            let mut old = encode_wal(DiskState::Unknown, Eol::Lf, b"x");
+            old[..8].copy_from_slice(b"NEONWAL1");
+            old
+        }] {
+            let (_dir, target) = probe_dir();
+            fs::write(wal_path(&target), &raw).unwrap();
+            let stale = stale_path(&target);
+            assert_eq!(
+                probe(&target, DiskState::Unknown),
+                WalProbe::Stale(Ok(stale.clone()))
+            );
+            assert_eq!(fs::read(&stale).unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn probe_reports_a_wal_that_cannot_be_read_instead_of_ignoring_it() {
+        // Only a missing file is `Absent`; any other read error must reach the user (I-44).
+        let (_dir, target) = probe_dir();
+        fs::create_dir(wal_path(&target)).unwrap();
+        assert!(matches!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Stale(Err(_))
+        ));
+    }
+
+    #[test]
+    fn a_newer_unusable_wal_replaces_the_older_stale_copy() {
+        let (_dir, target) = probe_dir();
+        let stale = stale_path(&target);
+        fs::write(&stale, b"older").unwrap();
+        fs::write(wal_path(&target), b"newer garbage").unwrap();
+        assert!(matches!(
+            probe(&target, DiskState::Unknown),
+            WalProbe::Stale(Ok(_))
+        ));
+        assert_eq!(fs::read(&stale).unwrap(), b"newer garbage");
+    }
+
+    #[test]
+    fn scratch_path_follows_the_state_directory_convention() {
+        use std::ffi::OsStr;
+        let slot = |xdg: Option<&str>, home: Option<&str>| {
+            scratch_path_from(xdg.map(OsStr::new), home.map(Path::new))
+        };
+        assert_eq!(
+            slot(Some("/x"), Some("/h")),
+            Some(PathBuf::from("/x/neonemacs/scratch.wal"))
+        );
+        assert_eq!(
+            slot(Some(""), Some("/h")),
+            Some(PathBuf::from("/h/.local/state/neonemacs/scratch.wal"))
+        );
+        assert_eq!(
+            slot(None, Some("/h")),
+            Some(PathBuf::from("/h/.local/state/neonemacs/scratch.wal"))
+        );
+        assert_eq!(slot(None, None), None);
+    }
+
+    #[test]
+    fn scratch_slot_is_created_with_its_directory_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = dir
+            .path()
+            .join("state")
+            .join("neonemacs")
+            .join("scratch.wal");
+        write_scratch(&slot, Eol::Crlf, b"a\nb").unwrap();
+        assert_eq!(
+            probe_file(&slot, DiskState::Unknown),
+            WalProbe::Valid(Recovered {
+                eol: Eol::Crlf,
+                bytes: b"a\nb".to_vec(),
+            })
+        );
+        remove_file(&slot);
+        assert_eq!(probe_file(&slot, DiskState::Unknown), WalProbe::Absent);
+    }
+
+    #[test]
+    fn an_unusable_scratch_slot_is_moved_aside_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = dir.path().join("scratch.wal");
+        fs::write(&slot, b"GARBAGE").unwrap();
+        let stale = dir.path().join("scratch.wal.stale");
+        assert_eq!(
+            probe_file(&slot, DiskState::Unknown),
+            WalProbe::Stale(Ok(stale.clone()))
+        );
+        assert!(!slot.exists());
+        assert_eq!(fs::read(stale).unwrap(), b"GARBAGE");
     }
 
     #[test]

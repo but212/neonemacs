@@ -131,12 +131,184 @@ fn revert_buffer_cleans_up_wal() {
     // Revert buffer (M-x revert-buffer RET)
     let (ed, fx_revert) =
         neonemacs::core::commands::table::find("revert-buffer").unwrap()(ed, Vec::new());
-    let _ = perform_all(ed, None, fx_revert);
+    let ed = perform_all(ed, None, fx_revert);
 
+    // Opening recovered the draft (I-45), so it is unsaved text and revert asks first.
+    assert!(ed.buffer().modified());
+    let yes = parse_keys("y").unwrap()[0];
+    let ed = handle(ed, None, Event::Key(yes));
+
+    assert_eq!(ed.buffer().text().to_bytes(), b"disk content");
     assert!(
         !wal::has_wal(&file_path),
         "revert-buffer must delete WAL file (I-25)"
     );
+}
+
+/// Opens `path` with `C-x C-f`, the way a user does inside the editor.
+fn find_file(path: &std::path::Path) -> Editor {
+    use neonemacs::test_support::{keys, typ};
+    let ed = keys(Editor::new(Config::default()), "C-x C-f");
+    keys(typ(ed, &path.display().to_string()), "RET")
+}
+
+#[test]
+fn find_file_recovers_the_wal_like_start_up_does() {
+    // I-45: recovery does not depend on how the file was opened.
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("ff.txt");
+    fs::write(&file_path, "disk").unwrap();
+    wal::write_wal(&file_path, file::disk_state(&file_path), Eol::Lf, b"draft").unwrap();
+
+    let ed = find_file(&file_path);
+    assert_eq!(ed.buffer().name(), "ff.txt");
+    assert_eq!(ed.buffer().text().to_bytes(), b"draft");
+    assert!(ed.buffer().modified());
+    assert_eq!(ed.message(), "[Recovered ff.txt from WAL]");
+}
+
+#[test]
+fn find_file_keeps_an_unusable_wal_aside_and_says_so() {
+    // I-44: a draft for a file that changed is never silently overwritten.
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("ff.txt");
+    fs::write(&file_path, "disk").unwrap();
+    wal::write_wal(&file_path, file::disk_state(&file_path), Eol::Lf, b"draft").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    fs::write(&file_path, "changed elsewhere").unwrap();
+
+    let ed = find_file(&file_path);
+    assert_eq!(ed.buffer().text().to_bytes(), b"changed elsewhere");
+    assert!(!ed.buffer().modified());
+    assert_eq!(ed.message(), "Stale WAL kept as .ff.txt.wal.stale");
+    assert!(!wal::has_wal(&file_path));
+    let kept = fs::read(wal::stale_path(&file_path)).unwrap();
+    assert!(kept.ends_with(b"draft"));
+}
+
+fn press(session: &mut ShellSession, code: KeyCode, modifiers: KeyModifiers, at: Instant) {
+    session.handle_event_at(
+        &TermEvent::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }),
+        at,
+    );
+}
+
+fn scratch_session(slot: Option<std::path::PathBuf>) -> ShellSession {
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    ShellSession::new(ed, lua).with_scratch_wal(slot)
+}
+
+fn type_x(session: &mut ShellSession, at: Instant) {
+    press(session, KeyCode::Char('x'), KeyModifiers::NONE, at);
+}
+
+#[test]
+fn scratch_is_flushed_to_its_slot_after_one_idle_second() {
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("state").join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+
+    session.tick_at(t0 + Duration::from_millis(999));
+    assert!(!slot.exists());
+    session.tick_at(t0 + Duration::from_millis(1000));
+    assert!(matches!(
+        wal::probe_file(&slot, DiskState::Unknown),
+        neonemacs::core::effect::WalProbe::Valid(r) if r.bytes == b"x"
+    ));
+    assert!(!session.ed.buffer().is_wal_dirty());
+}
+
+#[test]
+fn scratch_without_a_slot_writes_nothing_and_stops_retrying() {
+    let mut session = scratch_session(None);
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    session.tick_at(t0 + Duration::from_secs(2));
+    assert!(!session.ed.buffer().is_wal_dirty());
+}
+
+#[test]
+fn slot_is_dropped_when_the_scratch_is_clean_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    session.tick_at(t0 + Duration::from_secs(1));
+    assert!(slot.exists());
+
+    // Undo back to the empty scratch: nothing is left to protect (I-43).
+    press(&mut session, KeyCode::Char('_'), KeyModifiers::CONTROL, t0);
+    assert!(!session.ed.buffer().modified());
+    assert!(!slot.exists());
+}
+
+#[test]
+fn slot_is_dropped_when_the_user_quits_and_discards() {
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    session.tick_at(t0 + Duration::from_secs(1));
+    assert!(slot.exists());
+
+    press(&mut session, KeyCode::Char('x'), KeyModifiers::CONTROL, t0);
+    press(&mut session, KeyCode::Char('c'), KeyModifiers::CONTROL, t0);
+    assert!(!session.is_quit(), "unsaved scratch asks first");
+    assert!(slot.exists(), "no discard yet");
+    press(&mut session, KeyCode::Char('y'), KeyModifiers::NONE, t0);
+    assert!(session.is_quit());
+    assert!(!slot.exists());
+}
+
+#[test]
+fn slot_is_dropped_on_quit_even_if_a_file_wal_failed_in_the_same_flush() {
+    // I-43: a flush that wrote the slot and failed on another buffer still tracks the slot.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("f.txt");
+    fs::write(&file, "init").unwrap();
+    fs::create_dir(wal::wal_path(&file)).unwrap();
+    let slot = dir.path().join("scratch.wal");
+    let mut session = scratch_session(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    let fx = request_open(&session.ed, &file, None, true, Vec::new());
+    session.ed = perform_all(std::mem::take(&mut session.ed), None, fx);
+    type_x(&mut session, t0);
+
+    session.tick_at(t0 + Duration::from_secs(1));
+    assert!(slot.exists());
+
+    press(&mut session, KeyCode::Char('x'), KeyModifiers::CONTROL, t0);
+    press(&mut session, KeyCode::Char('c'), KeyModifiers::CONTROL, t0);
+    press(&mut session, KeyCode::Char('y'), KeyModifiers::NONE, t0);
+    assert!(session.is_quit());
+    assert!(!slot.exists());
+}
+
+#[test]
+fn an_existing_slot_survives_until_the_scratch_is_clean() {
+    // A crash left the slot; the next run restores it and must not delete it while unsaved.
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("scratch.wal");
+    wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let ed = neonemacs::shell::startup::restore_scratch(ed, Some(&slot));
+    let mut session = ShellSession::new(ed, lua).with_scratch_wal(Some(slot.clone()));
+    let t0 = Instant::now();
+    type_x(&mut session, t0);
+    assert!(slot.exists());
+    assert_eq!(session.ed.buffer().text().to_bytes(), b"xdraft".to_vec());
 }
 
 #[test]

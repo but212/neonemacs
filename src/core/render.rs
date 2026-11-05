@@ -1,7 +1,7 @@
 //! Screen model: window rectangles, per-cell grid, and line diffs (§5, §11, A5).
 //! `scroll` adjusts the view so point stays visible; `frame` is pure.
 
-use crate::core::editor::{Buffer, Dir, Editor, Layout, Mode, Window};
+use crate::core::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::core::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::core::text::{Text, Unit};
 use crate::core::width::{char_width, column, unit_width};
@@ -11,6 +11,8 @@ use crate::core::width::{char_width, column, unit_width};
 pub struct Cell {
     pub glyph: String,
     pub style: TokenKind,
+    /// Drawn in reverse video: the active region or the current search match (I-47).
+    pub reverse: bool,
 }
 
 impl Cell {
@@ -19,6 +21,7 @@ impl Cell {
         Self {
             glyph,
             style: TokenKind::Normal,
+            reverse: false,
         }
     }
 
@@ -26,6 +29,25 @@ impl Cell {
     pub fn space() -> Self {
         Self::plain(" ".to_owned())
     }
+}
+
+/// Byte ranges drawn in reverse video in the selected window: the active region, and the current
+/// search or query-replace match.
+fn reversed_ranges(ed: &Editor) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let buf = ed.buffer();
+    if buf.mark_active()
+        && let Some(mark) = buf.mark()
+    {
+        let point = ed.window().point;
+        out.push((mark.min(point), mark.max(point)));
+    }
+    match ed.mode() {
+        Mode::Isearch(s) => out.extend(s.found),
+        Mode::QueryReplace(q) => out.push(q.current),
+        _ => {}
+    }
+    out
 }
 
 /// A screen as cell rows of exactly the terminal width, and the cursor as `(x, y)`.
@@ -153,11 +175,17 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     let mut grid = vec![vec![Cell::space(); cols]; rows];
     let leaves = ed.windows().windows();
     let mut cursor = (0, 0);
+    let reversed = reversed_ranges(ed);
 
     for (i, (w, area)) in leaves.into_iter().zip(areas(ed, cols, rows)).enumerate() {
         let buf = ed.buffer_by_id(w.buffer);
         let syntax = ed.syntax_registry().find_by_filename(buf.name());
-        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, tab);
+        let marks = if i == ed.windows().selected() {
+            reversed.as_slice()
+        } else {
+            &[]
+        };
+        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, tab, marks);
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
@@ -184,6 +212,13 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
                 cursor = (x.min(cols.saturating_sub(1)), rows - 1);
                 rest
             }
+            // A pending prefix key shows until the sequence ends.
+            Mode::Normal {
+                prefix: Prefix::CtlX,
+            } => "C-x-",
+            Mode::Normal {
+                prefix: Prefix::Meta,
+            } => "ESC-",
             _ => ed.message(),
         };
         let echo = fit(message, cols, ' ');
@@ -212,6 +247,7 @@ fn window_cells(
     w: &Window,
     area: Rect,
     tab: usize,
+    marks: &[(usize, usize)],
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
     let p = w.point.min(text.len());
@@ -228,7 +264,15 @@ fn window_cells(
             let col = column(text, p, tab).saturating_sub(w.left_col);
             cursor = (r, col);
         }
-        body.push(line_cells(syntax, text, s, e, w.left_col, area.w, tab));
+        body.push(line_cells(
+            syntax,
+            text,
+            s..e,
+            w.left_col,
+            area.w,
+            tab,
+            marks,
+        ));
         s = e + 1;
     }
     (body, cursor)
@@ -239,12 +283,13 @@ fn window_cells(
 fn line_cells(
     syntax: Option<&SyntaxDef>,
     text: &Text,
-    start: usize,
-    end: usize,
+    line: std::ops::Range<usize>,
     left: usize,
     width: usize,
     tab: usize,
+    marks: &[(usize, usize)],
 ) -> Vec<Cell> {
+    let (start, end) = (line.start, line.end);
     let mut cells = vec![Cell::space(); width];
     let right = left + width;
     let mut col = 0;
@@ -262,6 +307,7 @@ fn line_cells(
             .get(p - start)
             .copied()
             .unwrap_or(TokenKind::Normal);
+        let reverse = marks.iter().any(|&(a, b)| a <= p && p < b);
 
         if col >= right {
             cut = true;
@@ -277,7 +323,11 @@ fn line_cells(
             for (k, g) in glyph(unit_char(unit), w).into_iter().enumerate() {
                 let c = col + k;
                 if c >= left && c < right {
-                    cells[c - left] = Cell { glyph: g, style };
+                    cells[c - left] = Cell {
+                        glyph: g,
+                        style,
+                        reverse,
+                    };
                 }
             }
         }
@@ -399,6 +449,115 @@ mod tests {
 
     fn screen_rows(text: &str, point: usize, cols: usize, rows: usize) -> Vec<String> {
         screen(text, point, cols, rows).row_strings()
+    }
+
+    use crate::test_support::{keys, set_mark, typ};
+
+    fn reversed(frame: &Frame, row: usize) -> Vec<bool> {
+        frame.rows[row].iter().map(|c| c.reverse).collect()
+    }
+
+    fn drawn(ed: Editor, cols: usize, rows: usize) -> Frame {
+        frame(&scroll(ed, cols, rows), cols, rows)
+    }
+
+    #[test]
+    fn the_active_region_is_reversed_and_only_it() {
+        let ed = set_mark(keys(typ(Editor::new(Config::default()), "abc def"), "C-a"));
+        let ed = ed.with_window(|w| Window { point: 4, ..w });
+        let f = drawn(ed.clone(), 10, 4);
+        let want: Vec<bool> = (0..10).map(|i| (0..4).contains(&i)).collect();
+        assert_eq!(reversed(&f, 0), want);
+
+        // Point before the mark gives the same region.
+        let ed = ed
+            .with_current_buffer(|b| b.set_mark(Some(4)))
+            .with_window(|w| Window { point: 0, ..w });
+        assert_eq!(reversed(&drawn(ed, 10, 4), 0), want);
+    }
+
+    #[test]
+    fn an_inactive_mark_shows_nothing() {
+        let ed = set_mark(keys(typ(Editor::new(Config::default()), "abc def"), "C-a"));
+        let ed = keys(ed, "C-g");
+        let f = drawn(ed, 10, 4);
+        assert!(f.rows.iter().flatten().all(|c| !c.reverse));
+    }
+
+    fn cells_of(s: &str, left: usize, width: usize) -> Vec<String> {
+        let text = Text::from_bytes(s.as_bytes());
+        line_cells(None, &text, 0..text.len(), left, width, 8, &[])
+            .into_iter()
+            .map(|c| c.glyph)
+            .collect()
+    }
+
+    #[test]
+    fn a_combining_mark_joins_the_cell_before_it() {
+        assert_eq!(cells_of("e\u{301}x", 0, 4), ["e\u{301}", "x", " ", " "]);
+    }
+
+    #[test]
+    fn a_combining_mark_at_the_left_edge_is_dropped_not_misplaced() {
+        // The base "e" is scrolled off; its mark sits at column 1 == left and has no cell to join.
+        assert_eq!(cells_of("e\u{301}x", 1, 3), ["x", " ", " "]);
+    }
+
+    #[test]
+    fn a_region_over_wide_hangul_reverses_both_cells_of_each_glyph() {
+        // "가나다": 나 spans bytes 3..6 and cells 2..4.
+        let ed = Editor::new(Config::default())
+            .with_current_buffer(|b| {
+                b.with_text(Text::from_bytes("가나다".as_bytes()))
+                    .set_mark(Some(3))
+            })
+            .with_window(|w| Window { point: 6, ..w });
+        let f = drawn(ed, 10, 4);
+        let want: Vec<bool> = (0..10).map(|i| (2..4).contains(&i)).collect();
+        assert_eq!(reversed(&f, 0), want);
+    }
+
+    #[test]
+    fn only_the_selected_window_shows_the_region() {
+        let ed = set_mark(keys(typ(Editor::new(Config::default()), "abc"), "C-a"));
+        let ed = ed.with_window(|w| Window { point: 2, ..w });
+        let ed = ed.with_windows(|wm| wm.split(Dir::Below));
+        let f = drawn(ed, 10, 8);
+        let with_region = (0..8)
+            .filter(|&r| f.rows[r].iter().any(|c| c.reverse))
+            .count();
+        assert_eq!(with_region, 1);
+    }
+
+    #[test]
+    fn the_current_search_match_is_reversed() {
+        let ed = keys(typ(Editor::new(Config::default()), "abc def"), "C-a C-s");
+        let ed = typ(ed, "de");
+        let f = drawn(ed, 10, 4);
+        let want: Vec<bool> = (0..10).map(|i| (4..6).contains(&i)).collect();
+        assert_eq!(reversed(&f, 0), want);
+    }
+
+    #[test]
+    fn the_query_replace_match_is_reversed() {
+        use crate::core::commands::start_query_replace;
+        use crate::core::editor::MatchKind;
+        let ed = keys(typ(Editor::new(Config::default()), "abc def"), "C-a");
+        let (ed, res) = start_query_replace(ed, "def", "x", MatchKind::Literal);
+        res.unwrap();
+        let want: Vec<bool> = (0..10).map(|i| (4..7).contains(&i)).collect();
+        assert_eq!(reversed(&drawn(ed, 10, 4), 0), want);
+    }
+
+    #[test]
+    fn a_pending_prefix_key_shows_in_the_echo_area() {
+        let ed = Editor::new(Config::default()).set_message("Wrote f");
+        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
+        assert_eq!(echo(ed.clone()), "Wrote f");
+        assert_eq!(echo(keys(ed.clone(), "C-x")), "C-x-");
+        assert_eq!(echo(keys(ed.clone(), "ESC")), "ESC-");
+        // The message returns once the sequence ends.
+        assert_eq!(echo(keys(ed, "C-x C-g")), "Quit");
     }
 
     #[test]

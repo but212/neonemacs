@@ -2,7 +2,7 @@
 
 use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::core::effect::{self, Effect, Effects, ReadTarget, StatTarget};
+use crate::core::effect::{self, Effect, Effects, ReadTarget, StatTarget, WalProbe};
 use crate::core::file::{Backing, DiskState, loaded_from};
 use crate::core::undo::Edit;
 use std::path::{Path, PathBuf};
@@ -31,15 +31,28 @@ pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    if ed.buffers().iter().any(Buffer::modified) {
-        let ed = ed.confirm(
-            Confirm::QuitUnsaved,
-            "Modified buffers exist; quit anyway? (y or n)",
-        );
-        (ed, fx)
-    } else {
+    let names: Vec<&str> = ed
+        .buffers()
+        .iter()
+        .filter(|b| b.modified())
+        .map(Buffer::name)
+        .collect();
+    if names.is_empty() {
         (ed.set_quit(true), fx)
+    } else {
+        let question = quit_question(&names);
+        (ed.confirm(Confirm::QuitUnsaved, question), fx)
     }
+}
+
+/// Names the modified buffers a quit would discard: the first three, then `+N` for the rest (P7).
+fn quit_question(names: &[&str]) -> String {
+    const SHOWN: usize = 3;
+    let mut list = names[..names.len().min(SHOWN)].join(", ");
+    if names.len() > SHOWN {
+        list.push_str(&format!(" +{}", names.len() - SHOWN));
+    }
+    format!("Modified: {list}; quit anyway? (y or n)")
 }
 
 /// Saves `id`. A file-backed buffer asks the shell for its disk state first (`StatDisk`);
@@ -301,6 +314,12 @@ pub fn file_read(
                     if show {
                         ed = switch_to(ed, id);
                     }
+                    // The only place a WAL is looked for, so every way to open a file recovers (I-45).
+                    fx.push(Effect::ProbeWal {
+                        path: file.as_path().to_path_buf(),
+                        disk: ed.buffer_by_id(id).backing().disk(),
+                        line,
+                    });
                     (ed, fx)
                 }
                 Err(e) => (ed.set_message(e.message()), fx),
@@ -337,11 +356,34 @@ pub fn file_read(
     }
 }
 
+/// Applies what the shell found when it looked for the WAL of the file at `path` (I-44, I-45).
+#[must_use]
+pub fn wal_probed(
+    ed: Editor,
+    path: PathBuf,
+    line: Option<usize>,
+    probe: WalProbe,
+    fx: Effects,
+) -> (Editor, Effects) {
+    let name = name_of(&path);
+    let ed = match probe {
+        WalProbe::Absent => ed,
+        WalProbe::Valid(recovered) => ed
+            .restore_buffer_content(&path, &recovered.bytes, recovered.eol, line)
+            .set_message(format!("[Recovered {name} from WAL]")),
+        WalProbe::Stale(Ok(kept)) => {
+            ed.set_message(format!("Stale WAL kept as {}", name_of(&kept)))
+        }
+        WalProbe::Stale(Err(e)) => ed.set_message(format!("Stale WAL for {name} not kept: {e}")),
+    };
+    (ed, fx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::config::Config;
-    use crate::core::effect::{RawFile, Read};
+    use crate::core::effect::{RawFile, Read, Recovered};
     use crate::core::eol::Eol;
     use crate::core::file::FilePath;
     use crate::core::text::Text;
@@ -377,6 +419,39 @@ mod tests {
             panic!("expected WriteFile");
         };
         bytes.clone()
+    }
+
+    fn quit_message(names: &[&str]) -> String {
+        let mut ed = editor();
+        for name in names {
+            let (next, id) = ed.add_buffer(name, Text::default(), Backing::None);
+            ed = next.with_buffer(id, Buffer::mark_modified);
+        }
+        // The initial `*scratch*` stays clean, so only the named buffers are listed.
+        let (ed, _) = save_buffers_kill_emacs(ed, Vec::new());
+        ed.message().to_owned()
+    }
+
+    #[test]
+    fn quit_question_names_the_modified_buffers() {
+        assert_eq!(
+            quit_message(&["a.rs"]),
+            "Modified: a.rs; quit anyway? (y or n)"
+        );
+        assert_eq!(
+            quit_message(&["a", "b", "c"]),
+            "Modified: a, b, c; quit anyway? (y or n)"
+        );
+        assert_eq!(
+            quit_message(&["a", "b", "c", "d", "e"]),
+            "Modified: a, b, c +2; quit anyway? (y or n)"
+        );
+    }
+
+    #[test]
+    fn quit_with_nothing_modified_asks_nothing() {
+        let (ed, _) = save_buffers_kill_emacs(editor(), Vec::new());
+        assert!(ed.quit());
     }
 
     #[test]
@@ -527,6 +602,77 @@ mod tests {
         );
         assert_eq!(ed.buffer().eol(), Eol::Crlf);
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
+    }
+
+    fn found(bytes: &[u8], disk: DiskState) -> Result<Read, String> {
+        Ok(Read::Found(RawFile {
+            len: bytes.len() as u64,
+            disk,
+            bytes: bytes.to_vec(),
+        }))
+    }
+
+    #[test]
+    fn open_of_a_new_buffer_probes_its_wal() {
+        // I-45: the one place a WAL is looked for.
+        let disk = known(3);
+        let target = ReadTarget::Open {
+            line: Some(2),
+            show: false,
+        };
+        let (_, fx) = file_read(
+            editor(),
+            target,
+            PathBuf::from("f.txt"),
+            found(b"abc", disk),
+            Vec::new(),
+        );
+        assert_eq!(
+            fx,
+            vec![Effect::ProbeWal {
+                path: PathBuf::from("f.txt"),
+                disk,
+                line: Some(2),
+            }]
+        );
+    }
+
+    fn probed(probe: WalProbe) -> Editor {
+        let ed = file_buffer(editor(), b"disk", Eol::Lf);
+        let (ed, fx) = wal_probed(ed, PathBuf::from("f.txt"), None, probe, Vec::new());
+        assert_eq!(fx, [] as [Effect; 0]);
+        ed
+    }
+
+    #[test]
+    fn no_wal_changes_nothing() {
+        let ed = probed(WalProbe::Absent);
+        assert_eq!(ed.buffer().text().to_bytes(), b"disk");
+        assert!(!ed.buffer().modified());
+        assert_eq!(ed.message(), "");
+    }
+
+    #[test]
+    fn valid_wal_restores_text_and_eol_and_says_so() {
+        let ed = probed(WalProbe::Valid(Recovered {
+            eol: Eol::Crlf,
+            bytes: b"draft".to_vec(),
+        }));
+        assert_eq!(ed.buffer().text().to_bytes(), b"draft");
+        assert_eq!(ed.buffer().eol(), Eol::Crlf);
+        assert!(ed.buffer().modified());
+        assert_eq!(ed.message(), "[Recovered f.txt from WAL]");
+    }
+
+    #[test]
+    fn unusable_wal_is_reported_and_leaves_the_text() {
+        let ed = probed(WalProbe::Stale(Ok(PathBuf::from("dir/.f.txt.wal.stale"))));
+        assert_eq!(ed.buffer().text().to_bytes(), b"disk");
+        assert!(!ed.buffer().modified());
+        assert_eq!(ed.message(), "Stale WAL kept as .f.txt.wal.stale");
+
+        let ed = probed(WalProbe::Stale(Err("denied".to_owned())));
+        assert_eq!(ed.message(), "Stale WAL for f.txt not kept: denied");
     }
 
     #[test]
@@ -773,13 +919,13 @@ mod tests {
 
         let (ed, fx) = disk_checked(ed, target, &path, known(9), Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
-        assert_eq!(
+        assert!(matches!(
             ed.mode(),
-            &crate::core::mode::Mode::Confirm(Confirm::OverwriteFile {
+            crate::core::mode::Mode::Confirm(q) if q.kind == Confirm::OverwriteFile {
                 id,
                 path: PathBuf::from("other.txt")
-            })
-        );
+            }
+        ));
         assert_eq!(ed.message(), "File other.txt exists; overwrite? (y or n)");
     }
 
@@ -817,7 +963,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             changed.mode(),
-            crate::core::mode::Mode::Confirm(Confirm::SaveExternal(_))
+            crate::core::mode::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
         ));
     }
 
@@ -857,7 +1003,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             ed.mode(),
-            crate::core::mode::Mode::Confirm(Confirm::SaveExternal(_))
+            crate::core::mode::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
         ));
     }
 

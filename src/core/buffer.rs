@@ -9,8 +9,45 @@ use crate::core::text::Text;
 use crate::core::undo::{Edit, UndoLog};
 use crate::core::window::snap_point as snap;
 
+/// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
+pub const SCRATCH_NAME: &str = "*scratch*";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferId(pub u32);
+
+/// The mark of a buffer. Only an active mark makes a region, which is shown on screen. A text
+/// edit, `C-g`, or a copy turns an active mark into an inactive one, which stays for
+/// `exchange-point-and-mark` and Lua (I-47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    Unset,
+    Inactive(usize),
+    Active(usize),
+}
+
+impl Mark {
+    const fn pos(self) -> Option<usize> {
+        match self {
+            Self::Unset => None,
+            Self::Inactive(p) | Self::Active(p) => Some(p),
+        }
+    }
+
+    const fn deactivated(self) -> Self {
+        match self {
+            Self::Active(p) => Self::Inactive(p),
+            other => other,
+        }
+    }
+
+    fn map(self, f: impl FnOnce(usize) -> usize) -> Self {
+        match self {
+            Self::Unset => Self::Unset,
+            Self::Inactive(p) => Self::Inactive(f(p)),
+            Self::Active(p) => Self::Active(f(p)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
@@ -20,8 +57,10 @@ pub struct Buffer {
     backing: Backing,
     undo: UndoLog,
     modified: bool,
+    /// Counts changes of the text that `modified` is measured against (I-41).
+    epoch: u32,
     view_only: bool,
-    mark: Option<usize>,
+    mark: Mark,
     /// Point when this buffer was last left by its window (anchor, I-01).
     saved_point: usize,
     eol: Eol,
@@ -37,8 +76,9 @@ impl Buffer {
             backing,
             undo: UndoLog::new(),
             modified: false,
+            epoch: 0,
             view_only: false,
-            mark: None,
+            mark: Mark::Unset,
             saved_point: 0,
             eol: Eol::default(),
         }
@@ -74,6 +114,12 @@ impl Buffer {
         self.modified
     }
 
+    /// The save epoch: it changes whenever the text that `modified` compares against changes (I-41).
+    #[must_use]
+    pub const fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     #[must_use]
     pub const fn view_only(&self) -> bool {
         self.view_only
@@ -81,7 +127,13 @@ impl Buffer {
 
     #[must_use]
     pub const fn mark(&self) -> Option<usize> {
-        self.mark
+        self.mark.pos()
+    }
+
+    /// Whether the mark makes a region between it and point (I-47).
+    #[must_use]
+    pub const fn mark_active(&self) -> bool {
+        matches!(self.mark, Mark::Active(_))
     }
 
     #[must_use]
@@ -108,7 +160,17 @@ impl Buffer {
     /// Sets `mark`, snapped to a valid unit boundary in `0..=text.len()` (I-01).
     #[must_use]
     pub fn set_mark(mut self, mark: Option<usize>) -> Self {
-        self.mark = mark.map(|m| snap(&self.text, m));
+        self.mark = match mark {
+            Some(m) => Mark::Active(snap(&self.text, m)),
+            None => Mark::Unset,
+        };
+        self
+    }
+
+    /// Ends the region and keeps the mark position.
+    #[must_use]
+    pub const fn deactivate_mark(mut self) -> Self {
+        self.mark = self.mark.deactivated();
         self
     }
 
@@ -134,6 +196,16 @@ impl Buffer {
     /// Clears `modified` and `wal_dirty` together, so `wal_dirty` never outlives `modified` (I-31).
     #[must_use]
     pub fn mark_clean(mut self) -> Self {
+        self.modified = false;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.backing = self.backing.set_wal_dirty(false);
+        self
+    }
+
+    /// Clears `modified` after an undo returned the text to the one it was measured against.
+    /// The epoch stays, since that text did not change (I-41).
+    #[must_use]
+    pub fn restore_clean(mut self) -> Self {
         self.modified = false;
         self.backing = self.backing.set_wal_dirty(false);
         self
@@ -163,6 +235,7 @@ impl Buffer {
     pub fn with_text(mut self, text: Text) -> Self {
         self.text = text;
         self.undo = UndoLog::new();
+        self.epoch = self.epoch.wrapping_add(1);
         self.snap_anchors()
     }
 
@@ -182,6 +255,7 @@ impl Buffer {
     pub fn record_saved(mut self, new_disk: DiskState) -> Self {
         self.backing = self.backing.with_disk(new_disk).set_wal_dirty(false);
         self.modified = false;
+        self.epoch = self.epoch.wrapping_add(1);
         self.undo = self.undo.close();
         self
     }
@@ -192,6 +266,7 @@ impl Buffer {
         self.backing = backing;
         self.eol = eol;
         self.modified = false;
+        self.epoch = self.epoch.wrapping_add(1);
         self.undo = UndoLog::new();
         self.snap_anchors()
     }
@@ -216,12 +291,13 @@ impl Buffer {
             }
             Edit::SetEol { to, .. } => self.eol = *to,
         }
+        let clean_epoch = (!self.modified).then_some(self.epoch);
         self.modified = true;
         self.backing = self.backing.set_wal_dirty(true);
         let anchor = |a| snap(&self.text, remap_fn(a));
-        self.mark = self.mark.map(anchor);
+        self.mark = self.mark.deactivated().map(anchor);
         self.saved_point = anchor(self.saved_point);
-        let (undo, dropped) = self.undo.record(edit, undo_limit);
+        let (undo, dropped) = self.undo.record(edit, undo_limit, clean_epoch);
         self.undo = undo;
         (self, dropped)
     }
@@ -251,7 +327,12 @@ impl Default for BufferPool {
 impl BufferPool {
     #[must_use]
     pub fn new() -> Self {
-        let scratch = Buffer::new(BufferId(0), "*scratch*", Text::default(), Backing::None);
+        let scratch = Buffer::new(
+            BufferId(0),
+            SCRATCH_NAME,
+            Text::default(),
+            Backing::scratch(),
+        );
         Self {
             buffers: vec![scratch],
             next_id: 1,
@@ -363,9 +444,9 @@ impl BufferPool {
             self.next_id += 1;
             self.buffers.push(Buffer::new(
                 scratch_id,
-                "*scratch*",
+                SCRATCH_NAME,
                 Text::default(),
-                Backing::None,
+                Backing::scratch(),
             ));
         }
         let replacement = self
@@ -391,6 +472,16 @@ impl<'a> IntoIterator for &'a BufferPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pool_scratch_is_scratch_backed_before_and_after_a_kill() {
+        // I-42
+        let pool = BufferPool::new();
+        assert!(pool.get(0).unwrap().backing().is_scratch());
+        let (pool, replacement) = pool.kill(BufferId(0));
+        assert_eq!(pool.get_by_id(replacement).name(), SCRATCH_NAME);
+        assert!(pool.get_by_id(replacement).backing().is_scratch());
+    }
 
     #[test]
     fn buffer_pool_starts_with_scratch() {

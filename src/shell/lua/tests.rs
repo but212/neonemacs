@@ -73,6 +73,20 @@ fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
 }
 
 #[test]
+fn set_mark_from_lua_makes_an_active_region() {
+    let lua = new_state().unwrap();
+    let ed = Editor::new(Config::default())
+        .with_current_buffer(|b| b.with_text(crate::core::text::Text::from_bytes(b"abc")));
+    let (ed, res) = script(&lua, ed, "buffer.set_mark(2)");
+    res.unwrap();
+    assert!(ed.buffer().mark_active());
+    let (ed, res) = script(&lua, ed, "buffer.set_mark(nil)");
+    res.unwrap();
+    assert!(!ed.buffer().mark_active());
+    assert_eq!(ed.buffer().mark(), None);
+}
+
+#[test]
 fn set_mark_snaps_to_unit_boundary() {
     let lua = new_state().unwrap();
     let ed = Editor::new(Config::default())

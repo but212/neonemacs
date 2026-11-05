@@ -1,7 +1,7 @@
 //! Text modification, kill ring, and formatting commands (§6).
 
 use crate::core::commands::motion::region;
-use crate::core::editor::{Editor, LastCommand};
+use crate::core::editor::{Buffer, Editor, LastCommand};
 use crate::core::effect::Effects;
 
 pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -40,7 +40,9 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
         return (ed.set_message("The mark is not set now"), fx);
     };
     let bytes = ed.buffer().text().bytes(start..end);
-    let ed = ed.with_kill_ring(|kr| kr.push(bytes));
+    let ed = ed
+        .with_kill_ring(|kr| kr.push(bytes))
+        .with_current_buffer(Buffer::deactivate_mark);
     (ed, fx)
 }
 

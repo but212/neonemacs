@@ -25,6 +25,10 @@ pub struct ShellSession {
     active_shell: Option<ActiveShell>,
     last_edit_time: Instant,
     needs_wal_flush: bool,
+    /// Where the unsaved text of the scratch buffer is kept. `None` keeps it in memory only.
+    scratch_wal: Option<std::path::PathBuf>,
+    /// Whether `scratch_wal` holds a file that a clean scratch must remove (I-43).
+    scratch_on_disk: bool,
     prev_rows: Vec<Vec<crate::core::render::Cell>>,
     size: (usize, usize),
 }
@@ -39,8 +43,38 @@ impl ShellSession {
             active_shell: None,
             last_edit_time: Instant::now(),
             needs_wal_flush: false,
+            scratch_wal: None,
+            scratch_on_disk: false,
             prev_rows: Vec::new(),
             size: (0, 0),
+        }
+    }
+
+    /// Keeps the unsaved text of the scratch buffer in `slot`. A slot that already holds a file
+    /// is removed once the scratch is clean again or the user quits (I-43).
+    #[must_use]
+    pub fn with_scratch_wal(mut self, slot: Option<std::path::PathBuf>) -> Self {
+        self.scratch_on_disk = slot.as_deref().is_some_and(std::path::Path::is_file);
+        self.scratch_wal = slot;
+        self
+    }
+
+    /// Removes the scratch slot when no unsaved scratch text is left to protect (I-43).
+    fn drop_idle_scratch_slot(&mut self) {
+        if !self.scratch_on_disk {
+            return;
+        }
+        let live = !self.ed.quit()
+            && self
+                .ed
+                .buffers()
+                .iter()
+                .any(|b| b.backing().is_scratch() && b.modified());
+        if !live {
+            if let Some(slot) = &self.scratch_wal {
+                wal::remove_file(slot);
+            }
+            self.scratch_on_disk = false;
         }
     }
 
@@ -89,6 +123,7 @@ impl ShellSession {
             } else if !self.has_wal_dirty_file_buffer() {
                 self.needs_wal_flush = false;
             }
+            self.drop_idle_scratch_slot();
         }
     }
 
@@ -138,21 +173,34 @@ impl ShellSession {
         {
             let mut flushed_ids = Vec::new();
             let mut failures = Vec::new();
+            let mut wrote_scratch = false;
             for buf in self.ed.buffers() {
-                if buf.is_wal_dirty()
-                    && let Some(path) = buf.file_path()
-                {
-                    match wal::write_wal(
-                        path,
-                        buf.backing().disk(),
-                        buf.eol(),
-                        &buf.text().to_bytes(),
-                    ) {
-                        Ok(()) => flushed_ids.push(buf.id()),
-                        Err(e) => failures.push(format!("{}: {e}", path.display())),
-                    }
+                if !buf.is_wal_dirty() {
+                    continue;
+                }
+                let bytes = buf.text().to_bytes();
+                let (label, result) = if let Some(path) = buf.file_path() {
+                    (
+                        path.display().to_string(),
+                        wal::write_wal(path, buf.backing().disk(), buf.eol(), &bytes),
+                    )
+                } else if !buf.backing().is_scratch() {
+                    continue;
+                } else if let Some(slot) = &self.scratch_wal {
+                    let result = wal::write_scratch(slot, buf.eol(), &bytes);
+                    wrote_scratch |= result.is_ok();
+                    (slot.display().to_string(), result)
+                } else {
+                    // No slot: the text lives in memory only, so there is nothing to retry.
+                    flushed_ids.push(buf.id());
+                    continue;
+                };
+                match result {
+                    Ok(()) => flushed_ids.push(buf.id()),
+                    Err(e) => failures.push(format!("{label}: {e}")),
                 }
             }
+            self.scratch_on_disk |= wrote_scratch;
             let mut ed = std::mem::take(&mut self.ed);
             for id in flushed_ids {
                 ed = ed.clear_wal_dirty(id);
