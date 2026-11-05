@@ -223,7 +223,13 @@ fn shell_running_does_not_clobber_status_messages() {
         session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
     session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
-    for c in "echo 1".chars() {
+    // Must outlive the whole test; a fast command can finish before the tick on a quick runner.
+    let slow = if cfg!(windows) {
+        "ping -n 4 127.0.0.1"
+    } else {
+        "sleep 3"
+    };
+    for c in slow.chars() {
         session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
     }
     session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
