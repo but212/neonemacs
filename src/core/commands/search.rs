@@ -40,7 +40,7 @@ fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
         text: String::new(),
         origin,
         anchor: origin,
-        failed: false,
+        found: None,
     }))
     .set_message("I-search: ")
 }
@@ -91,7 +91,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 /// With `wrap`, a miss restarts at the other end of the buffer.
 fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor, Isearch) {
     if s.text.is_empty() {
-        s.failed = false;
+        s.found = None;
         return (ed.set_message("I-search: "), s);
     }
     let pattern = match s.kind {
@@ -101,7 +101,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     let pattern = match pattern {
         Ok(p) => p,
         Err(e) => {
-            s.failed = true;
+            s.found = None;
             return (ed.set_message(format!("Invalid regexp: {e}")), s);
         }
     };
@@ -125,7 +125,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
         found = find_in_direction(&ed, &pattern, s.direction, other_end, fold);
         wrapped = found.is_some();
     }
-    s.failed = found.is_none();
+    s.found = found;
     let ed = if let Some((start, end)) = found {
         s.anchor = start;
         ed.move_point(if s.direction == Direction::Forward {
@@ -136,7 +136,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     } else {
         ed
     };
-    let failing = if s.failed { "Failing " } else { "" };
+    let failing = if s.failed() { "Failing " } else { "" };
     let wrap_note = if wrapped { "Wrapped " } else { "" };
     let ed = ed.set_message(format!("{wrap_note}{failing}I-search: {}", s.text));
     (ed, s)
@@ -422,6 +422,21 @@ mod tests {
         assert_eq!(point(&ed), 0);
         assert_eq!(ed.mode(), &Mode::normal());
         assert_eq!(ed.message(), "Quit");
+    }
+
+    #[test]
+    fn isearch_failure_follows_the_match() {
+        let ed = typ(editor(), "abc");
+        let ed = keys(ed, "C-a C-s");
+        let ed = typ(ed, "b");
+        assert!(matches!(ed.mode(), Mode::Isearch(s) if s.found == Some((1, 2)) && !s.failed()));
+        let ed = typ(ed, "z");
+        assert!(matches!(ed.mode(), Mode::Isearch(s) if s.found.is_none() && s.failed()));
+        assert!(ed.message().starts_with("Failing I-search"));
+        let ed = keys(ed, "DEL");
+        assert!(matches!(ed.mode(), Mode::Isearch(s) if s.found.is_some() && !s.failed()));
+        let ed = keys(ed, "DEL");
+        assert!(matches!(ed.mode(), Mode::Isearch(s) if s.found.is_none() && !s.failed()));
     }
 
     #[test]

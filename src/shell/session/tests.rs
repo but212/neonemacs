@@ -337,6 +337,54 @@ fn wal_write_failure_keeps_a_pending_confirmation_question() {
 }
 
 #[test]
+fn print_styled_row_reverses_exactly_the_marked_cells() {
+    use crossterm::style::{Attribute, SetAttribute};
+    let cell = |glyph: &str, reverse: bool| crate::core::render::Cell {
+        glyph: glyph.into(),
+        style: TokenKind::Normal,
+        reverse,
+    };
+    let mut out = Vec::new();
+    print_styled_row(
+        &mut out,
+        &[
+            cell("a", false),
+            cell("b", true),
+            cell("c", true),
+            cell("d", false),
+        ],
+    )
+    .unwrap();
+    let mut expected = Vec::new();
+    queue!(
+        &mut expected,
+        Print("a"),
+        SetAttribute(Attribute::Reverse),
+        Print("bc"),
+        SetAttribute(Attribute::NoReverse),
+        Print("d"),
+        ResetColor
+    )
+    .unwrap();
+    assert_eq!(out, expected);
+
+    // A row that ends inside the region does not leak reverse video into the next row.
+    let mut out = Vec::new();
+    print_styled_row(&mut out, &[cell("a", false), cell("b", true)]).unwrap();
+    let mut expected = Vec::new();
+    queue!(
+        &mut expected,
+        Print("a"),
+        SetAttribute(Attribute::Reverse),
+        Print("b"),
+        SetAttribute(Attribute::NoReverse),
+        ResetColor
+    )
+    .unwrap();
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colors() {
     // Line: `"가" let`
     // Cell widths: `"`(1, String), `가`(2, String), `"`(1, String), ` `(1, Normal), `l`(1, Keyword), `e`(1, Keyword), `t`(1, Keyword)
@@ -345,34 +393,42 @@ fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colo
         crate::core::render::Cell {
             glyph: "\"".into(),
             style: TokenKind::String,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: "가".into(),
             style: TokenKind::String,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: String::new(),
             style: TokenKind::String,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: "\"".into(),
             style: TokenKind::String,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: " ".into(),
             style: TokenKind::Normal,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: "l".into(),
             style: TokenKind::Keyword,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: "e".into(),
             style: TokenKind::Keyword,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: "t".into(),
             style: TokenKind::Keyword,
+            reverse: false,
         },
     ];
 
@@ -399,14 +455,17 @@ fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colo
         crate::core::render::Cell {
             glyph: "e\u{0301}".into(),
             style: TokenKind::Keyword,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: " ".into(),
             style: TokenKind::Normal,
+            reverse: false,
         },
         crate::core::render::Cell {
             glyph: "1".into(),
             style: TokenKind::Number,
+            reverse: false,
         },
     ];
     let mut comb_out = Vec::new();

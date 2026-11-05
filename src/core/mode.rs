@@ -140,7 +140,16 @@ pub struct Isearch {
     pub origin: usize,
     /// Where the next incremental search starts: the start of the current match.
     pub anchor: usize,
-    pub failed: bool,
+    /// The current match as `start..end`, or `None` when the text is empty or nothing matches.
+    pub found: Option<(usize, usize)>,
+}
+
+impl Isearch {
+    /// A non-empty search text with no match.
+    #[must_use]
+    pub const fn failed(&self) -> bool {
+        !self.text.is_empty() && self.found.is_none()
+    }
 }
 
 /// A query-replace session in progress (§9, A8).

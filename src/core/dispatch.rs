@@ -2,7 +2,7 @@
 //! Decouples routing and command execution lifecycle from Editor state management.
 
 use crate::core::commands;
-use crate::core::editor::{Editor, Mode, Prefix, Question};
+use crate::core::editor::{Buffer, Editor, Mode, Prefix, Question};
 use crate::core::effect::{Effect, Effects};
 use crate::core::keymap::{Code, Key};
 
@@ -62,7 +62,9 @@ pub fn handle_normal_key(
 ) -> (Editor, Effects) {
     ed = ed.set_mode(Mode::normal());
     if key == Key::ctrl('g') {
-        ed = ed.set_message("Quit");
+        ed = ed
+            .with_current_buffer(Buffer::deactivate_mark)
+            .set_message("Quit");
         return (ed, fx);
     }
     let keys = match prefix {

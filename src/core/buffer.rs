@@ -15,6 +15,40 @@ pub const SCRATCH_NAME: &str = "*scratch*";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferId(pub u32);
 
+/// The mark of a buffer. Only an active mark makes a region, which is shown on screen. A text
+/// edit, `C-g`, or a copy turns an active mark into an inactive one, which stays for
+/// `exchange-point-and-mark` and Lua (I-47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    Unset,
+    Inactive(usize),
+    Active(usize),
+}
+
+impl Mark {
+    const fn pos(self) -> Option<usize> {
+        match self {
+            Self::Unset => None,
+            Self::Inactive(p) | Self::Active(p) => Some(p),
+        }
+    }
+
+    const fn deactivated(self) -> Self {
+        match self {
+            Self::Active(p) => Self::Inactive(p),
+            other => other,
+        }
+    }
+
+    fn map(self, f: impl FnOnce(usize) -> usize) -> Self {
+        match self {
+            Self::Unset => Self::Unset,
+            Self::Inactive(p) => Self::Inactive(f(p)),
+            Self::Active(p) => Self::Active(f(p)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
     id: BufferId,
@@ -26,7 +60,7 @@ pub struct Buffer {
     /// Counts changes of the text that `modified` is measured against (I-41).
     epoch: u32,
     view_only: bool,
-    mark: Option<usize>,
+    mark: Mark,
     /// Point when this buffer was last left by its window (anchor, I-01).
     saved_point: usize,
     eol: Eol,
@@ -44,7 +78,7 @@ impl Buffer {
             modified: false,
             epoch: 0,
             view_only: false,
-            mark: None,
+            mark: Mark::Unset,
             saved_point: 0,
             eol: Eol::default(),
         }
@@ -93,7 +127,13 @@ impl Buffer {
 
     #[must_use]
     pub const fn mark(&self) -> Option<usize> {
-        self.mark
+        self.mark.pos()
+    }
+
+    /// Whether the mark makes a region between it and point (I-47).
+    #[must_use]
+    pub const fn mark_active(&self) -> bool {
+        matches!(self.mark, Mark::Active(_))
     }
 
     #[must_use]
@@ -120,7 +160,17 @@ impl Buffer {
     /// Sets `mark`, snapped to a valid unit boundary in `0..=text.len()` (I-01).
     #[must_use]
     pub fn set_mark(mut self, mark: Option<usize>) -> Self {
-        self.mark = mark.map(|m| snap(&self.text, m));
+        self.mark = match mark {
+            Some(m) => Mark::Active(snap(&self.text, m)),
+            None => Mark::Unset,
+        };
+        self
+    }
+
+    /// Ends the region and keeps the mark position.
+    #[must_use]
+    pub const fn deactivate_mark(mut self) -> Self {
+        self.mark = self.mark.deactivated();
         self
     }
 
@@ -245,7 +295,7 @@ impl Buffer {
         self.modified = true;
         self.backing = self.backing.set_wal_dirty(true);
         let anchor = |a| snap(&self.text, remap_fn(a));
-        self.mark = self.mark.map(anchor);
+        self.mark = self.mark.deactivated().map(anchor);
         self.saved_point = anchor(self.saved_point);
         let (undo, dropped) = self.undo.record(edit, undo_limit, clean_epoch);
         self.undo = undo;

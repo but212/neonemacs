@@ -118,7 +118,31 @@ pub(crate) fn exchange_point_and_mark(ed: Editor, fx: Effects) -> (Editor, Effec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{editor, keys, point, run_command, set_mark, typ};
+    use crate::test_support::{editor, keys, point, run_command, set_mark, text, typ};
+
+    #[test]
+    fn the_mark_is_active_until_an_edit_cancel_or_copy() {
+        // I-47
+        let ed = set_mark(keys(typ(editor(), "abc"), "C-a"));
+        assert!(ed.buffer().mark_active());
+
+        // An edit keeps the mark position but ends the region.
+        let edited = typ(ed.clone(), "x");
+        assert!(!edited.buffer().mark_active());
+        assert_eq!(edited.buffer().mark(), Some(0));
+
+        // C-g ends it too, and a copy (M-w) does.
+        let quit = keys(ed.clone(), "C-g");
+        assert!(!quit.buffer().mark_active());
+        assert_eq!(quit.buffer().mark(), Some(0));
+        let copied = keys(keys(ed, "C-e"), "M-w");
+        assert!(!copied.buffer().mark_active());
+        assert_eq!(copied.buffer().mark(), Some(0));
+        assert_eq!(text(&copied), "abc");
+
+        // Setting the mark again makes it active again.
+        assert!(set_mark(copied).buffer().mark_active());
+    }
 
     #[test]
     fn motion_hangul_moves_by_character() {
