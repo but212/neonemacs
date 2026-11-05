@@ -169,7 +169,9 @@ impl Editor {
         for edit in group.edits().iter().rev() {
             let (next, applied) = ed.apply(&edit.inverse());
             ed = next;
-            if let Some(d) = applied { dropped += d } else {
+            if let Some(d) = applied {
+                dropped += d;
+            } else {
                 complete = false;
                 break;
             }

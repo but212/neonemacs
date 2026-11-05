@@ -113,6 +113,7 @@ impl UndoLog {
     }
 
     /// Appends `edit` to the open group, or starts a new group that remembers `clean_epoch`.
+    ///
     /// `limit` is `Config.undo_limit`, the only undo limit (I-35). Returns the new log and the
     /// number of oldest groups dropped.
     ///

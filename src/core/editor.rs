@@ -1,4 +1,6 @@
-//! Editor state. `apply` is the single edit point: it enforces the read-only
+//! Editor state.
+//!
+//! `apply` is the single edit point: it enforces the read-only
 //! flag (I-06), records undo (§7), and moves every anchor to a boundary (I-01).
 //! Every transition takes the editor by value and returns the new one.
 

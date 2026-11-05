@@ -73,6 +73,7 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 }
 
 /// Applies the disk state the shell found for `path` (I-04).
+///
 /// - A save asks when the state differs from the one recorded at the read. A file created
 ///   after the buffer opened a missing path counts as a change.
 /// - A `write-file` to another path asks when a file exists there.

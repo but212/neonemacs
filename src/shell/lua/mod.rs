@@ -1,5 +1,6 @@
-//! Lua extension API (§12, R4). Five functions: `bind`, `command`, `run`,
-//! `get`, `set`. They are installed only while Lua code runs, so each one
+//! Lua extension API (§12, R4). Five functions: `bind`, `command`, `run`, `get`, `set`.
+//!
+//! They are installed only while Lua code runs, so each one
 //! reaches the editor through a `RefCell` that lasts for that call.
 //!
 //! Each submodule installs one group of functions into the Lua globals.
@@ -73,10 +74,10 @@ pub fn new_state() -> mlua::Result<Lua> {
 /// `$XDG_CONFIG_HOME/neonemacs/init.lua`, else `<home>/.config/neonemacs/init.lua` (U2).
 #[must_use]
 pub fn config_path(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    match xdg.filter(|s| !s.is_empty()) {
-        Some(xdg) => Some(PathBuf::from(xdg).join("neonemacs").join("init.lua")),
-        None => home.map(|h| h.join(".config").join("neonemacs").join("init.lua")),
-    }
+    xdg.filter(|s| !s.is_empty()).map_or_else(
+        || home.map(|h| h.join(".config").join("neonemacs").join("init.lua")),
+        |xdg| Some(PathBuf::from(xdg).join("neonemacs").join("init.lua")),
+    )
 }
 
 /// The editor in `cell`. The cell is full whenever Lua runs (I-21).

@@ -433,6 +433,7 @@ impl BufferPool {
     }
 
     /// Removes buffer `id`. If `id` was the only buffer, an empty `*scratch*` buffer is created first.
+    ///
     /// Returns the new pool and the `BufferId` of the replacement buffer that windows should switch to (I-08).
     ///
     /// # Panics

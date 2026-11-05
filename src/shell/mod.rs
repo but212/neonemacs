@@ -202,10 +202,10 @@ fn run_shell(command: &str) -> Result<String, String> {
 }
 
 fn run_lua(lua: Option<&Lua>, name: &str) -> Result<(), String> {
-    match lua {
-        Some(lua) => lua::call_lua(lua, name).map_err(|e| e.to_string()),
-        None => Err(format!("No command named {name}")),
-    }
+    lua.map_or_else(
+        || Err(format!("No command named {name}")),
+        |lua| lua::call_lua(lua, name).map_err(|e| e.to_string()),
+    )
 }
 
 #[cfg(test)]

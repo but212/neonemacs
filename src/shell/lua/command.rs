@@ -63,10 +63,12 @@ pub(super) fn install_command_api<'lua, 'scope>(
 /// Calls the Lua command `name`, which must have been defined with `command`.
 pub fn call_lua(lua: &Lua, name: &str) -> mlua::Result<()> {
     let table: Table = lua.globals().get(COMMANDS)?;
-    match table.get::<Option<Function>>(name)? {
-        Some(f) => f.call(()),
-        None => Err(mlua::Error::RuntimeError(format!(
-            "No command named {name}"
-        ))),
-    }
+    table.get::<Option<Function>>(name)?.map_or_else(
+        || {
+            Err(mlua::Error::RuntimeError(format!(
+                "No command named {name}"
+            )))
+        },
+        |f| f.call(()),
+    )
 }

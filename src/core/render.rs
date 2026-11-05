@@ -130,14 +130,13 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
 #[must_use]
 pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
     let tab = usize::from(ed.config().tab_width);
-    let windows: Vec<Window> = ed.windows().windows().into_iter().copied().collect();
-    let scrolled: Vec<Window> = windows
+    let scrolled: Vec<Window> = ed
+        .windows()
+        .windows()
         .into_iter()
+        .copied()
         .zip(areas(&ed, cols, rows))
-        .map(|(w, area)| {
-            let text = ed.buffer_by_id(w.buffer).text();
-            scroll_window(text, w, area, tab)
-        })
+        .map(|(w, area)| scroll_window(ed.buffer_by_id(w.buffer).text(), w, area, tab))
         .collect();
     ed.with_windows(|mut win| {
         for (i, w) in scrolled.into_iter().enumerate() {

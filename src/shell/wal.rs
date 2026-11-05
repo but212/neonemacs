@@ -151,15 +151,17 @@ pub fn write_scratch(slot: &Path, eol: Eol, bytes: &[u8]) -> io::Result<()> {
 /// the same shape as `lua::config_path`.
 #[must_use]
 pub fn scratch_path_from(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    match xdg.filter(|s| !s.is_empty()) {
-        Some(xdg) => Some(PathBuf::from(xdg).join("neonemacs").join("scratch.wal")),
-        None => home.map(|h| {
-            h.join(".local")
-                .join("state")
-                .join("neonemacs")
-                .join("scratch.wal")
-        }),
-    }
+    xdg.filter(|s| !s.is_empty()).map_or_else(
+        || {
+            home.map(|h| {
+                h.join(".local")
+                    .join("state")
+                    .join("neonemacs")
+                    .join("scratch.wal")
+            })
+        },
+        |xdg| Some(PathBuf::from(xdg).join("neonemacs").join("scratch.wal")),
+    )
 }
 
 /// The scratch slot for this process, from the environment.

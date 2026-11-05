@@ -140,15 +140,13 @@ fn parse_set(
         if c == ']' && !items.is_empty() {
             break;
         }
-        if chars.peek() == Some(&'-') {
-            let mut ahead = chars.clone();
-            ahead.next();
-            if let Some(end) = ahead.next().filter(|&e| e != ']') {
-                chars.next();
-                chars.next();
-                items.push(SetItem::Range(c, end));
-                continue;
-            }
+        if chars.peek() == Some(&'-')
+            && let Some(end) = chars.clone().nth(1).filter(|&e| e != ']')
+        {
+            chars.next();
+            chars.next();
+            items.push(SetItem::Range(c, end));
+            continue;
         }
         items.push(SetItem::Char(c));
     }
