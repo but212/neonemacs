@@ -19,6 +19,8 @@
 | [0009](0009-oversized-files-and-eol-edit.md) | Refuse Oversized Files, Undoable EOL Toggle, and Query-Replace Read-Only Check | Accepted | 2026-10-26 | §7, §8, §9, §10 | Oversized files refused at open (I-04), `toggle-eol` as `Edit::SetEol` (I-31), WAL v2 stores EOL (I-23) |
 | [0010](0010-save-as-transitions-path-identity-bounded-history.md) | Save-As Transitions, Path Identity, and Bounded History | Accepted | 2026-10-26 | §6, §7, §8, §12 | Save-as changes state only after success (I-36), `FilePath` and one buffer per path (I-37), one undo limit (I-35), undo reset on text replacement (I-34), yank ends at next edit (I-38), kill ring cap (I-26) |
 | [0011](0011-cli-flags.md) | CLI Flags, Version and Help, and End of Options | Accepted | 2026-10-27 | §12 | `Invocation` sum type (I-39), `--` end of options and order-dependent parsing (I-40), unknown `-` options exit 2 |
+| [0012](0012-scratch-durability-and-wal-probe.md) | Durable Scratch and One WAL Probe | Accepted | 2026-11-05 | §7, §12 | `Backing::Scratch` and its WAL slot (I-42, I-43), unusable WALs moved aside (I-44), one `ProbeWal` on every open (I-45) |
+| [0013](0013-save-epoch-modified-tracking.md) | Save Epoch and Clean-by-Undo | Accepted | 2026-11-05 | §7 | Undo back to the saved text restores clean and drops the WAL (I-41) |
 
 ---
 
@@ -73,7 +75,7 @@
 
 ---
 
-## 3. System Invariant Matrix (`I-01` ~ `I-40`)
+## 3. System Invariant Matrix (`I-01` ~ `I-47`)
 
 | ID | Invariant Summary | Enforcement Layer | Governed By |
 | :--- | :--- | :---: | :--- |
@@ -117,6 +119,13 @@
 | **I-38** | `LastCommand::Yank` is valid only until the next applied edit | Runtime (`Editor::apply`) | ADR 0010 |
 | **I-39** | A version or help request carries no file list, and `parse_args` is the only place that classifies `-`-prefixed arguments | Type (`Invocation`) + Boundary (`parse_args`) | ADR 0011 |
 | **I-40** | `--` makes later `-`-prefixed arguments files; the rule depends on argument order | Runtime (`parse_args` loop) | ADR 0011 |
+| **I-41** | An undo group records the save epoch if it opened on clean text; undoing the whole group restores clean only at that epoch, and a clean buffer never holds modified text. Text equal to the saved text may stay modified after the log was trimmed or replaced | Runtime (`Editor::undo`) | ADR 0013 |
+| **I-42** | `Backing::Scratch` is made only for the buffer named `*scratch*`, and at most one exists | Runtime (`BufferPool`, `switch-to-buffer`) | ADR 0012 |
+| **I-43** | The scratch WAL slot exists only while a scratch buffer holds unsaved text (a crash may leave it) | Runtime (`ShellSession`) | ADR 0012 |
+| **I-44** | An unusable WAL is never deleted or overwritten by inference; it is moved to `.stale` and reported before the next flush | Boundary (`wal::probe_file`) | ADR 0012 |
+| **I-45** | A WAL is looked for in one place, when a file read creates a buffer, so every way to open a file recovers | Type (`Effect::ProbeWal` made only in `file_read(Open)`) | ADR 0012 |
+| **I-46** | In a yes-or-no question and in query-replace every key either changes the state or says why it did not; `y`/`n`/`q` fold case and Korean jamo `ㅛ`/`ㅜ`/`ㅂ`; `Esc` cancels | Runtime (`answer`, `query_key`) | Spec §8, §9 |
+| **I-47** | Only an active mark makes a region, and only the selected window draws the region and the current search match in reverse video | Type (`Mark`) + Runtime (`render::frame`) | Spec §5, §6 |
 
 ---
 
