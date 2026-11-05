@@ -360,7 +360,7 @@ pub fn file_read(
 #[must_use]
 pub fn wal_probed(
     ed: Editor,
-    path: PathBuf,
+    path: &PathBuf,
     line: Option<usize>,
     probe: WalProbe,
     fx: Effects,
@@ -639,7 +639,7 @@ mod tests {
 
     fn probed(probe: WalProbe) -> Editor {
         let ed = file_buffer(editor(), b"disk", Eol::Lf);
-        let (ed, fx) = wal_probed(ed, PathBuf::from("f.txt"), None, probe, Vec::new());
+        let (ed, fx) = wal_probed(ed, &PathBuf::from("f.txt"), None, probe, Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
         ed
     }
@@ -907,7 +907,7 @@ mod tests {
         let [Effect::StatDisk { target, path }] = fx.as_slice() else {
             panic!("expected StatDisk, got {fx:?}");
         };
-        (ed.clone(), *target, path.clone())
+        (ed, *target, path.clone())
     }
 
     #[test]

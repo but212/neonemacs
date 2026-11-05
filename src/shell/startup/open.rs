@@ -12,6 +12,7 @@ use std::path::Path;
 
 /// Puts the unsaved text left in the scratch `slot` by an earlier run into the scratch buffer.
 /// An unusable slot is moved aside and reported (I-44). The notice follows an earlier message.
+#[must_use]
 pub fn restore_scratch(ed: Editor, slot: Option<&Path>) -> Editor {
     let Some(slot) = slot else {
         return ed;
@@ -44,6 +45,7 @@ fn open_one(ed: Editor, lua: Option<&mlua::Lua>, arg: &FileArg) -> Editor {
 }
 
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
+///
 /// The notices of all files are joined by `; `. Without any, the earlier message (for example an
 /// `init.lua` error) stays.
 pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Editor {

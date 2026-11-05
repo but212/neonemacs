@@ -169,12 +169,9 @@ impl Editor {
         for edit in group.edits().iter().rev() {
             let (next, applied) = ed.apply(&edit.inverse());
             ed = next;
-            match applied {
-                Some(d) => dropped += d,
-                None => {
-                    complete = false;
-                    break;
-                }
+            if let Some(d) = applied { dropped += d } else {
+                complete = false;
+                break;
             }
         }
         let mut ed = ed.boundary();
