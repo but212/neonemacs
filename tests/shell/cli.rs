@@ -1,7 +1,51 @@
 //! Adversarial process and CLI integration tests for neonemacs (§12, §13).
 
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::fs;
+use std::io::Read;
+use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+/// Runs the editor attached to a pseudo-terminal, since it requires a TTY for raw mode.
+/// Returns the exit code, or panics if the process does not exit within the timeout.
+fn run_in_pty(bin: &str, args: &[&Path], xdg_config_home: &Path) -> u32 {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open pty");
+    let mut cmd = CommandBuilder::new(bin);
+    cmd.args(args);
+    cmd.env("XDG_CONFIG_HOME", xdg_config_home);
+    let mut child = pair.slave.spawn_command(cmd).expect("spawn in pty");
+    drop(pair.slave);
+
+    // Drain output so the child never blocks on a full pty buffer.
+    let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
+    let drain = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let code = loop {
+        if let Some(status) = child.try_wait().expect("poll child") {
+            break status.exit_code();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("neonemacs did not exit within 20s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(pair.master);
+    let _ = drain.join();
+    code
+}
 
 #[test]
 fn cli_invalid_line_numbers_and_trailing_flags_exit_code_2() {
@@ -90,15 +134,10 @@ fn cli_clean_lifecycle_with_init_lua_exit() {
     let target_file = temp.path().join("sample.txt");
     fs::write(&target_file, "hello neonemacs\n").expect("write target_file");
 
-    let output = Command::new(bin)
-        .arg(&target_file)
-        .env("XDG_CONFIG_HOME", temp.path())
-        .output()
-        .expect("spawn neonemacs");
+    let code = run_in_pty(bin, &[target_file.as_path()], temp.path());
 
     assert_eq!(
-        output.status.code(),
-        Some(0),
+        code, 0,
         "Process should exit with code 0 on save-buffers-kill-emacs"
     );
 }
@@ -128,14 +167,10 @@ fn cli_init_lua_error_survives_without_crashing() {
     )
     .expect("write init.lua");
 
-    let output = Command::new(bin)
-        .env("XDG_CONFIG_HOME", temp.path())
-        .output()
-        .expect("spawn neonemacs");
+    let code = run_in_pty(bin, &[], temp.path());
 
     assert_eq!(
-        output.status.code(),
-        Some(0),
+        code, 0,
         "Process should execute init.lua and exit 0 without panic"
     );
 }
