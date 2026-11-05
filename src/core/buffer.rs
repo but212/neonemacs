@@ -20,6 +20,8 @@ pub struct Buffer {
     backing: Backing,
     undo: UndoLog,
     modified: bool,
+    /// Counts changes of the text that `modified` is measured against (I-41).
+    epoch: u32,
     view_only: bool,
     mark: Option<usize>,
     /// Point when this buffer was last left by its window (anchor, I-01).
@@ -37,6 +39,7 @@ impl Buffer {
             backing,
             undo: UndoLog::new(),
             modified: false,
+            epoch: 0,
             view_only: false,
             mark: None,
             saved_point: 0,
@@ -72,6 +75,12 @@ impl Buffer {
     #[must_use]
     pub const fn modified(&self) -> bool {
         self.modified
+    }
+
+    /// The save epoch: it changes whenever the text that `modified` compares against changes (I-41).
+    #[must_use]
+    pub const fn epoch(&self) -> u32 {
+        self.epoch
     }
 
     #[must_use]
@@ -135,6 +144,16 @@ impl Buffer {
     #[must_use]
     pub fn mark_clean(mut self) -> Self {
         self.modified = false;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.backing = self.backing.set_wal_dirty(false);
+        self
+    }
+
+    /// Clears `modified` after an undo returned the text to the one it was measured against.
+    /// The epoch stays, since that text did not change (I-41).
+    #[must_use]
+    pub fn restore_clean(mut self) -> Self {
+        self.modified = false;
         self.backing = self.backing.set_wal_dirty(false);
         self
     }
@@ -163,6 +182,7 @@ impl Buffer {
     pub fn with_text(mut self, text: Text) -> Self {
         self.text = text;
         self.undo = UndoLog::new();
+        self.epoch = self.epoch.wrapping_add(1);
         self.snap_anchors()
     }
 
@@ -182,6 +202,7 @@ impl Buffer {
     pub fn record_saved(mut self, new_disk: DiskState) -> Self {
         self.backing = self.backing.with_disk(new_disk).set_wal_dirty(false);
         self.modified = false;
+        self.epoch = self.epoch.wrapping_add(1);
         self.undo = self.undo.close();
         self
     }
@@ -192,6 +213,7 @@ impl Buffer {
         self.backing = backing;
         self.eol = eol;
         self.modified = false;
+        self.epoch = self.epoch.wrapping_add(1);
         self.undo = UndoLog::new();
         self.snap_anchors()
     }
@@ -216,12 +238,13 @@ impl Buffer {
             }
             Edit::SetEol { to, .. } => self.eol = *to,
         }
+        let clean_epoch = (!self.modified).then_some(self.epoch);
         self.modified = true;
         self.backing = self.backing.set_wal_dirty(true);
         let anchor = |a| snap(&self.text, remap_fn(a));
         self.mark = self.mark.map(anchor);
         self.saved_point = anchor(self.saved_point);
-        let (undo, dropped) = self.undo.record(edit, undo_limit);
+        let (undo, dropped) = self.undo.record(edit, undo_limit, clean_epoch);
         self.undo = undo;
         (self, dropped)
     }
