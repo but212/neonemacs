@@ -1,6 +1,7 @@
 //! Incremental search and interactive query-replace commands (§9).
 
 use crate::core::commands::prompt::prompt;
+use crate::core::config::Toggles;
 use crate::core::dispatch::answer_char;
 use crate::core::editor::{
     Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
@@ -105,7 +106,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
             return (ed.set_message(format!("Invalid regexp: {e}")), s);
         }
     };
-    let fold = ed.config().case_fold_search;
+    let fold = ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH);
     let mut wrapped = false;
     let text = ed.buffer().text();
     let mut found = if !wrap && s.direction == Direction::Backward && from <= text.len() {
@@ -116,7 +117,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     } else {
         find_in_direction(&ed, &pattern, s.direction, from, fold)
     };
-    if found.is_none() && wrap && ed.config().isearch_wrap {
+    if found.is_none() && wrap && ed.config().toggles.contains(Toggles::ISEARCH_WRAP) {
         let other_end = if s.direction == Direction::Forward {
             0
         } else {
@@ -178,7 +179,7 @@ pub fn start_query_replace(
         },
         MatchKind::Literal => Pattern::literal(pattern),
     };
-    let fold = ed.config().case_fold_search;
+    let fold = ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH);
     let from = ed.window().point;
     let Some(current) = next_match(&ed, &pattern, fold, from) else {
         return (ed.set_message("No match"), Ok(()));
@@ -473,7 +474,7 @@ mod tests {
     #[test]
     fn isearch_wrap_off_fails_at_the_end_instead_of_wrapping() {
         let ed = Editor::new(crate::core::config::Config {
-            isearch_wrap: false,
+            toggles: Toggles::DEFAULT.difference(Toggles::ISEARCH_WRAP),
             ..crate::core::config::Config::default()
         });
         let ed = typ(ed, "abc abd");

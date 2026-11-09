@@ -1,7 +1,7 @@
 use super::*;
 use crate::core::commands;
 use crate::core::commands::request_open;
-use crate::core::config::Config;
+use crate::core::config::{Config, Toggles};
 use crate::core::effect::Event;
 use crate::core::eol::Eol;
 use crate::core::keymap::{Code, Key, parse_keys};
@@ -223,7 +223,7 @@ fn api_get_and_set_validate_input() {
     result.unwrap();
     let (ed, result) = script(&lua, ed, r#"set("case-fold-search", false)"#);
     result.unwrap();
-    assert!(!ed.config().case_fold_search);
+    assert!(!ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH));
     let (ed, result) = script(&lua, ed, r#"set("tab-width", 0)"#);
     assert!(result.is_err());
     let (ed, result) = script(&lua, ed, r#"set("nope", 1)"#);

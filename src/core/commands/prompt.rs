@@ -395,7 +395,10 @@ mod tests {
         assert_eq!((p.before.as_str(), p.after.as_str()), ("가", "나"));
         let ed = keys(ed, "right right C-d");
         assert_eq!(prompt_of(&ed).input(), "가나");
-        assert_eq!(prompt_of(&ed).cursor_width(crate::core::width::Metrics { tab: 8, cjk: false }), 8);
+        assert_eq!(
+            prompt_of(&ed).cursor_width(crate::core::width::Metrics { tab: 8, cjk: false }),
+            8
+        );
     }
 
     #[test]

@@ -287,12 +287,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "neobit"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2af147cbc48b064bf80678495a8ebd425482077f1ef442f7cb563a97bee31efc"
+
+[[package]]
 name = "neonemacs"
 version = "0.1.0"
 dependencies = [
  "crossterm",
  "memchr",
  "mlua",
+ "neobit",
  "neonemacs",
  "portable-pty",
  "tempfile",

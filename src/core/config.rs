@@ -3,31 +3,46 @@
 
 use crate::core::eol::Eol;
 use crate::core::width::Metrics;
+use neobit::neobit;
+
+neobit! {
+    /// The on/off settings of `Config`, one bit each.
+    pub struct Toggles: u8 {
+        /// TAB inserts spaces up to the next tab stop instead of a tab character.
+        const EXPAND_TABS = 1 << 0;
+        const CASE_FOLD_SEARCH = 1 << 1;
+        const SYNTAX_HIGHLIGHT = 1 << 2;
+        /// A failed repeated C-s or C-r restarts at the other end of the buffer.
+        const ISEARCH_WRAP = 1 << 3;
+        /// A pending prefix key (`C-x-`, `ESC-`) replaces the echo-area message.
+        const ECHO_PREFIX = 1 << 4;
+        /// East Asian ambiguous characters take 2 columns (Lua `ambiguous-width` 2) instead of 1.
+        const CJK_AMBIGUOUS = 1 << 5;
+    }
+}
+
+impl Toggles {
+    pub const DEFAULT: Self = Self::CASE_FOLD_SEARCH
+        .union(Self::SYNTAX_HIGHLIGHT)
+        .union(Self::ISEARCH_WRAP)
+        .union(Self::ECHO_PREFIX);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub fill_column: u16,
     pub tab_width: u8,
-    /// TAB inserts spaces up to the next tab stop instead of a tab character.
-    pub expand_tabs: bool,
-    pub case_fold_search: bool,
+    pub toggles: Toggles,
     pub max_file_size: u64,
     pub undo_limit: usize,
     pub kill_ring_max: usize,
     /// Typed characters that share one undo group.
     pub amalgamating_undo_limit: usize,
-    pub syntax_highlight: bool,
-    /// A failed repeated C-s or C-r restarts at the other end of the buffer.
-    pub isearch_wrap: bool,
-    /// A pending prefix key (`C-x-`, `ESC-`) replaces the echo-area message.
-    pub echo_prefix: bool,
     /// Line ending of a new buffer, a missing file, and a file without any line break.
     pub default_eol: Eol,
     /// Program that runs `shell-command`, called as `program switch command`.
     pub shell_file_name: String,
     pub shell_command_switch: String,
-    /// East Asian ambiguous characters take 2 columns (Lua `ambiguous-width` 2) instead of 1.
-    pub cjk_ambiguous: bool,
 }
 
 /// The shell that runs a `shell-command`.
@@ -58,19 +73,14 @@ impl Config {
         Self {
             fill_column: 70,
             tab_width: 8,
-            expand_tabs: false,
-            case_fold_search: true,
+            toggles: Toggles::DEFAULT,
             max_file_size: 64 << 20,
             undo_limit: 4 << 20,
             kill_ring_max: 120,
             amalgamating_undo_limit: 20,
-            syntax_highlight: true,
-            isearch_wrap: true,
-            echo_prefix: true,
             default_eol: Eol::Lf,
             shell_file_name: shell.program,
             shell_command_switch: shell.switch,
-            cjk_ambiguous: false,
         }
     }
 }
@@ -168,7 +178,7 @@ impl Config {
     pub fn metrics(&self) -> Metrics {
         Metrics {
             tab: usize::from(self.tab_width),
-            cjk: self.cjk_ambiguous,
+            cjk: self.toggles.contains(Toggles::CJK_AMBIGUOUS),
         }
     }
 
@@ -186,8 +196,10 @@ impl Config {
         match setting {
             Setting::FillColumn => Value::Int(i64::from(self.fill_column)),
             Setting::TabWidth => Value::Int(i64::from(self.tab_width)),
-            Setting::ExpandTabs => Value::Bool(self.expand_tabs),
-            Setting::CaseFoldSearch => Value::Bool(self.case_fold_search),
+            Setting::ExpandTabs => Value::Bool(self.toggles.contains(Toggles::EXPAND_TABS)),
+            Setting::CaseFoldSearch => {
+                Value::Bool(self.toggles.contains(Toggles::CASE_FOLD_SEARCH))
+            }
             Setting::MaxFileSize => {
                 Value::Int(i64::try_from(self.max_file_size).unwrap_or(i64::MAX))
             }
@@ -198,9 +210,11 @@ impl Config {
             Setting::AmalgamatingUndoLimit => {
                 Value::Int(i64::try_from(self.amalgamating_undo_limit).unwrap_or(i64::MAX))
             }
-            Setting::SyntaxHighlight => Value::Bool(self.syntax_highlight),
-            Setting::IsearchWrap => Value::Bool(self.isearch_wrap),
-            Setting::EchoPrefix => Value::Bool(self.echo_prefix),
+            Setting::SyntaxHighlight => {
+                Value::Bool(self.toggles.contains(Toggles::SYNTAX_HIGHLIGHT))
+            }
+            Setting::IsearchWrap => Value::Bool(self.toggles.contains(Toggles::ISEARCH_WRAP)),
+            Setting::EchoPrefix => Value::Bool(self.toggles.contains(Toggles::ECHO_PREFIX)),
             Setting::DefaultEol => Value::Str(
                 match self.default_eol {
                     Eol::Lf => "lf",
@@ -210,7 +224,13 @@ impl Config {
             ),
             Setting::ShellFileName => Value::Str(self.shell_file_name.clone()),
             Setting::ShellCommandSwitch => Value::Str(self.shell_command_switch.clone()),
-            Setting::AmbiguousWidth => Value::Int(if self.cjk_ambiguous { 2 } else { 1 }),
+            Setting::AmbiguousWidth => {
+                Value::Int(if self.toggles.contains(Toggles::CJK_AMBIGUOUS) {
+                    2
+                } else {
+                    1
+                })
+            }
         }
     }
 
@@ -226,8 +246,10 @@ impl Config {
                 next.fill_column = bounded(name, n, 1, i64::from(u16::MAX))?;
             }
             (Setting::TabWidth, Value::Int(n)) => next.tab_width = bounded(name, n, 1, 16)?,
-            (Setting::ExpandTabs, Value::Bool(b)) => next.expand_tabs = b,
-            (Setting::CaseFoldSearch, Value::Bool(b)) => next.case_fold_search = b,
+            (Setting::ExpandTabs, Value::Bool(b)) => next.toggles.set(Toggles::EXPAND_TABS, b),
+            (Setting::CaseFoldSearch, Value::Bool(b)) => {
+                next.toggles.set(Toggles::CASE_FOLD_SEARCH, b);
+            }
             (Setting::MaxFileSize, Value::Int(n)) => {
                 next.max_file_size = bounded(name, n, 1, i64::MAX)?;
             }
@@ -238,11 +260,14 @@ impl Config {
             (Setting::AmalgamatingUndoLimit, Value::Int(n)) => {
                 next.amalgamating_undo_limit = bounded(name, n, 1, i64::MAX)?;
             }
-            (Setting::SyntaxHighlight, Value::Bool(b)) => next.syntax_highlight = b,
-            (Setting::IsearchWrap, Value::Bool(b)) => next.isearch_wrap = b,
-            (Setting::EchoPrefix, Value::Bool(b)) => next.echo_prefix = b,
+            (Setting::SyntaxHighlight, Value::Bool(b)) => {
+                next.toggles.set(Toggles::SYNTAX_HIGHLIGHT, b);
+            }
+            (Setting::IsearchWrap, Value::Bool(b)) => next.toggles.set(Toggles::ISEARCH_WRAP, b),
+            (Setting::EchoPrefix, Value::Bool(b)) => next.toggles.set(Toggles::ECHO_PREFIX, b),
             (Setting::AmbiguousWidth, Value::Int(n)) => {
-                next.cjk_ambiguous = bounded::<u8>(name, n, 1, 2)? == 2;
+                let wide = bounded::<u8>(name, n, 1, 2)? == 2;
+                next.toggles.set(Toggles::CJK_AMBIGUOUS, wide);
             }
             (Setting::ShellFileName, Value::Str(s)) => {
                 next.shell_file_name = non_empty(name, s)?;
@@ -412,7 +437,7 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.get(Setting::ExpandTabs), Value::Bool(false));
         let c = c.set(Setting::ExpandTabs, Value::Bool(true)).unwrap();
-        assert!(c.expand_tabs);
+        assert!(c.toggles.contains(Toggles::EXPAND_TABS));
         assert_eq!(
             c.set(Setting::ExpandTabs, Value::Int(1)),
             Err("expand-tabs takes a boolean".to_owned())

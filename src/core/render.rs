@@ -1,6 +1,7 @@
 //! Screen model: window rectangles, per-cell grid, and line diffs (§5, §11, A5).
 //! `scroll` adjusts the view so point stays visible; `frame` is pure.
 
+use crate::core::config::Toggles;
 use crate::core::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::core::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::core::text::{Text, Unit};
@@ -180,7 +181,8 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         let buf = ed.buffer_by_id(w.buffer);
         let syntax = ed
             .config()
-            .syntax_highlight
+            .toggles
+            .contains(Toggles::SYNTAX_HIGHLIGHT)
             .then(|| ed.syntax_registry().find_by_filename(buf.name()))
             .flatten();
         let marks = if i == ed.windows().selected() {
@@ -218,10 +220,10 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
             // A pending prefix key shows until the sequence ends.
             Mode::Normal {
                 prefix: Prefix::CtlX,
-            } if ed.config().echo_prefix => "C-x-",
+            } if ed.config().toggles.contains(Toggles::ECHO_PREFIX) => "C-x-",
             Mode::Normal {
                 prefix: Prefix::Meta,
-            } if ed.config().echo_prefix => "ESC-",
+            } if ed.config().toggles.contains(Toggles::ECHO_PREFIX) => "ESC-",
             _ => ed.message(),
         };
         let echo = fit(message, cols, ' ', m);
@@ -247,28 +249,36 @@ fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -
 fn window_cells(
     syntax: Option<&SyntaxDef>,
     text: &Text,
-    w: &Window,
+    window: &Window,
     area: Rect,
-    m: Metrics,
+    metrics: Metrics,
     marks: &[(usize, usize)],
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
-    let p = w.point.min(text.len());
+    let point = window.point.min(text.len());
     let mut cursor = (0, 0);
     let mut body = Vec::with_capacity(height);
-    let mut s = w.top;
-    for r in 0..height {
-        if s > text.len() {
+    let mut line_start = window.top;
+    for row in 0..height {
+        if line_start > text.len() {
             body.push(vec![Cell::space(); area.w]);
             continue;
         }
-        let e = text.line_end(s);
-        if s <= p && p <= e {
-            let col = column(text, p, m).saturating_sub(w.left_col);
-            cursor = (r, col);
+        let line_end = text.line_end(line_start);
+        if line_start <= point && point <= line_end {
+            let col = column(text, point, metrics).saturating_sub(window.left_col);
+            cursor = (row, col);
         }
-        body.push(line_cells(syntax, text, s..e, w.left_col, area.w, m, marks));
-        s = e + 1;
+        body.push(line_cells(
+            syntax,
+            text,
+            line_start..line_end,
+            window.left_col,
+            area.w,
+            metrics,
+            marks,
+        ));
+        line_start = line_end + 1;
     }
     (body, cursor)
 }
@@ -281,53 +291,56 @@ fn line_cells(
     line: std::ops::Range<usize>,
     left: usize,
     width: usize,
-    m: Metrics,
+    metrics: Metrics,
     marks: &[(usize, usize)],
 ) -> Vec<Cell> {
     let (start, end) = (line.start, line.end);
     let mut cells = vec![Cell::space(); width];
     let right = left + width;
     let mut col = 0;
-    let mut p = start;
+    let mut pos = start;
     let mut cut = false;
 
     let line_bytes = text.bytes(start..end);
     let token_kinds = highlight_line(syntax, &line_bytes);
 
-    while p < end {
-        let Some((unit, n)) = text.unit_at(p) else {
+    while pos < end {
+        let Some((unit, len)) = text.unit_at(pos) else {
             break;
         };
         let style = token_kinds
-            .get(p - start)
+            .get(pos - start)
             .copied()
             .unwrap_or(TokenKind::Normal);
-        let reverse = marks.iter().any(|&(a, b)| a <= p && p < b);
+        let reverse = marks.iter().any(|&(from, to)| from <= pos && pos < to);
 
         if col >= right {
             cut = true;
             break;
         }
-        let w = unit_width(unit, col, m);
-        if w == 0 {
+        let width_of_unit = unit_width(unit, col, metrics);
+        if width_of_unit == 0 {
             // Combining mark: attach to the cell before it.
             if col > left && col - left - 1 < width {
                 cells[col - left - 1].glyph.push(unit_char(unit));
             }
         } else {
-            for (k, g) in glyph(unit_char(unit), w).into_iter().enumerate() {
-                let c = col + k;
-                if c >= left && c < right {
-                    cells[c - left] = Cell {
-                        glyph: g,
+            for (offset, piece) in glyph(unit_char(unit), width_of_unit)
+                .into_iter()
+                .enumerate()
+            {
+                let cell_col = col + offset;
+                if cell_col >= left && cell_col < right {
+                    cells[cell_col - left] = Cell {
+                        glyph: piece,
                         style,
                         reverse,
                     };
                 }
             }
         }
-        col += w;
-        p += n;
+        col += width_of_unit;
+        pos += len;
     }
     if cut && width > 0 {
         cells[width - 1] = Cell::plain("$".to_owned());
@@ -481,10 +494,18 @@ mod tests {
 
     fn cells_of(s: &str, left: usize, width: usize) -> Vec<String> {
         let text = Text::from_bytes(s.as_bytes());
-        line_cells(None, &text, 0..text.len(), left, width, Metrics { tab: 8, cjk: false }, &[])
-            .into_iter()
-            .map(|c| c.glyph)
-            .collect()
+        line_cells(
+            None,
+            &text,
+            0..text.len(),
+            left,
+            width,
+            Metrics { tab: 8, cjk: false },
+            &[],
+        )
+        .into_iter()
+        .map(|c| c.glyph)
+        .collect()
     }
 
     #[test]
@@ -547,7 +568,7 @@ mod tests {
     #[test]
     fn echo_prefix_off_keeps_the_message_visible() {
         let ed = Editor::new(Config {
-            echo_prefix: false,
+            toggles: Toggles::DEFAULT.difference(Toggles::ECHO_PREFIX),
             ..Config::default()
         })
         .set_message("Wrote f");
@@ -560,7 +581,11 @@ mod tests {
     fn syntax_highlight_off_draws_every_cell_plain() {
         let styled = |highlight: bool| {
             let ed = Editor::new(Config {
-                syntax_highlight: highlight,
+                toggles: if highlight {
+                    Toggles::DEFAULT
+                } else {
+                    Toggles::DEFAULT.difference(Toggles::SYNTAX_HIGHLIGHT)
+                },
                 ..Config::default()
             })
             .with_syntax_registry(|reg| {
@@ -707,7 +732,9 @@ mod tests {
         assert!(status_text(&buf, end, 60, Metrics { tab: 8, cjk: false }).contains("  2:10  "));
         assert!(status_text(&buf, 0, 60, Metrics { tab: 8, cjk: false }).contains("  1:1  "));
         // Point past the end is clamped.
-        assert!(status_text(&buf, end + 99, 60, Metrics { tab: 8, cjk: false }).contains("  2:10  "));
+        assert!(
+            status_text(&buf, end + 99, 60, Metrics { tab: 8, cjk: false }).contains("  2:10  ")
+        );
     }
 
     #[test]

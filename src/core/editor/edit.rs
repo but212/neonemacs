@@ -2,6 +2,7 @@
 //! to a buffer goes through it, so the read-only check, undo, and anchor moves stay in one place.
 
 use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
+use crate::core::config::Toggles;
 use crate::core::effect::{Effect, Effects};
 use crate::core::undo::Edit;
 use crate::core::width::column;
@@ -130,7 +131,7 @@ impl Editor {
             }
         };
         let at = snap(self.buffer().text(), self.window().point);
-        let bytes = if c == '\t' && self.settings.config.expand_tabs {
+        let bytes = if c == '\t' && self.settings.config.toggles.contains(Toggles::EXPAND_TABS) {
             let m = self.settings.config.metrics();
             let tab = m.tab;
             let col = column(self.buffer().text(), at, m);
@@ -559,7 +560,7 @@ mod tests {
 
     fn soft_tabs(s: &str) -> Editor {
         let config = Config {
-            expand_tabs: true,
+            toggles: Toggles::DEFAULT.union(Toggles::EXPAND_TABS),
             ..Config::default()
         };
         Editor::new(config).with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
@@ -591,7 +592,7 @@ mod tests {
     #[test]
     fn expand_tabs_follows_tab_width() {
         let config = Config {
-            expand_tabs: true,
+            toggles: Toggles::DEFAULT.union(Toggles::EXPAND_TABS),
             tab_width: 4,
             ..Config::default()
         };
