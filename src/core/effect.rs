@@ -2,6 +2,7 @@
 //! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15).
 
 use crate::core::buffer::Buffer;
+use crate::core::config::ShellSpec;
 use crate::core::editor::BufferId;
 use crate::core::eol::Eol;
 use crate::core::file::DiskState;
@@ -41,6 +42,7 @@ pub enum Effect {
     },
     RunShell {
         command: String,
+        shell: ShellSpec,
     },
     RunLua {
         name: String,

@@ -14,6 +14,7 @@ pub mod terminal;
 pub mod terminal_guard;
 pub mod wal;
 
+use crate::core::config::ShellSpec;
 use crate::core::editor::Editor;
 use crate::core::effect::{Effect, Effects, Event};
 use crate::core::step;
@@ -39,10 +40,10 @@ pub enum ShellOutcome {
 
 /// Runs `command` in a background thread without blocking the editor UI (I-24).
 #[must_use]
-pub fn spawn_shell(command: String) -> ShellTask {
+pub fn spawn_shell(command: String, shell: ShellSpec) -> ShellTask {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let res = run_shell(&command);
+        let res = run_shell(&command, &shell);
         let _ = tx.send(res);
     });
     ShellTask { receiver: rx }
@@ -61,11 +62,11 @@ pub fn handle_interactive(
     let mut outcome = ShellOutcome::None;
     let mut sync_effects = Vec::new();
     for effect in effects {
-        if let Effect::RunShell { command } = effect {
+        if let Effect::RunShell { command, shell } = effect {
             if shell_busy {
                 outcome = ShellOutcome::BusyRejected;
             } else {
-                outcome = ShellOutcome::Spawned(spawn_shell(command));
+                outcome = ShellOutcome::Spawned(spawn_shell(command, shell));
             }
         } else {
             sync_effects.push(effect);
@@ -183,18 +184,16 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             path,
             line,
         },
-        Effect::RunShell { command } => Event::ShellDone(run_shell(&command)),
+        Effect::RunShell { command, shell } => Event::ShellDone(run_shell(&command, &shell)),
         Effect::RunLua { name } => Event::LuaDone(run_lua(lua, &name)),
     }
 }
 
-/// Runs `command` with the platform shell and returns its stdout followed by its stderr.
-fn run_shell(command: &str) -> Result<String, String> {
-    let output = if cfg!(windows) {
-        Command::new("cmd").args(["/C", command]).output()
-    } else {
-        Command::new("sh").args(["-c", command]).output()
-    };
+/// Runs `command` with the configured shell and returns its stdout followed by its stderr.
+fn run_shell(command: &str, shell: &ShellSpec) -> Result<String, String> {
+    let output = Command::new(&shell.program)
+        .args([shell.switch.as_str(), command])
+        .output();
     let output = output.map_err(|e| format!("Cannot run command: {e}"))?;
     let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
     s.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -269,6 +268,7 @@ mod tests {
         let shell = perform(
             Effect::RunShell {
                 command: "echo hi".to_owned(),
+                shell: ShellSpec::default(),
             },
             None,
         );

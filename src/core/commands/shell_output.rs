@@ -13,12 +13,13 @@ pub(crate) fn shell_command_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 /// Asks the shell to run `command`. The output comes back as `ShellDone`.
-pub(crate) fn run_shell(command: &str, mut fx: Effects) -> Effects {
+pub(crate) fn run_shell(ed: &Editor, command: &str, mut fx: Effects) -> Effects {
     if command.is_empty() {
         return fx;
     }
     fx.push(Effect::RunShell {
         command: command.to_owned(),
+        shell: ed.config().shell_spec(),
     });
     fx
 }
@@ -81,12 +82,35 @@ mod tests {
     use crate::test_support::{editor, run_command, typ};
 
     #[test]
+    fn the_effect_carries_the_configured_shell() {
+        use crate::core::config::{Config, ShellSpec};
+        let ed = crate::core::editor::Editor::new(Config {
+            shell_file_name: "pwsh".to_owned(),
+            shell_command_switch: "-Command".to_owned(),
+            ..Config::default()
+        });
+        let fx = run_shell(&ed, "echo hi", Vec::new());
+        assert_eq!(
+            fx,
+            [Effect::RunShell {
+                command: "echo hi".to_owned(),
+                shell: ShellSpec {
+                    program: "pwsh".to_owned(),
+                    switch: "-Command".to_owned()
+                },
+            }]
+        );
+    }
+
+    #[test]
     fn shell_command_one_line_echoes_many_lines_open_buffer() {
         let ed = editor();
-        let ed = run_command(ed, |e, fx| (e, run_shell("echo hi", fx)));
+        let ed = run_command(ed, |e, fx| (e.clone(), run_shell(&e, "echo hi", fx)));
         assert_eq!(ed.message(), "hi");
 
-        let ed = run_command(ed, |e, fx| (e, run_shell("echo a&& echo b", fx)));
+        let ed = run_command(ed, |e, fx| {
+            (e.clone(), run_shell(&e, "echo a&& echo b", fx))
+        });
         let out = ed
             .buffers()
             .iter()
@@ -106,12 +130,16 @@ mod tests {
 
     #[test]
     fn shell_output_replacement_resets_undo() {
-        let ed = run_command(editor(), |e, fx| (e, run_shell("echo a&& echo b", fx)));
+        let ed = run_command(editor(), |e, fx| {
+            (e.clone(), run_shell(&e, "echo a&& echo b", fx))
+        });
         let out = output_id(&ed);
         let ed = switch_to(ed, out);
         let ed = typ(ed, "X");
 
-        let ed = run_command(ed, |e, fx| (e, run_shell("echo c&& echo d", fx)));
+        let ed = run_command(ed, |e, fx| {
+            (e.clone(), run_shell(&e, "echo c&& echo d", fx))
+        });
         let (ed, _) = ed.undo(Vec::new());
         assert_eq!(ed.message(), "No further undo information");
         assert_eq!(
@@ -123,7 +151,7 @@ mod tests {
     #[test]
     fn shell_output_replacement_snaps_windows() {
         let ed = run_command(editor(), |e, fx| {
-            (e, run_shell("echo aaaaaaaaaaaa&& echo b", fx))
+            (e.clone(), run_shell(&e, "echo aaaaaaaaaaaa&& echo b", fx))
         });
         let out = output_id(&ed);
         let ed = switch_to(ed, out);
@@ -133,7 +161,9 @@ mod tests {
             ..w
         });
 
-        let ed = run_command(ed, |e, fx| (e, run_shell("echo c&& echo d", fx)));
+        let ed = run_command(ed, |e, fx| {
+            (e.clone(), run_shell(&e, "echo c&& echo d", fx))
+        });
         let len = ed.buffers().get_by_id(output_id(&ed)).text().len();
         assert!(ed.window().point <= len);
         assert_eq!(ed.window().top, 0);
@@ -154,7 +184,7 @@ mod tests {
         assert_eq!(ed_err.message(), "command failed: 127");
 
         // Shell command with empty string produces no effects
-        let fx = run_shell("", Vec::new());
+        let fx = run_shell(&ed, "", Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
 
         // Multi-line shell output when windows are already split

@@ -22,6 +22,9 @@ pub struct SyntaxDef {
     pub keywords: Vec<String>,
     pub types: Vec<String>,
     pub case_insensitive: bool,
+    /// A line starting with this prefix is a heading, drawn whole as a keyword. A definition with
+    /// a heading prefix does no other highlighting (I-49).
+    pub heading_prefix: Option<String>,
 }
 
 impl SyntaxDef {
@@ -66,7 +69,14 @@ impl SyntaxDef {
             keywords,
             types,
             case_insensitive,
+            heading_prefix: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_heading_prefix(mut self, prefix: Option<String>) -> Self {
+        self.heading_prefix = prefix;
+        self
     }
 
     fn contains_word(&self, list: &[String], word: &str) -> bool {
@@ -167,8 +177,8 @@ pub fn highlight_line(syntax: Option<&SyntaxDef>, line: impl AsRef<[u8]>) -> Vec
         return vec![TokenKind::Normal; bytes.len()];
     };
 
-    if syntax.name == "markdown" {
-        return highlight_markdown(bytes);
+    if let Some(prefix) = &syntax.heading_prefix {
+        return highlight_heading(bytes, prefix.as_bytes());
     }
 
     LineLexer::new(syntax, bytes).tokenize()
@@ -318,16 +328,13 @@ impl<'a> LineLexer<'a> {
     }
 }
 
-fn highlight_markdown(bytes: &[u8]) -> Vec<TokenKind> {
-    let mut out = vec![TokenKind::Normal; bytes.len()];
-    if bytes.is_empty() {
-        return out;
-    }
-    // Headings starting with #
-    if bytes[0] == b'#' {
-        out.fill(TokenKind::Keyword);
-    }
-    out
+fn highlight_heading(bytes: &[u8], prefix: &[u8]) -> Vec<TokenKind> {
+    let kind = if bytes.starts_with(prefix) {
+        TokenKind::Keyword
+    } else {
+        TokenKind::Normal
+    };
+    vec![kind; bytes.len()]
 }
 
 const fn is_ident_start_byte(b: u8) -> bool {
@@ -522,6 +529,37 @@ mod tests {
         let num_start = line.find("42").unwrap();
         assert_eq!(tokens[num_start], TokenKind::Number);
         assert_eq!(tokens[num_start + 1], TokenKind::Number);
+    }
+
+    fn heading_def(name: &str, prefix: Option<&str>) -> SyntaxDef {
+        SyntaxDef::new(
+            name,
+            vec!["md".to_string()],
+            Vec::new(),
+            None,
+            vec!["let".to_string()],
+            Vec::new(),
+            false,
+        )
+        .with_heading_prefix(prefix.map(str::to_owned))
+    }
+
+    #[test]
+    fn heading_prefix_colors_the_whole_line_and_nothing_else() {
+        let def = heading_def("notes", Some("#"));
+        let heading = highlight_line(Some(&def), "# let");
+        assert!(heading.iter().all(|t| *t == TokenKind::Keyword));
+        let other = highlight_line(Some(&def), "x # let");
+        assert!(other.iter().all(|t| *t == TokenKind::Normal));
+    }
+
+    #[test]
+    fn a_syntax_named_markdown_has_no_special_case_without_heading_prefix() {
+        let def = heading_def("markdown", None);
+        let heading = highlight_line(Some(&def), "# x");
+        assert!(heading.iter().all(|t| *t == TokenKind::Normal));
+        let kw = highlight_line(Some(&def), "let");
+        assert!(kw.iter().all(|t| *t == TokenKind::Keyword));
     }
 
     #[test]

@@ -142,7 +142,7 @@ impl Editor {
     }
 
     #[must_use]
-    pub const fn set_config(mut self, config: Config) -> Self {
+    pub fn set_config(mut self, config: Config) -> Self {
         self.settings.config = config;
         self
     }
@@ -381,7 +381,9 @@ impl Editor {
     pub fn add_buffer(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
         let (buffers, id) = self.documents.buffers.add(name, text, backing);
         self.documents.buffers = buffers;
-        (self, id)
+        let eol = self.settings.config.default_eol;
+        let ed = self.with_buffer(id, |b| b.set_eol(eol));
+        (ed, id)
     }
 
     /// Moves point to `pos`, snapped to a unit boundary (I-01).
@@ -445,13 +447,23 @@ mod tests {
     }
 
     #[test]
+    fn new_buffers_take_the_default_eol() {
+        let ed = Editor::new(Config {
+            default_eol: Eol::Crlf,
+            ..Config::default()
+        });
+        let (ed, id) = ed.add_buffer("n", Text::default(), Backing::None);
+        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
+    }
+
+    #[test]
     fn kill_ring_operations() {
         let kr = KillRing::new();
         assert!(kr.is_empty());
         assert_eq!(kr.len(), 0);
         assert_eq!(kr.last(), None);
 
-        let kr = kr.push(b"hello".to_vec());
+        let kr = kr.push(b"hello".to_vec(), 120);
         assert_eq!(kr.len(), 1);
         assert_eq!(kr.last(), Some(&b"hello"[..]));
 
@@ -459,7 +471,7 @@ mod tests {
         assert_eq!(kr.len(), 1);
         assert_eq!(kr.last(), Some(&b"hello world"[..]));
 
-        let kr = kr.push(b"second".to_vec());
+        let kr = kr.push(b"second".to_vec(), 120);
         assert_eq!(kr.len(), 2);
         assert_eq!(kr.last(), Some(&b"second"[..]));
 
@@ -481,7 +493,7 @@ mod tests {
         let ed = ed.set_quit(true);
         assert!(ed.quit());
 
-        let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec()));
+        let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec(), 120));
         assert_eq!(ed.kill_ring().last(), Some(&b"sample"[..]));
 
         let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());

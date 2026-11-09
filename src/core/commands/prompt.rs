@@ -178,7 +178,7 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
         Purpose::KillBuffer => kill_named(ed, &input, fx),
         Purpose::GotoLine => (goto_line(ed, &input), fx),
         Purpose::ShellCommand => {
-            let fx = run_shell(&input, fx);
+            let fx = run_shell(&ed, &input, fx);
             (ed, fx)
         }
         Purpose::QueryFrom { kind } => {
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!((p.before.as_str(), p.after.as_str()), ("가", "나"));
         let ed = keys(ed, "right right C-d");
         assert_eq!(prompt_of(&ed).input(), "가나");
-        assert_eq!(prompt_of(&ed).cursor_width(), 8);
+        assert_eq!(prompt_of(&ed).cursor_width(crate::core::width::Metrics { tab: 8, cjk: false }), 8);
     }
 
     #[test]

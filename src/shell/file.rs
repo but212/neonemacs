@@ -72,6 +72,7 @@ pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::eol::Eol;
     use crate::core::file::{FilePath, loaded_from};
 
     #[test]
@@ -82,7 +83,13 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         let read = read_raw(&path, 1 << 20).unwrap();
-        let loaded = loaded_from(&FilePath::resolve(Path::new(""), &path), read, 1 << 20).unwrap();
+        let loaded = loaded_from(
+            &FilePath::resolve(Path::new(""), &path),
+            read,
+            1 << 20,
+            Eol::Lf,
+        )
+        .unwrap();
         assert_eq!(loaded.text.to_bytes(), bytes);
         save(&path, &loaded.text.to_bytes()).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);

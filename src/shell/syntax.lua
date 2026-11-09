@@ -148,5 +148,5 @@ syntax.register("yaml", {
 
 syntax.register("markdown", {
     extensions = { "md", "markdown" },
-    keywords = {}
+    heading = "#"
 })

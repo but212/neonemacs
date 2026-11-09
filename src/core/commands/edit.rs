@@ -40,8 +40,9 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
         return (ed.set_message("The mark is not set now"), fx);
     };
     let bytes = ed.buffer().text().bytes(start..end);
+    let max = ed.config().kill_ring_max;
     let ed = ed
-        .with_kill_ring(|kr| kr.push(bytes))
+        .with_kill_ring(|kr| kr.push(bytes, max))
         .with_current_buffer(Buffer::deactivate_mark);
     (ed, fx)
 }

@@ -297,6 +297,7 @@ pub fn file_read(
     mut fx: Effects,
 ) -> (Editor, Effects) {
     let max_size = ed.config().max_file_size;
+    let default_eol = ed.config().default_eol;
     let file = ed.resolve_path(&path);
     match (target, result) {
         (ReadTarget::Open { line, show }, Ok(read)) => {
@@ -305,7 +306,7 @@ pub fn file_read(
                 let ed = if show { switch_to(ed, id) } else { ed };
                 return (ed, fx);
             }
-            match loaded_from(&file, read, max_size) {
+            match loaded_from(&file, read, max_size, default_eol) {
                 Ok(loaded) => {
                     let (mut ed, id) = ed.add_buffer(&name_of(&path), loaded.text, loaded.backing);
                     ed = ed.with_buffer(id, |b| b.set_eol(loaded.eol));
@@ -336,7 +337,8 @@ pub fn file_read(
             let ed = ed.set_message(format!("Revert failed: {} does not exist", path.display()));
             (ed, fx)
         }
-        (ReadTarget::Revert(id), Ok(read)) => match loaded_from(&file, read, max_size) {
+        (ReadTarget::Revert(id), Ok(read)) => match loaded_from(&file, read, max_size, default_eol)
+        {
             Ok(loaded) => {
                 let ed = ed
                     .with_buffer(id, |b| {

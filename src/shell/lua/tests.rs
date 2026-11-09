@@ -3,6 +3,7 @@ use crate::core::commands;
 use crate::core::commands::request_open;
 use crate::core::config::Config;
 use crate::core::effect::Event;
+use crate::core::eol::Eol;
 use crate::core::keymap::{Code, Key, parse_keys};
 use crate::core::syntax::SyntaxRegistry;
 use crate::shell::{handle, perform_all, run_source};
@@ -144,6 +145,23 @@ fn api_command_and_run() {
 }
 
 #[test]
+fn string_settings_cross_the_lua_boundary() {
+    let lua = new_state().unwrap();
+    let (ed, result) = script(
+        &lua,
+        Editor::new(Config::default()),
+        r#"assert(get("default-eol") == "lf"); set("default-eol", "crlf"); assert(get("default-eol") == "crlf")"#,
+    );
+    result.unwrap();
+    assert_eq!(ed.config().default_eol, Eol::Crlf);
+    let (ed, result) = script(&lua, ed, r#"set("default-eol", "cr")"#);
+    assert!(result.is_err());
+    assert_eq!(ed.config().default_eol, Eol::Crlf);
+    let (_, result) = script(&lua, ed, r#"set("default-eol", 1)"#);
+    assert!(result.is_err());
+}
+
+#[test]
 fn run_from_lua_can_use_get_and_set() {
     let lua = new_state().unwrap();
     let (ed, result) = script(
@@ -264,6 +282,28 @@ fn api_syntax_register_and_validation() {
     assert_eq!(lang_of(ed.syntax_registry(), "query.sql.txt"), Some("sql"));
     assert!(keyword_in(ed.syntax_registry(), "query.sql.txt", "SELECT"));
     assert!(type_in(ed.syntax_registry(), "query.sql.txt", "VARCHAR"));
+}
+
+#[test]
+fn heading_is_a_syntax_field_and_bundled_markdown_uses_it() {
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let md = ed.syntax_registry().find_by_filename("README.md").unwrap();
+    assert_eq!(md.heading_prefix.as_deref(), Some("#"));
+    let (ed, result) = script(
+        &lua,
+        ed,
+        r#"syntax.register("markdown", { extensions = { "md" } })"#,
+    );
+    result.unwrap();
+    let md = ed.syntax_registry().find_by_filename("README.md").unwrap();
+    assert_eq!(md.heading_prefix, None);
+    let (_, result) = script(
+        &lua,
+        ed,
+        r#"syntax.register("x", { extensions = { "x" }, heading = "" })"#,
+    );
+    assert!(result.is_err());
 }
 
 #[test]
@@ -517,7 +557,7 @@ fn text_fill_paragraph_in_lua() {
         point: 0,
         ..w
     });
-    let mut cfg = *ed.config();
+    let mut cfg = ed.config().clone();
     cfg.fill_column = 12;
     let ed = ed.set_config(cfg);
 
@@ -947,7 +987,7 @@ fn undo_limit_applies_to_existing_buffers() {
 fn edit_after_yank_invalidates_yank_pop() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let ed = ed.with_kill_ring(|kr| kr.push(b"hello".to_vec()));
+    let ed = ed.with_kill_ring(|kr| kr.push(b"hello".to_vec(), 120));
     let ed = handle(ed, Some(&lua), Event::Run("yank".to_owned()));
 
     // An edit after the yank means the yank is no longer the last command (I-38).

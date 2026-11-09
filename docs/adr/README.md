@@ -22,6 +22,7 @@
 | [0012](0012-scratch-durability-and-wal-probe.md) | Durable Scratch and One WAL Probe | Accepted | 2026-11-05 | §7, §12 | `Backing::Scratch` and its WAL slot (I-42, I-43), unusable WALs moved aside (I-44), one `ProbeWal` on every open (I-45) |
 | [0013](0013-save-epoch-modified-tracking.md) | Save Epoch and Clean-by-Undo | Accepted | 2026-11-05 | §7 | Undo back to the saved text restores clean and drops the WAL (I-41) |
 | [0014](0014-lua-key-aliases.md) | Lua key aliases | Accepted | 2026-11-06 | §3, §8, §9, §12, §15 | `key_alias`/`key_unalias`, full two-set table in bundled `keymap.lua`, aliases apply to modal answers and to prefixed or modified binding lookups after an exact miss (I-46, I-48) |
+| [0015](0015-init-lua-configurable-surface.md) | Everything outside the panic room is configurable from init.lua | Accepted | 2026-11-10 | §6, §12, §15 | `Setting` sum type (`I-52`), panic-room list (`I-53`), `ShellSpec`, `Metrics`, `heading_prefix` |
 
 ---
 
@@ -78,7 +79,7 @@
 
 ## 3. System Invariants
 
-The current wording of every invariant (`I-01` ~ `I-51`) is in [`docs/invariants.md`](../invariants.md), which governs if an ADR's wording differs. ADRs record when and why an invariant changed.
+The current wording of every invariant (`I-01` ~ `I-53`) is in [`docs/invariants.md`](../invariants.md), which governs if an ADR's wording differs. ADRs record when and why an invariant changed.
 
 ---
 

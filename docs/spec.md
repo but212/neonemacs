@@ -92,7 +92,7 @@
 - `expand-tabs`(기본 꺼짐)를 켜면 키보드 TAB이 `tab-width`의 다음 탭 위치까지 공백을 한 번의 편집으로 삽입한다. 붙여넣기, 기존 탭, Lua 삽입은 바꾸지 않는다.
 - **프롬프트 편집**: 입력 중 `C-b` / `left`, `C-f` / `right`로 커서를 옮기고, `C-a` / `home`, `C-e` / `end`로 양끝에 가며, Backspace는 커서 앞 문자, `C-d`는 커서 위치 문자를 지운다. 입력은 커서 위치에 삽입되고 TAB 완성은 커서를 끝으로 보낸다. 에코 영역 커서는 전각 폭을 반영하며, 입력이 폭을 넘으면 커서가 보이도록 뒤쪽을 보여 준다.
 - `set-mark-command`로 마크를 찍으면 마크와 커서 사이가 영역이다. `C-w`, `M-w`, `C-y`로 잘라내기, 복사, 붙여넣기를 수행하고 `yank-pop`으로 순환한다. 연속된 잘라내기는 하나의 킬 항목으로 병합된다.
-  - 킬 링은 최대 120항목을 유지한다. 넘치면 가장 오래된 항목부터 버린다.
+  - 킬 링은 최대 `kill-ring-max`(기본 120)항목을 유지한다. 넘치면 가장 오래된 항목부터 버린다.
   - `yank-pop`은 `C-y` 직후에만 동작한다. 그 사이에 텍스트가 바뀌면 `Previous command was not a yank`를 띄우고 아무것도 바꾸지 않는다.
   - 마크는 `set-mark-command`(또는 Lua `buffer.set_mark`)로 찍으면 활성이다. 텍스트 편집, `C-g`, `M-w`는 마크를 비활성으로 바꾸며 위치는 남는다. 비활성 마크는 표시되지 않고 `exchange-point-and-mark`에서만 쓰인다.
 - **파레토 핵심 텍스트 편집 명령**:
@@ -170,7 +170,7 @@
   - `bind(keys, command)` / `unbind(keys)`: 키 바인딩 등록 및 제거 (단일 키 또는 `C-x` 2키 시퀀스만 허용)
   - `command(name, function)`: 사용자 명령 등록 (내장 명령 재정의 불가)
   - `run(name)`: 내장 또는 Lua 명령 실행 (최대 재귀 깊이 50)
-  - `get(name)` / `set(name, value)`: 설정 조회 및 변경 (`fill-column`, `tab-width`, `expand-tabs`, `case-fold-search`, `max-file-size`, `undo-limit`)
+  - `get(name)` / `set(name, value)`: 설정 조회 및 변경. 이름, 값, 기본값은 아래 "설정 가능 범위"의 표를 따른다. 알 수 없는 이름, 틀린 타입, 범위 밖의 값은 Lua 오류이며 설정은 바뀌지 않는다.
   - `key_alias(from, to)` / `key_unalias(from)`: 자판 별칭 등록 및 제거 (`from`은 한 글자, `to`는 ASCII 그래픽 문자 한 글자, 위반 시 Lua 오류, 없는 별칭 제거는 무동작). 질문 응답과, 정확히 일치하는 바인딩이 없는 접두·수정 키의 바인딩 조회(3절)에 적용된다. 일반 글자 입력, 프롬프트 입력, 검색어에는 적용하지 않는다.
   - `message(text)`: 에코 영역 메시지 표시
   - `syntax.register(name, spec)`: 구문 강조 규칙 등록
@@ -179,6 +179,7 @@
     - `line_comment`: 한 줄 주석 기호 (선택)
     - `keywords` / `types`: 예약어(Cyan) 및 타입(Magenta) 배열 (선택)
     - `case_insensitive`: 대소문자 무시 플래그 (선택, 기본 `false`)
+    - `heading`: 제목 접두사 문자열 (선택, 빈 문자열 불가). 이 접두사로 시작하는 줄 전체를 예약어 색으로 칠하고 다른 강조는 하지 않는다. 번들 Markdown 정의가 `heading = "#"`를 쓴다
   - `buffer`: 활성 버퍼 조작 모듈 (0-기반 바이트 오프셋, 모든 변이·커서·마크 API는 문자 경계로 자동 스냅하며 비정상 UTF-8 바이트열도 런타임 오류 없이 바이트열 그대로 처리)
     - `buffer.point()` / `buffer.set_point(pos)`: 커서 오프셋 조회 및 이동
     - `buffer.len()`: 전체 바이트 길이
@@ -194,6 +195,55 @@
   - 구문 강조(`syntax.lua`: Rust, C/C++, Python, JavaScript/TypeScript, Lua, Go, Shell, Makefile, SQL, TOML, JSON, YAML, Markdown), 파레토 텍스트 편집 명령(`text.lua`), 확장 키맵(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x h`, `C-x u`, `M-y`, `M-q`, `M-d`, `M-DEL`, `M-;`, `C-r`, `M-%`, `M-g`, `M-<`, `M->`, `C-l`, `M-!`)과 두벌식 자판 별칭(자모 26자와 Shift 자모 7자를 QWERTY 키로, 예: `ㅛ`→`y`, `ㅜ`→`n`, `ㅂ`→`q`, `ㅠ`→`b`)을 바이너리에 내장한다.
   - 내장 스크립트는 `init.lua` 전에 실행되며, `init.lua`에서 재정의하거나 해제할 수 있다.
 - 다중 버퍼 임의 접근, 이벤트 훅, 직접 파일 I/O는 공개하지 않는다.
+
+### 설정 가능 범위
+
+패닉룸을 뺀 모든 기능은 `init.lua`로 켜고 끄고 바꿀 수 있다 (I-52, I-53). 범위는 다음과 같이 나뉜다.
+
+**1. `get` / `set`으로 바꾸는 설정** (`set`은 값을 검사하고, 실패하면 아무것도 바꾸지 않는다)
+
+| 이름 | 값 | 기본값 | 효과 |
+| --- | --- | --- | --- |
+| `fill-column` | 정수 1~65535 | 70 | `fill-paragraph` 폭 |
+| `tab-width` | 정수 1~16 | 8 | 탭 칸 수 |
+| `expand-tabs` | 불리언 | `false` | TAB이 공백을 넣는다 |
+| `case-fold-search` | 불리언 | `true` | 검색의 대소문자 무시 |
+| `max-file-size` | 정수 1 이상 | 64 MiB | 이보다 큰 파일은 열지 않는다 (I-04) |
+| `undo-limit` | 정수 0 이상 | 4 MiB | 되돌리기 기록 상한 |
+| `kill-ring-max` | 정수 1 이상 | 120 | 킬 링 항목 수 (I-26) |
+| `amalgamating-undo-limit` | 정수 1 이상 | 20 | 되돌리기 한 번에 묶이는 입력 글자 수 |
+| `syntax-highlight` | 불리언 | `true` | 끄면 구문 강조를 하지 않는다 |
+| `isearch-wrap` | 불리언 | `true` | 끄면 반복 `C-s`/`C-r`이 끝에서 돌아가지 않고 `Failing I-search`로 멈춘다 |
+| `echo-prefix` | 불리언 | `true` | 끄면 접두 키(`C-x-`, `ESC-`) 대기 표시를 하지 않고 메시지를 유지한다 |
+| `default-eol` | `"lf"` \| `"crlf"` | `"lf"` | 새 버퍼, 없는 파일, 줄바꿈이 없는 파일의 줄 끝 방식 |
+| `shell-file-name` | 비어 있지 않은 문자열 | `sh` (Windows `cmd`) | `shell-command`를 실행하는 프로그램 |
+| `shell-command-switch` | 비어 있지 않은 문자열 | `-c` (Windows `/C`) | 위 프로그램에 명령을 넘기는 인자 |
+| `ambiguous-width` | 정수 1~2 | 1 | East Asian 모호폭 문자의 칸 수. CJK 터미널이 2칸으로 그리면 2로 둔다 |
+
+**2. 다른 API로 바꾸는 것**
+
+- 키: `bind` / `unbind`. 명령을 끄려면 그 키를 `unbind`한다. 명령은 `M-x`에 남는다. 내장 명령 이름은 재정의할 수 없다.
+- 입력 배열: `key_alias` / `key_unalias`.
+- 언어 규칙과 제목 강조: `syntax.register`.
+- 번들 Lua 명령(`text.lua`의 `comment-dwim`, `fill-paragraph` 등): `command`로 같은 이름을 다시 등록한다.
+
+**3. 패닉룸: 설정으로 끌 수 없는 안전망**
+
+설정 키, Lua 함수, 키 해제 어느 것으로도 끌 수 없다 (I-53). 키 바인딩은 바꿀 수 있지만 동작 자체는 남는다. `C-g`는 키맵 조회 전에 처리되므로 `unbind`로도 지울 수 없다.
+
+- 터미널 복원 (13절).
+- WAL 기록과 복구, WAL 위치와 지연, scratch 영속 (7절).
+- 저장 시 외부 변경 검사, 덮어쓰기·종료·버퍼 닫기·다시 읽기 확인 (8절).
+- `C-g`와 `Esc` 취소 (3절, 9절, I-46).
+
+**4. 고정된 내부 한계** (사용자 선호가 아니라 구현 규약이다)
+
+WAL 형식, `run` 재귀 깊이 50, 이벤트 폴링 간격, 한 번에 하나의 셸 명령, 제어 문자 표기, 바인딩 깊이(I-12), 화면 배치(상태 줄과 에코 영역 높이), 종료 확인에 보이는 버퍼 이름 수.
+
+**5. 새 기능 후보** (미구현. 값만 노출하는 설정이거나 대안 동작이 없다)
+
+- 값만 바꾸는 것: 구문 색(`face-*`), 줄 잘림 표시 문자, 스피너 글자.
+- 대안 동작이 없는 것: `scroll-margin`, smart-case 검색, 줄 감싸기, 치환 시 대소문자 보존, `find-file` 경로 완성, PgUp/Delete/F 키 바인딩, 상태 줄 형식, 단어 문자 정의.
 
 ### 시작 방식 (`src/shell/startup/`)
 
@@ -232,4 +282,5 @@
 - 한글 IME 조합 표시는 터미널 구현에 따른다.
 - 같은 파일이나 같은 상태 디렉터리를 쓰는 편집기를 둘 이상 실행하면 WAL과 scratch 슬롯을 서로 덮어쓸 수 있다. 잠금이 없으므로 막지 않는다 (8절).
 - 기본 자판 별칭은 두벌식뿐이다. 다른 입력 배열은 `init.lua`에서 `key_alias`로 추가한다. 별칭은 질문 응답과 접두·수정 키의 바인딩 조회에만 적용되고, 일반 입력(self-insert), 프롬프트 입력, 검색어에는 적용되지 않는다 (I-48). 바인딩 조회는 정확히 일치하는 글자만 보므로 대소문자가 있는 배열은 두 형태를 모두 등록해야 한다.
+- `default-eol`은 `init.lua`가 끝난 뒤에 만드는 버퍼에만 적용된다. `*scratch*`는 `init.lua`보다 먼저 만들어지므로 항상 `lf`로 시작한다.
 - 터미널과 입력기에 따라 한글 상태의 `Alt`+자모가 다른 값으로 전달될 수 있다. 그 경우 `Esc` 뒤 자모나 영문 전환을 쓴다.

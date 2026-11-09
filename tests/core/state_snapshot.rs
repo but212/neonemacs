@@ -41,7 +41,7 @@ fn snapshot(ed: &Editor) -> Snapshot {
         prev: ed.prev(),
         quit: ed.quit(),
         edit_seq: ed.edit_seq(),
-        config: *ed.config(),
+        config: ed.config().clone(),
     }
 }
 
@@ -139,7 +139,7 @@ fn settings_round_trip() {
         fill_column: 99,
         ..Config::default()
     };
-    let ed = ed.set_config(config).register_command("my-cmd");
+    let ed = ed.set_config(config.clone()).register_command("my-cmd");
     assert_eq!(ed.config().fill_column, 99);
     assert!(ed.commands().contains("my-cmd"));
     assert_eq!(snapshot(&ed), Snapshot { config, ..before });

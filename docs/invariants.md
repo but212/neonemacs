@@ -20,7 +20,7 @@ Rules:
 | **I-08** | At least one buffer exists at all times; closing retargets windows safely | Runtime (`BufferPool`) | ADR 0002, Spec §5 |
 | **I-09** | Consecutive kills append to the same kill-ring entry | Runtime (`append_last`) | ADR 0002, ADR 0006 |
 | **I-10** | [Pruned] Persistent undo verified against disk state (persistent undo removed) | Pruned | ADR 0002, Spec §7 |
-| **I-11** | Configuration settings validate ranges and types at ingress boundary | Runtime boundary | ADR 0001 |
+| **I-11** | Configuration settings validate ranges and types at ingress boundary; a string setting parses into its domain type (`Eol`, a non-empty string) there, and a failed `set` changes nothing | Runtime boundary (`Config::set`) | ADR 0001, ADR 0015 |
 | **I-12** | Key binding syntax accepts only valid single keys or `C-x` 2-key sequences | Parser boundary | ADR 0001, ADR 0005 |
 | **I-13** | [Pruned] merged into I-04 | Pruned | ADR 0002 |
 | **I-14** | `src/core` never imports I/O crates (`fs`, `process`, `mlua`, `crossterm`) | Text scan (`tests/core/purity.rs`) | ADR 0002 |
@@ -35,7 +35,7 @@ Rules:
 | **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. The header records the EOL (`NEONWAL2`) | Runtime (`wal.rs`) | ADR 0003, ADR 0009 |
 | **I-24** | Background shell execution is non-blocking with active spinner feedback | Runtime / Thread | ADR 0003 |
 | **I-25** | Regular save, revert, or close immediately deletes sibling WAL file; `write-file` deletes the old path's WAL only after its write succeeds | Runtime (`wal.rs`) | ADR 0003, ADR 0010 |
-| **I-26** | Kill ring history is encapsulated in `KillRing` with ring rotation invariants, and holds at most `KILL_RING_MAX` (120) entries; `from_entries` (no check) is test-only | Data structure | ADR 0006, ADR 0010, Spec §6 |
+| **I-26** | Kill ring history is encapsulated in `KillRing` with ring rotation invariants, and after each `push` holds at most `kill-ring-max` (default 120) entries; `from_entries` (no check) is test-only | Data structure | ADR 0006, ADR 0010, ADR 0015, Spec §6 |
 | **I-27** | Syntax definitions are purely declarative in `SyntaxRegistry` | Data structure | ADR 0004 |
 | **I-28** | [Pruned] Line counting semantics (superseded by ADR 0006 Pareto Spec Normalization) (ID not reused; syntax rules are I-49 to I-51) | Pruned | ADR 0006, ADR 0007 |
 | **I-29** | [Pruned] UTF-8 inspection slicing (superseded by ADR 0006 Pareto Spec Normalization) (ID not reused; syntax rules are I-49 to I-51) | Pruned | ADR 0006, ADR 0007 |
@@ -58,6 +58,8 @@ Rules:
 | **I-46** | In a yes-or-no question and in query-replace every key either changes the state or says why it did not; `y`/`n`/`q` fold ASCII case; `Esc` cancels; other layouts answer through key aliases (I-48) | Runtime (`answer`, `query_key`) | Spec §8, §9, ADR 0014 |
 | **I-47** | Only an active mark makes a region, and only the selected window draws the region and the current search match in reverse video | Type (`Mark`) + Runtime (`render::frame`) | Spec §5, §6 |
 | **I-48** | A key alias maps one character to one ASCII graphic character. It applies only where a modal question is answered and to the binding lookup of a prefixed or modified key after an exact miss, never to self-insert, prompt input, or search text. Other characters answer only through `KeyAliases`; bundled `keymap.lua` maps the two-set layout, so `ㅛ`/`ㅜ`/`ㅂ` answer | Type (`AliasTarget`) + Boundary (`key_alias`) + Runtime (`answer_char` and `lookup_binding` call sites) | ADR 0014 |
-| **I-49** | A `SyntaxDef` has at least one extension or filename; a file or buffer name resolves to a definition by exact basename match in `filenames` first, then by extension | Runtime (`SyntaxDef::new`, `SyntaxRegistry::find_by_filename`) | ADR 0004 |
+| **I-49** | A `SyntaxDef` has at least one extension or filename; a file or buffer name resolves to a definition by exact basename match in `filenames` first, then by extension; a definition with a `heading_prefix` draws a line that starts with it whole as a keyword and highlights nothing else | Runtime (`SyntaxDef::new`, `SyntaxRegistry::find_by_filename`, `highlight_line`) | ADR 0004, ADR 0015 |
 | **I-50** | A `SyntaxDef` keeps its keyword and type lists sorted and deduplicated (ASCII-lowercased when case-insensitive), so lookups use binary search | Runtime (`SyntaxDef::new`) | ADR 0004 |
 | **I-51** | The line lexer is stateless and works on one line at a time | Runtime (`LineLexer`) | ADR 0003, ADR 0004 |
+| **I-52** | Every configuration setting is one `Setting` variant: `get` is total over `Setting`, `set` matches it exhaustively, and `set(s, get(s))` yields an equal `Config` | Type (`Setting`) + Runtime (`Setting::ALL` round-trip test) | ADR 0015, Spec §12 |
+| **I-53** | No `Setting` variant, Lua function, or key unbinding disables a panic-room behavior: terminal restore, WAL write and recovery, the save-time disk check, the overwrite, quit, kill and revert confirmations, and `C-g` and `Esc` cancel. The list is in spec §12 | Type (`Setting` is closed) + Runtime (`C-g` is handled before the keymap) | ADR 0015, Spec §12 |

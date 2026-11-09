@@ -116,7 +116,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     } else {
         find_in_direction(&ed, &pattern, s.direction, from, fold)
     };
-    if found.is_none() && wrap {
+    if found.is_none() && wrap && ed.config().isearch_wrap {
         let other_end = if s.direction == Direction::Forward {
             0
         } else {
@@ -468,6 +468,22 @@ mod tests {
         let ed = keys(ed, "C-s");
         assert_eq!(point(&ed), 3);
         assert!(ed.message().contains("Wrapped"));
+    }
+
+    #[test]
+    fn isearch_wrap_off_fails_at_the_end_instead_of_wrapping() {
+        let ed = Editor::new(crate::core::config::Config {
+            isearch_wrap: false,
+            ..crate::core::config::Config::default()
+        });
+        let ed = typ(ed, "abc abd");
+        let ed = keys(ed, "C-a C-s");
+        let ed = typ(ed, "c");
+        assert_eq!(point(&ed), 3);
+        let ed = keys(ed, "C-s");
+        assert_eq!(point(&ed), 3);
+        assert!(!ed.message().contains("Wrapped"));
+        assert!(ed.message().starts_with("Failing I-search"));
     }
 
     #[test]
