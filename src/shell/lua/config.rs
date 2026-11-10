@@ -53,3 +53,69 @@ fn from_lua(value: &LuaValue) -> Result<Value, String> {
         other => Err(format!("unsupported setting value: {}", other.type_name())),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{bootstrap, new_state, test_script as script};
+    use crate::core::Config;
+    use crate::core::Editor;
+    use crate::core::Edit;
+    use crate::core::Eol;
+    use crate::core::Toggles;
+
+    #[test]
+    fn string_settings_cross_the_lua_boundary() {
+        let lua = new_state().unwrap();
+        let (ed, result) = script(
+            &lua,
+            Editor::new(Config::default()),
+            r#"assert(get("default-eol") == "lf"); set("default-eol", "crlf"); assert(get("default-eol") == "crlf")"#,
+        );
+        result.unwrap();
+        assert_eq!(ed.config().default_eol, Eol::Crlf);
+        let (ed, result) = script(&lua, ed, r#"set("default-eol", "cr")"#);
+        assert!(result.is_err());
+        assert_eq!(ed.config().default_eol, Eol::Crlf);
+        let (_, result) = script(&lua, ed, r#"set("default-eol", 1)"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn api_get_and_set_validate_input() {
+        let lua = new_state().unwrap();
+        let (ed, result) = script(
+            &lua,
+            Editor::new(Config::default()),
+            r#"assert(get("fill-column") == 70)"#,
+        );
+        result.unwrap();
+        let (ed, result) = script(&lua, ed, r#"set("case-fold-search", false)"#);
+        result.unwrap();
+        assert!(!ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH));
+        let (ed, result) = script(&lua, ed, r#"set("tab-width", 0)"#);
+        assert!(result.is_err());
+        let (ed, result) = script(&lua, ed, r#"set("nope", 1)"#);
+        assert!(result.is_err());
+        let (_, result) = script(&lua, ed, r#"set("fill-column", "x")"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn undo_limit_applies_to_existing_buffers() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, result) = script(&lua, ed, r#"set("undo-limit", 0)"#);
+        result.unwrap();
+
+        // Two edits in two undo groups. With limit 0 the first group is dropped at once (I-35).
+        let (ed, _) = ed.apply(&Edit::insert(0, b"a".as_slice()));
+        let ed = ed.end_command();
+        let (ed, _) = ed.apply(&Edit::insert(1, b"b".as_slice()));
+        let ed = ed.end_command();
+
+        // Each undo is its own command, as in the event loop.
+        let (ed, _) = ed.begin_command().undo(Vec::new());
+        let (ed, _) = ed.begin_command().undo(Vec::new());
+        assert_eq!(ed.message(), "No further undo information");
+    }
+}

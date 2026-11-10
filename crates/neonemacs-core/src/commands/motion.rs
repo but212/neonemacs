@@ -106,15 +106,6 @@ pub(crate) fn set_mark_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
-pub(crate) fn exchange_point_and_mark(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let Some(mark) = ed.buffer().mark() else {
-        return (ed.set_message("No mark set in this buffer"), fx);
-    };
-    let p = ed.window().point;
-    let ed = ed.with_current_buffer(|b| b.set_mark(Some(p)));
-    (ed.move_point(mark), fx)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,16 +164,6 @@ mod tests {
         let ed = keys(ed, "C-n");
         // The goal survives the vertical move; "cd" is only two columns wide, so it clamps.
         assert_eq!(point(&ed), 8);
-    }
-
-    #[test]
-    fn exchange_point_and_mark_swaps() {
-        let ed = typ(editor(), "abc");
-        let ed = set_mark(keys(ed, "C-a"));
-        let ed = keys(ed, "C-e");
-        let ed = run_command(ed, exchange_point_and_mark);
-        assert_eq!(point(&ed), 0);
-        assert_eq!(ed.buffer().mark(), Some(3));
     }
 
     fn numbered(n: usize) -> String {

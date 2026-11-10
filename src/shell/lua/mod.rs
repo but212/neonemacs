@@ -128,3 +128,12 @@ pub fn with_api<R>(
         body(lua)
     })
 }
+
+#[cfg(test)]
+pub(crate) fn test_script(
+    lua: &Lua,
+    ed: Editor,
+    src: &str,
+) -> (Editor, mlua::Result<()>) {
+    crate::shell::run_source(ed, lua, "=test", src)
+}

@@ -27,7 +27,6 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
     let forward_char = find("forward-char").unwrap();
     let delete_char = find("delete-char").unwrap();
     let delete_backward_char = find("delete-backward-char").unwrap();
-    let kill_line = find("kill-line").unwrap();
 
     // UTF-8 Korean: each character is 3 bytes: 가(0..3), 나(3..6), 다(6..9)
     let ed = typ(editor(), "가나다");
@@ -47,10 +46,6 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
     let oob_ed = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_bkwd, _) = delete_backward_char(oob_ed, Vec::new());
     assert!(point(&after_bkwd) <= after_bkwd.buffer().text().len());
-
-    let oob_ed2 = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
-    let (after_kill, _) = kill_line(oob_ed2, Vec::new());
-    assert!(point(&after_kill) <= after_kill.buffer().text().len());
 }
 
 #[test]
@@ -304,7 +299,6 @@ fn buffer_prompt_hostile_names_and_lifecycle() {
 #[test]
 fn split_window_right_and_motion_boundaries() {
     let split_window_right = find("split-window-right").unwrap();
-    let exchange_point_and_mark = find("exchange-point-and-mark").unwrap();
 
     let mut ed = typ(editor(), "single line");
 
@@ -321,10 +315,6 @@ fn split_window_right_and_motion_boundaries() {
     // Go to top, previous_line hits beginning of buffer
     ed = keys(ed, "C-p C-p");
     assert_eq!(ed.message(), "Beginning of buffer");
-
-    // exchange_point_and_mark without mark
-    let (ed_nomark, _) = exchange_point_and_mark(editor(), Vec::new());
-    assert_eq!(ed_nomark.message(), "No mark set in this buffer");
 }
 
 #[test]

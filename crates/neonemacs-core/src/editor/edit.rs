@@ -58,7 +58,10 @@ impl Editor {
             return (self, Vec::new());
         }
         let bytes = self.buffer().text().bytes(start..end);
-        let (ed, _) = self.apply(&Edit::delete(start, bytes.clone()));
+        let (ed, applied) = self.apply(&Edit::delete(start, bytes.clone()));
+        if applied.is_none() {
+            return (ed, Vec::new());
+        }
         (ed, bytes)
     }
 

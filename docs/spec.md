@@ -98,10 +98,11 @@
   - 마크는 `set-mark-command`(또는 Lua `buffer.set_mark`)로 찍으면 활성이다. 텍스트 편집, `C-g`, `M-w`는 마크를 비활성으로 바꾸며 위치는 남는다. 비활성 마크는 표시되지 않고 `exchange-point-and-mark`에서만 쓰인다.
 - **파레토 핵심 텍스트 편집 명령**:
   - 단어 이동 및 삭제: `forward-word`, `backward-word`, `kill-word`, `backward-kill-word`
+  - 줄 삭제: `kill-line`
   - 버퍼 양끝 이동: `beginning-of-buffer`, `end-of-buffer`
   - 문단 재정렬: `fill-paragraph` (`fill-column` 너비 기준)
   - 주석 토글: `comment-dwim` (언어별 주석 기호 감지 및 영역/단일행 토글)
-  - 전체 선택: `mark-whole-buffer`
+  - 마크 및 영역: `mark-whole-buffer`, `exchange-point-and-mark`
 - **커서 및 앵커 불변식**: `Buffer` 필드는 비공개로 캡슐화되며, 모든 이동·편집·복구·Lua 변이 전이(`set_mark`, `set_saved_point`, `apply_edit`, `with_window`, `snap_windows_for_buffer`)는 커서와 마크를 버퍼 범위(`0..=len`) 내 유효한 문자(Unit) 경계로 강제 스냅한다.
 
 ## 7. 실행 취소 및 크래시 복구

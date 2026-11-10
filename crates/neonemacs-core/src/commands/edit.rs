@@ -47,22 +47,6 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
-/// Kills to the end of the line, or the newline when already at the end.
-pub(crate) fn kill_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
-    let text = ed.buffer().text();
-    let line_end = text.line_end(p);
-    let end = if line_end == p && p < text.len() {
-        p + 1
-    } else {
-        line_end
-    };
-    if p >= end {
-        return (ed, fx);
-    }
-    (ed.kill_range(p, end), fx)
-}
-
 pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let Some(bytes) = ed.kill_ring().last().map(<[u8]>::to_vec) else {
         return (ed.set_message("Kill ring is empty"), fx);
@@ -136,17 +120,6 @@ mod tests {
         let ed = keys(ed, "C-y");
         assert_eq!(text(&ed), "abc");
         assert_eq!(point(&ed), 2);
-    }
-
-    #[test]
-    fn kill_ring_consecutive_kills_append() {
-        let ed = typ(editor(), "one\ntwo");
-        let ed = keys(ed, "C-p C-a");
-        assert_eq!(point(&ed), 0);
-        let ed = run_command(ed, kill_line);
-        let ed = run_command(ed, kill_line);
-        assert_eq!(text(&ed), "two");
-        assert_eq!(ed.kill_ring().entries(), &[b"one\n".to_vec()]);
     }
 
     #[test]

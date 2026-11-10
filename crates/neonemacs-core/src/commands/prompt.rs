@@ -356,7 +356,7 @@ mod tests {
         let all = completions(&ed, "");
         assert!(all.iter().any(|(name, _)| name == "forward-word"));
         assert!(all.iter().any(|(name, _)| name == "fill-paragraph"));
-        assert!(all.iter().any(|(name, _)| name == "kill-line"));
+        assert!(all.iter().any(|(name, _)| name == "kill-region"));
     }
 
     fn prompt_of(ed: &Editor) -> Prompt {
@@ -454,10 +454,10 @@ mod tests {
 
     #[test]
     fn prompt_completion_replaces_whole_input_and_moves_cursor_to_end() {
-        let ed = typ_prompt(keys(editor(), "M-x"), "kill-lin");
+        let ed = typ_prompt(keys(editor(), "M-x"), "kill-reg");
         let ed = keys(ed, "C-b");
         let ed = keys(ed, "TAB");
         let p = prompt_of(&ed);
-        assert_eq!((p.before.as_str(), p.after.as_str()), ("kill-line", ""));
+        assert_eq!((p.before.as_str(), p.after.as_str()), ("kill-region", ""));
     }
 }

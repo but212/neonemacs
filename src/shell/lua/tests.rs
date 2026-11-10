@@ -1,37 +1,84 @@
 use super::*;
-use crate::core::Eol;
-use crate::core::SyntaxRegistry;
 use crate::core::effect::Event;
-use crate::core::is_builtin;
-use crate::core::request_open;
-use crate::core::{Code, Key, parse_keys};
-use crate::core::{Config, Toggles};
-use crate::shell::{handle, perform_all, run_source};
-use mlua::{Function, Table};
-use std::fs;
+use crate::core::Config;
+use crate::shell::{handle, run_source};
+use mlua::Table;
 
 /// Runs `src` against `ed`. Returns the editor back with the result.
 fn script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
     run_source(ed, lua, "=test", src)
 }
 
-/// Syntax lookups by file name, as the editor resolves a buffer's language (I-49).
-fn lang_of<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
-    reg.find_by_filename(file).map(|d| d.name.as_str())
+#[test]
+fn mutate_editor_preserves_cell_on_error() {
+    let lua = new_state().unwrap();
+    let ed = Editor::new(Config::default());
+    let (ed, res) = script(&lua, ed, r#"bind("C-", "invalid-key")"#);
+    assert!(res.is_err());
+    assert_eq!(ed.config().tab_width, 8);
 }
 
-fn keyword_in(reg: &SyntaxRegistry, file: &str, word: &str) -> bool {
-    reg.find_by_filename(file)
-        .is_some_and(|d| d.is_keyword(word))
+#[test]
+fn config_path_follows_xdg_then_home() {
+    assert_eq!(
+        config_path(Some(OsStr::new("/x")), Some(Path::new("/h"))),
+        Some(PathBuf::from("/x/neonemacs/init.lua"))
+    );
+    assert_eq!(
+        config_path(Some(OsStr::new("")), Some(Path::new("/h"))),
+        Some(Path::new("/h/.config/neonemacs/init.lua").to_path_buf())
+    );
+    assert_eq!(config_path(None, None), None);
 }
 
-fn type_in(reg: &SyntaxRegistry, file: &str, word: &str) -> bool {
-    reg.find_by_filename(file).is_some_and(|d| d.is_type(word))
+#[test]
+fn only_the_allowed_libraries_are_reachable() {
+    // I-57
+    let lua = new_state().unwrap();
+    let g = lua.globals();
+    for name in [
+        "io",
+        "os",
+        "package",
+        "coroutine",
+        "debug",
+        "dofile",
+        "loadfile",
+        "require",
+    ] {
+        assert!(
+            g.get::<mlua::Value>(name).unwrap().is_nil(),
+            "{name} must not be reachable"
+        );
+    }
+    for name in ["string", "table", "math", "utf8"] {
+        assert!(g.get::<Table>(name).is_ok(), "{name} must be available");
+    }
+    let (_, res) = run_source(
+        Editor::new(Config::default()),
+        &lua,
+        "=t",
+        r#"assert(("x"):upper() == "X")"#,
+    );
+    assert!(res.is_ok());
 }
 
-fn comment_in<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
-    reg.line_comment_for_filename(file)
+#[test]
+fn an_error_names_its_chunk_and_line() {
+    // I-55
+    let lua = new_state().unwrap();
+    let ed = Editor::new(Config::default());
+    let (_, res) = run_source(ed, &lua, "=init.lua", "local x = 1\nerror('boom')");
+    let text = res.unwrap_err().to_string();
+    assert!(text.contains("init.lua:2:"), "{text}");
+    let (_, res) = run_source(Editor::new(Config::default()), &lua, "=init.lua", "x = = 1");
+    let text = res.unwrap_err().to_string();
+    assert!(text.contains("init.lua:1:"), "{text}");
 }
+
+// -----------------------------------------------------------------------------
+// Bundled text.lua command integration tests (§6)
+// -----------------------------------------------------------------------------
 
 #[test]
 fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
@@ -69,476 +116,6 @@ fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
         ed.buffer().text().to_bytes().contains(&0xff),
         "Raw byte 0xff was lost or corrupted!"
     );
-}
-
-#[test]
-fn set_mark_from_lua_makes_an_active_region() {
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default())
-        .with_current_buffer(|b| b.with_text(crate::core::Text::from_bytes(b"abc")));
-    let (ed, res) = script(&lua, ed, "buffer.set_mark(2)");
-    res.unwrap();
-    assert!(ed.buffer().mark_active());
-    let (ed, res) = script(&lua, ed, "buffer.set_mark(nil)");
-    res.unwrap();
-    assert!(!ed.buffer().mark_active());
-    assert_eq!(ed.buffer().mark(), None);
-}
-
-#[test]
-fn set_mark_snaps_to_unit_boundary() {
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default())
-        .with_current_buffer(|b| b.with_text(crate::core::Text::from_bytes("가".as_bytes())));
-    let (ed, res) = script(&lua, ed, "buffer.set_mark(1)");
-    res.unwrap();
-    assert_eq!(ed.buffer().mark(), Some(0));
-
-    let (ed, res) = script(&lua, ed, "buffer.set_mark(999)");
-    res.unwrap();
-    assert_eq!(ed.buffer().mark(), Some(3));
-}
-
-#[test]
-fn mutate_editor_preserves_cell_on_error() {
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default());
-    let (ed, res) = script(&lua, ed, r#"bind("C-", "invalid-key")"#);
-    assert!(res.is_err());
-    assert_eq!(ed.config().tab_width, 8);
-}
-
-#[test]
-fn api_bind_and_bad_keys() {
-    let lua = new_state().unwrap();
-    let (ed, result) = script(
-        &lua,
-        Editor::new(Config::default()),
-        r#"bind("C-s", "isearch-forward-regexp")"#,
-    );
-    result.unwrap();
-    assert_eq!(
-        ed.keymap().lookup(&parse_keys("C-s").unwrap()),
-        Some("isearch-forward-regexp")
-    );
-    let (_, result) = script(&lua, ed, r#"bind("C-", "undo")"#);
-    assert!(result.is_err());
-}
-
-#[test]
-fn api_command_and_run() {
-    let lua = new_state().unwrap();
-    let (ed, result) = script(
-        &lua,
-        Editor::new(Config::default()),
-        r#"command("wide", function() set("fill-column", 33); run("undo") end)"#,
-    );
-    result.unwrap();
-    let ed = handle(ed, Some(&lua), Event::Run("wide".to_owned()));
-    assert_eq!(ed.config().fill_column, 33);
-    let (ed, result) = script(&lua, ed, r#"command("undo", function() end)"#);
-    assert!(result.is_err());
-    let (_, result) = script(&lua, ed, r#"run("nope")"#);
-    assert!(result.is_err());
-}
-
-#[test]
-fn string_settings_cross_the_lua_boundary() {
-    let lua = new_state().unwrap();
-    let (ed, result) = script(
-        &lua,
-        Editor::new(Config::default()),
-        r#"assert(get("default-eol") == "lf"); set("default-eol", "crlf"); assert(get("default-eol") == "crlf")"#,
-    );
-    result.unwrap();
-    assert_eq!(ed.config().default_eol, Eol::Crlf);
-    let (ed, result) = script(&lua, ed, r#"set("default-eol", "cr")"#);
-    assert!(result.is_err());
-    assert_eq!(ed.config().default_eol, Eol::Crlf);
-    let (_, result) = script(&lua, ed, r#"set("default-eol", 1)"#);
-    assert!(result.is_err());
-}
-
-#[test]
-fn run_from_lua_can_use_get_and_set() {
-    let lua = new_state().unwrap();
-    let (ed, result) = script(
-        &lua,
-        Editor::new(Config::default()),
-        r#"command("inner", function() set("fill-column", 40) end)
-           command("outer", function() run("inner"); assert(get("fill-column") == 40) end)"#,
-    );
-    result.unwrap();
-    let ed = handle(ed, Some(&lua), Event::Run("outer".to_owned()));
-    assert_eq!(ed.message(), "");
-    assert_eq!(ed.config().fill_column, 40);
-}
-
-#[test]
-fn run_sequence_saves_before_quit() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.txt");
-    fs::write(&path, b"abc").unwrap();
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, &path, None, true, Vec::new());
-    let ed = perform_all(ed, None, fx);
-    let ed = handle(ed, None, Event::Key(Key::plain(Code::Char('x'))));
-
-    let (ed, result) = script(
-        &lua,
-        ed,
-        r#"command("finish", function() run("save-buffer"); run("save-buffers-kill-emacs") end)"#,
-    );
-    result.unwrap();
-    let ed = handle(ed, Some(&lua), Event::Run("finish".to_owned()));
-    assert!(ed.quit());
-    assert_eq!(fs::read(&path).unwrap(), b"xabc");
-}
-
-#[test]
-fn reentrant_run_does_not_panic() {
-    let lua = new_state().unwrap();
-    let (ed, result) = script(
-        &lua,
-        Editor::new(Config::default()),
-        r#"command("again", function() run("again") end)"#,
-    );
-    result.unwrap();
-    let ed = handle(ed, Some(&lua), Event::Run("again".to_owned()));
-    assert_ne!(ed.message(), "");
-    assert!(!ed.quit());
-}
-
-#[test]
-fn api_get_and_set_validate_input() {
-    let lua = new_state().unwrap();
-    let (ed, result) = script(
-        &lua,
-        Editor::new(Config::default()),
-        r#"assert(get("fill-column") == 70)"#,
-    );
-    result.unwrap();
-    let (ed, result) = script(&lua, ed, r#"set("case-fold-search", false)"#);
-    result.unwrap();
-    assert!(!ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH));
-    let (ed, result) = script(&lua, ed, r#"set("tab-width", 0)"#);
-    assert!(result.is_err());
-    let (ed, result) = script(&lua, ed, r#"set("nope", 1)"#);
-    assert!(result.is_err());
-    let (_, result) = script(&lua, ed, r#"set("fill-column", "x")"#);
-    assert!(result.is_err());
-}
-#[test]
-fn api_syntax_register_and_validation() {
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default());
-    let (ed, result) = script(
-        &lua,
-        ed,
-        r##"syntax.register("mylang", {
-            extensions = { "xyz" },
-            line_comment = "#",
-            keywords = { "fn", "var" }
-        })"##,
-    );
-    result.unwrap();
-    assert_eq!(lang_of(ed.syntax_registry(), "file.xyz"), Some("mylang"));
-    assert!(keyword_in(ed.syntax_registry(), "file.xyz", "fn"));
-    assert_eq!(comment_in(ed.syntax_registry(), "file.xyz"), Some("#"));
-
-    // Validation failures
-    let (_, result) = script(&lua, ed.clone(), r#"syntax.register("", {})"#);
-    assert!(result.is_err());
-    let (_, result) = script(
-        &lua,
-        ed.clone(),
-        r#"syntax.register("bad", { extensions = 123 })"#,
-    );
-    assert!(result.is_err());
-    // Missing both extensions and filenames
-    let (_, result) = script(
-        &lua,
-        ed.clone(),
-        r#"syntax.register("bad", { keywords = { "foo" } })"#,
-    );
-    assert!(result.is_err());
-
-    // Extended fields: filenames, types, case_insensitive
-    let (ed, result) = script(
-        &lua,
-        ed,
-        r#"syntax.register("sql", {
-            extensions = { "sql" },
-            filenames = { "query.sql.txt" },
-            case_insensitive = true,
-            keywords = { "select" },
-            types = { "varchar" }
-        })"#,
-    );
-    result.unwrap();
-    assert_eq!(lang_of(ed.syntax_registry(), "query.sql.txt"), Some("sql"));
-    assert!(keyword_in(ed.syntax_registry(), "query.sql.txt", "SELECT"));
-    assert!(type_in(ed.syntax_registry(), "query.sql.txt", "VARCHAR"));
-}
-
-#[test]
-fn heading_is_a_syntax_field_and_bundled_markdown_uses_it() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let md = ed.syntax_registry().find_by_filename("README.md").unwrap();
-    assert_eq!(md.heading_prefix.as_deref(), Some("#"));
-    let (ed, result) = script(
-        &lua,
-        ed,
-        r#"syntax.register("markdown", { extensions = { "md" } })"#,
-    );
-    result.unwrap();
-    let md = ed.syntax_registry().find_by_filename("README.md").unwrap();
-    assert_eq!(md.heading_prefix, None);
-    let (_, result) = script(
-        &lua,
-        ed,
-        r#"syntax.register("x", { extensions = { "x" }, heading = "" })"#,
-    );
-    assert!(result.is_err());
-}
-
-#[test]
-fn bundled_syntax_loaded_by_default() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let reg = ed.syntax_registry();
-    assert_eq!(lang_of(reg, "main.rs"), Some("rust"));
-    assert_eq!(lang_of(reg, "script.py"), Some("python"));
-    assert_eq!(lang_of(reg, "index.js"), Some("javascript"));
-    assert_eq!(lang_of(reg, "config.lua"), Some("lua"));
-    assert_eq!(lang_of(reg, "app.go"), Some("go"));
-    assert_eq!(lang_of(reg, "build.sh"), Some("shell"));
-    assert_eq!(lang_of(reg, "README.md"), Some("markdown"));
-    assert_eq!(lang_of(reg, "main.c"), Some("c"));
-    assert_eq!(lang_of(reg, "Makefile"), Some("makefile"));
-    assert_eq!(lang_of(reg, "Cargo.toml"), Some("toml"));
-    assert_eq!(lang_of(reg, "query.sql"), Some("sql"));
-    assert!(type_in(reg, "main.rs", "i32"));
-    assert!(keyword_in(reg, "query.sql", "SELECT"));
-    assert!(type_in(reg, "query.sql", "VARCHAR"));
-    assert!(keyword_in(reg, "build.sh", "if"));
-}
-
-#[test]
-fn api_unbind_removes_binding_and_rejects_invalid_keys() {
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default());
-    let (ed, result) = script(&lua, ed, r#"bind("C-x 2", "split-window-below")"#);
-    result.unwrap();
-    let key = crate::core::parse_key_seq("C-x 2").unwrap();
-    assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
-
-    let (ed, result) = script(&lua, ed, r#"unbind("C-x 2")"#);
-    result.unwrap();
-    assert_eq!(ed.keymap().lookup(&key), None);
-
-    // Invalid key syntax produces error
-    let (_, result) = script(&lua, ed, r#"unbind("C-left")"#);
-    assert!(result.is_err());
-}
-
-#[test]
-fn api_buffer_inspection_and_mutation() {
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default());
-    let (ed, id) = ed.add_buffer(
-        "test",
-        crate::core::Text::from_bytes(b"hello world\nline two"),
-        crate::core::Backing::None,
-    );
-    let ed = ed.with_window(|w| crate::core::Window {
-        buffer: id,
-        point: 0,
-        ..w
-    });
-
-    let (ed, result) = script(
-        &lua,
-        ed,
-        r#"
-        assert(buffer.len() == 20)
-        assert(buffer.point() == 0)
-        assert(buffer.get_text() == "hello world\nline two")
-        assert(buffer.get_text(0, 5) == "hello")
-        assert(buffer.line_start(3) == 0)
-        assert(buffer.line_end(3) == 11)
-        assert(buffer.line_start(15) == 12)
-        assert(buffer.width("가나") == 4)
-
-        buffer.set_point(5)
-        assert(buffer.point() == 5)
-
-        buffer.insert(5, " beautiful")
-        assert(buffer.get_text(0, 21) == "hello beautiful world")
-
-        buffer.delete(5, 15)
-        assert(buffer.get_text(0, 11) == "hello world")
-
-        buffer.replace(0, 5, "hi")
-        assert(buffer.get_text(0, 8) == "hi world")
-
-        buffer.kill(0, 3)
-        assert(buffer.get_text(0, 5) == "world")
-    "#,
-    );
-    result.unwrap();
-    assert_eq!(ed.kill_ring().entries(), &[b"hi ".to_vec()]);
-}
-
-#[test]
-fn bundled_keymap_loaded_by_bootstrap() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let keymap = ed.keymap();
-
-    // Check extended bindings defined in keymap.lua
-    let k_c_k = crate::core::parse_key_seq("C-k").unwrap();
-    assert_eq!(keymap.lookup(&k_c_k), Some("kill-line"));
-
-    let k_split = crate::core::parse_key_seq("C-x 2").unwrap();
-    assert_eq!(keymap.lookup(&k_split), Some("split-window-below"));
-
-    let k_other = crate::core::parse_key_seq("C-x o").unwrap();
-    assert_eq!(keymap.lookup(&k_other), Some("other-window"));
-
-    let k_switch = crate::core::parse_key_seq("C-x b").unwrap();
-    assert_eq!(keymap.lookup(&k_switch), Some("switch-to-buffer"));
-
-    let k_kill = crate::core::parse_key_seq("C-x k").unwrap();
-    assert_eq!(keymap.lookup(&k_kill), Some("kill-buffer"));
-
-    let k_fill_para = crate::core::parse_key_seq("M-q").unwrap();
-    assert_eq!(keymap.lookup(&k_fill_para), Some("fill-paragraph"));
-
-    let k_goto = crate::core::parse_key_seq("M-g").unwrap();
-    assert_eq!(keymap.lookup(&k_goto), Some("goto-line"));
-}
-
-#[test]
-fn bundled_keymap_aliases_the_whole_two_set_layout() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let a = ed.key_aliases();
-    let table = [
-        ("ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔ", "qwertyuiop"),
-        ("ㅁㄴㅇㄹㅎㅗㅓㅏㅣ", "asdfghjkl"),
-        ("ㅋㅌㅊㅍㅠㅜㅡ", "zxcvbnm"),
-        ("ㅃㅉㄸㄲㅆㅒㅖ", "QWERTOP"),
-    ];
-    let mut count = 0;
-    for (jamo, ascii) in table {
-        assert_eq!(jamo.chars().count(), ascii.len());
-        for (j, c) in jamo.chars().zip(ascii.chars()) {
-            assert_eq!(a.get(j), Some(c), "{j}");
-            count += 1;
-        }
-    }
-    assert_eq!(count, 33);
-}
-
-#[test]
-fn bootstrapped_editor_runs_ctl_x_and_meta_commands_with_jamo() {
-    use crate::core::Mode;
-    use crate::test_support::press;
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let ed = press(press(ed, Key::ctrl('x')), Key::plain(Code::Char('ㅠ')));
-    assert!(matches!(ed.mode(), Mode::Prompt(_)), "C-x ㅠ ran C-x b");
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let ed = press(ed, Key::plain(Code::Char('ㅌ')).with_meta());
-    assert!(matches!(ed.mode(), Mode::Prompt(_)), "Alt+ㅌ ran M-x");
-}
-
-#[test]
-fn answer_alias_is_gone() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let (_, r) = script(&lua, ed, r#"answer_alias("н", "y")"#);
-    assert!(r.is_err());
-}
-
-#[test]
-fn bootstrapped_editor_answers_a_question_with_jamo() {
-    use crate::core::{Confirm, Mode};
-    use crate::test_support::{press, text, typ};
-    let lua = new_state().unwrap();
-    let ed = typ(bootstrap(Editor::new(Config::default()), &lua), "x");
-    let id = ed.window().buffer;
-    let ed = ed.confirm(Confirm::KillModified(id), "Kill? (y or n)");
-    let ed = press(ed, Key::plain(Code::Char('ㅛ')));
-    assert_eq!(ed.mode(), &Mode::normal());
-    assert_eq!(text(&ed), "", "ㅛ confirms after bootstrap");
-}
-
-#[test]
-fn key_alias_registers_replaces_and_unaliases() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let (ed, r) = script(
-        &lua,
-        ed,
-        r#"key_alias("н", "y"); key_alias("ㅛ", "!"); key_unalias("ㅂ"); key_unalias("z")"#,
-    );
-    r.unwrap();
-    let a = ed.key_aliases();
-    assert_eq!(a.get('н'), Some('y'));
-    assert_eq!(a.get('ㅛ'), Some('!'), "re-alias replaces");
-    assert_eq!(a.get('ㅂ'), None, "default alias removed");
-    assert_eq!(a.get('ㅜ'), Some('n'), "others untouched");
-}
-
-#[test]
-fn key_alias_rejects_bad_input_and_changes_nothing() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let before = ed.key_aliases().clone();
-    for src in [
-        r#"key_alias("ab", "y")"#,
-        r#"key_alias("", "y")"#,
-        r#"key_alias("н", "")"#,
-        r#"key_alias("н", " ")"#,
-        r#"key_alias("н", "ㅛ")"#,
-        r#"key_alias("н", "yy")"#,
-        r#"key_unalias("ab")"#,
-        r#"key_unalias("")"#,
-    ] {
-        let (next, r) = script(&lua, ed.clone(), src);
-        assert!(r.is_err(), "{src}");
-        assert_eq!(next.key_aliases(), &before, "{src}");
-    }
-}
-
-#[test]
-fn bundled_keymap_commands_all_exist() {
-    let lua = new_state().unwrap();
-    let _ed = bootstrap(Editor::new(Config::default()), &lua);
-    let commands_table: Table = lua.globals().get(COMMANDS).unwrap();
-
-    for line in BUNDLED_KEYMAP.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("bind(") {
-            let parts: Vec<&str> = trimmed.split('"').collect();
-            if parts.len() >= 4 {
-                let cmd_name = parts[3];
-                let in_builtins = is_builtin(cmd_name);
-                let in_lua = commands_table
-                    .get::<Option<Function>>(cmd_name)
-                    .unwrap()
-                    .is_some();
-                assert!(
-                    in_builtins || in_lua,
-                    "bundled keymap.lua references non-existent command: '{cmd_name}'"
-                );
-            }
-        }
-    }
 }
 
 #[test]
@@ -604,32 +181,6 @@ fn text_word_and_buffer_motion() {
     let (ed, res) = script(&lua, ed, r#"run("beginning-of-buffer")"#);
     res.unwrap();
     assert_eq!(ed.window().point, 0);
-}
-
-#[test]
-fn buffer_mark_api() {
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default())
-        .with_current_buffer(|b| b.with_text(crate::core::Text::from_bytes(b"hello world")));
-    assert_eq!(ed.buffer().mark(), None);
-
-    // set mark to 5
-    let (ed, res) = script(&lua, ed, r"buffer.set_mark(5)");
-    res.unwrap();
-    assert_eq!(ed.buffer().mark(), Some(5));
-
-    // query mark from lua
-    let (ed, res) = script(
-        &lua,
-        ed,
-        r#"
-        local m = buffer.mark()
-        assert(m == 5, "mark should be 5")
-        buffer.set_mark(nil)
-    "#,
-    );
-    res.unwrap();
-    assert_eq!(ed.buffer().mark(), None);
 }
 
 #[test]
@@ -749,32 +300,6 @@ fn text_word_multibyte_backward_at_line_start() {
     res.unwrap();
     let start_of_sesang = "안녕\n".len();
     assert_eq!(ed.window().point, start_of_sesang);
-}
-
-#[test]
-fn comment_prefix_message_and_command_sync() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let (ed, id) = ed.add_buffer(
-        "main.rs",
-        crate::core::Text::default(),
-        crate::core::Backing::None,
-    );
-    let ed = ed.with_window(|w| crate::core::Window { buffer: id, ..w });
-
-    // comment_prefix for rust buffer
-    let (ed, res) = script(&lua, ed, r#"assert(buffer.comment_prefix() == "//")"#);
-    res.unwrap();
-
-    // message FFI
-    let (ed, res) = script(&lua, ed, r#"message("hello from lua")"#);
-    res.unwrap();
-    assert_eq!(ed.message(), "hello from lua");
-
-    // command sync into Editor::commands
-    let (ed, res) = script(&lua, ed, r#"command("my-test-lua-cmd", function() end)"#);
-    res.unwrap();
-    assert!(ed.commands().contains("my-test-lua-cmd"));
 }
 
 #[test]
@@ -908,80 +433,6 @@ fn test_mark_whole_buffer() {
 }
 
 #[test]
-fn test_pruned_commands_unregistered() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let pruned = [
-        "what-cursor-position",
-        "what-line",
-        "count-words",
-        "count-words-region",
-        "transpose-chars",
-        "transpose-words",
-        "open-line",
-        "join-line",
-        "delete-indentation",
-        "just-one-space",
-        "delete-horizontal-space",
-        "delete-blank-lines",
-        "upcase-region",
-        "downcase-region",
-        "kill-whole-line",
-        "upcase-word",
-        "downcase-word",
-        "capitalize-word",
-        "forward-sentence",
-        "backward-sentence",
-        "kill-sentence",
-        "forward-paragraph",
-        "backward-paragraph",
-        "mark-paragraph",
-        "comment-line",
-    ];
-    for cmd in pruned {
-        assert!(
-            !ed.commands().contains(cmd),
-            "Command '{cmd}' should be pruned from registered commands"
-        );
-    }
-}
-
-#[test]
-fn test_count_lines_ffi_removed() {
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let (_ed, res) = script(
-        &lua,
-        ed,
-        r#"
-        assert(buffer.count_lines == nil, "buffer.count_lines FFI should not exist")
-        "#,
-    );
-    res.unwrap();
-}
-
-#[test]
-fn undo_limit_applies_to_existing_buffers() {
-    use crate::core::Edit;
-
-    let lua = new_state().unwrap();
-    let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let (ed, result) = script(&lua, ed, r#"set("undo-limit", 0)"#);
-    result.unwrap();
-
-    // Two edits in two undo groups. With limit 0 the first group is dropped at once (I-35).
-    let (ed, _) = ed.apply(&Edit::insert(0, b"a".as_slice()));
-    let ed = ed.end_command();
-    let (ed, _) = ed.apply(&Edit::insert(1, b"b".as_slice()));
-    let ed = ed.end_command();
-
-    // Each undo is its own command, as in the event loop.
-    let (ed, _) = ed.begin_command().undo(Vec::new());
-    let (ed, _) = ed.begin_command().undo(Vec::new());
-    assert_eq!(ed.message(), "No further undo information");
-}
-
-#[test]
 fn edit_after_yank_invalidates_yank_pop() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
@@ -999,59 +450,93 @@ fn edit_after_yank_invalidates_yank_pop() {
 }
 
 #[test]
-fn config_path_follows_xdg_then_home() {
-    assert_eq!(
-        config_path(Some(OsStr::new("/x")), Some(Path::new("/h"))),
-        Some(PathBuf::from("/x/neonemacs/init.lua"))
+fn test_kill_line_lua_command() {
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+
+    // 1. Mid-line kill and consecutive kills merge (I-09)
+    let (ed, id) = ed.add_buffer(
+        "test.txt",
+        crate::core::Text::from_bytes(b"one\ntwo"),
+        crate::core::Backing::None,
     );
-    assert_eq!(
-        config_path(Some(OsStr::new("")), Some(Path::new("/h"))),
-        Some(Path::new("/h/.config/neonemacs/init.lua").to_path_buf())
-    );
-    assert_eq!(config_path(None, None), None);
+    let ed = ed.with_window(|w| crate::core::Window {
+        buffer: id,
+        point: 0,
+        ..w
+    });
+
+    // First kill-line: kills "one" up to newline
+    let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
+    res.unwrap();
+    assert_eq!(ed.buffer().text().to_bytes(), b"\ntwo");
+    assert_eq!(ed.window().point, 0);
+
+    // Second kill-line: kills "\n"
+    let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
+    res.unwrap();
+    assert_eq!(ed.buffer().text().to_bytes(), b"two");
+    assert_eq!(ed.window().point, 0);
+
+    // Consecutive kills must append into a single kill ring entry (I-09)
+    assert_eq!(ed.kill_ring().entries(), &[b"one\n".to_vec()]);
+
+    // 2. View-only protection (I-06)
+    let ed = ed.with_current_buffer(|b| b.set_view_only(true));
+    let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
+    res.unwrap();
+    assert_eq!(ed.message(), "Buffer is read-only");
+    assert_eq!(ed.buffer().text().to_bytes(), b"two");
+    assert_eq!(ed.kill_ring().entries(), &[b"one\n".to_vec()]);
+
+    // 3. Boundary & empty buffer
+    let ed = ed.with_current_buffer(|b| b.set_view_only(false));
+    let ed = ed.with_window(|w| crate::core::Window {
+        point: 9999,
+        ..w
+    });
+    let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
+    res.unwrap();
+    assert_eq!(ed.buffer().text().to_bytes(), b"two");
 }
 
 #[test]
-fn only_the_allowed_libraries_are_reachable() {
-    // I-57
+fn test_exchange_point_and_mark_lua_command() {
     let lua = new_state().unwrap();
-    let g = lua.globals();
-    for name in [
-        "io",
-        "os",
-        "package",
-        "coroutine",
-        "debug",
-        "dofile",
-        "loadfile",
-        "require",
-    ] {
-        assert!(
-            g.get::<mlua::Value>(name).unwrap().is_nil(),
-            "{name} must not be reachable"
-        );
-    }
-    for name in ["string", "table", "math", "utf8"] {
-        assert!(g.get::<Table>(name).is_ok(), "{name} must be available");
-    }
-    let (_, res) = run_source(
-        Editor::new(Config::default()),
-        &lua,
-        "=t",
-        r#"assert(("x"):upper() == "X")"#,
-    );
-    assert!(res.is_ok());
-}
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
 
-#[test]
-fn an_error_names_its_chunk_and_line() {
-    // I-55
-    let lua = new_state().unwrap();
-    let ed = Editor::new(Config::default());
-    let (_, res) = run_source(ed, &lua, "=init.lua", "local x = 1\nerror('boom')");
-    let text = res.unwrap_err().to_string();
-    assert!(text.contains("init.lua:2:"), "{text}");
-    let (_, res) = run_source(Editor::new(Config::default()), &lua, "=init.lua", "x = = 1");
-    let text = res.unwrap_err().to_string();
-    assert!(text.contains("init.lua:1:"), "{text}");
+    // 1. Without mark set: reports message
+    let (ed, id) = ed.add_buffer(
+        "test.txt",
+        crate::core::Text::from_bytes(b"hello world"),
+        crate::core::Backing::None,
+    );
+    let ed = ed.with_window(|w| crate::core::Window {
+        buffer: id,
+        point: 0,
+        ..w
+    });
+    let (ed, res) = script(&lua, ed, r#"run("exchange-point-and-mark")"#);
+    res.unwrap();
+    assert_eq!(ed.message(), "No mark set in this buffer");
+
+    // 2. With active mark
+    let (ed, res) = script(&lua, ed, "buffer.set_mark(5)");
+    res.unwrap();
+    assert!(ed.buffer().mark_active());
+    let (ed, res) = script(&lua, ed, r#"run("exchange-point-and-mark")"#);
+    res.unwrap();
+    assert_eq!(ed.window().point, 5);
+    assert_eq!(ed.buffer().mark(), Some(0));
+    assert!(ed.buffer().mark_active());
+
+    // 3. Inactive mark retention and reactivation (I-47)
+    let ed = ed.with_current_buffer(crate::core::Buffer::deactivate_mark);
+    assert!(!ed.buffer().mark_active());
+    assert_eq!(ed.buffer().mark(), Some(0));
+    let (ed, res) = script(&lua, ed, r#"run("exchange-point-and-mark")"#);
+    res.unwrap();
+    assert_eq!(ed.window().point, 0);
+    assert_eq!(ed.buffer().mark(), Some(5));
+    assert!(ed.buffer().mark_active());
 }

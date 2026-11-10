@@ -4,13 +4,13 @@ use crate::commands::buffer_window::{
     delete_other_windows, other_window, split_window_below, split_window_right,
 };
 use crate::commands::edit::{
-    delete_backward_char, delete_char, kill_line, kill_region, kill_ring_save, view_mode, yank,
+    delete_backward_char, delete_char, kill_region, kill_ring_save, view_mode, yank,
     yank_pop,
 };
 use crate::commands::file::{save_buffer_cmd, save_buffers_kill_emacs, toggle_eol};
 use crate::commands::load::revert_buffer;
 use crate::commands::motion::{
-    backward_char, exchange_point_and_mark, forward_char, move_beginning_of_line, move_end_of_line,
+    backward_char, forward_char, move_beginning_of_line, move_end_of_line,
     next_line, previous_line, recenter, set_mark_command,
 };
 use crate::commands::prompt::{
@@ -35,10 +35,6 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
     ("delete-char", delete_char as Builtin),
     ("delete-other-windows", delete_other_windows as Builtin),
     (
-        "exchange-point-and-mark",
-        exchange_point_and_mark as Builtin,
-    ),
-    (
         "execute-extended-command",
         execute_extended_command as Builtin,
     ),
@@ -53,7 +49,6 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
     ("isearch-forward", isearch_forward as Builtin),
     ("isearch-forward-regexp", isearch_forward_regexp as Builtin),
     ("kill-buffer", kill_buffer_cmd as Builtin),
-    ("kill-line", kill_line as Builtin),
     ("kill-region", kill_region as Builtin),
     ("kill-ring-save", kill_ring_save as Builtin),
     ("move-beginning-of-line", move_beginning_of_line as Builtin),
