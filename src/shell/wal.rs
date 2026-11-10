@@ -127,7 +127,7 @@ pub fn has_wal(path: &Path) -> bool {
 /// Writes buffer contents with its EOL and base `DiskState` to the WAL file `wp` atomically.
 fn write_at(wp: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
     let encoded = encode_wal(disk, eol, bytes);
-    crate::shell::atomic::atomic_write(wp, ".", ".wal.tmp", &encoded, None)
+    crate::shell::file::atomic_write(wp, ".", ".wal.tmp", &encoded, None)
 }
 
 /// Writes buffer contents with its EOL and base `DiskState` to WAL atomically via temp file.

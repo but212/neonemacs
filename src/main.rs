@@ -4,7 +4,7 @@ use neonemacs::shell::session::ShellSession;
 use neonemacs::shell::startup::{
     FileArg, Invocation, USAGE, init_source, open_files, parse_args, restore_scratch, start,
 };
-use neonemacs::shell::terminal_guard::TerminalGuard;
+use neonemacs::shell::terminal::TerminalGuard;
 use neonemacs::shell::wal;
 use std::env;
 use std::io::{self, Write};

@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             ed.mode(),
-            crate::mode::Mode::Confirm(q) if q.kind == Confirm::OverwriteFile {
+            crate::editor::Mode::Confirm(q) if q.kind == Confirm::OverwriteFile {
                 id,
                 path: PathBuf::from("other.txt")
             }
@@ -467,14 +467,14 @@ mod tests {
         // Unchanged on disk: written without asking.
         let (same, fx) = disk_checked(ed.clone(), target, &path, known(3), Vec::new());
         assert!(matches!(fx.as_slice(), [Effect::WriteFile { .. }]));
-        assert!(matches!(same.mode(), crate::mode::Mode::Normal { .. }));
+        assert!(matches!(same.mode(), crate::editor::Mode::Normal { .. }));
 
         // Changed on disk: the external-change question, not the overwrite one.
         let (changed, fx) = disk_checked(ed, target, &path, known(4), Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             changed.mode(),
-            crate::mode::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
+            crate::editor::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
         ));
     }
 
@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             ed.mode(),
-            crate::mode::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
+            crate::editor::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
         ));
     }
 

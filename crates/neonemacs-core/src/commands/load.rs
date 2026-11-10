@@ -1,7 +1,7 @@
 //! Opening and reading files: asking the shell to read, applying what it read (new buffer or
 //! revert), and applying what it found in a WAL (§8, docs/context.md §4.2).
 
-use crate::commands::buffer_window::switch_to;
+use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
 use crate::file::{Read, loaded_from};

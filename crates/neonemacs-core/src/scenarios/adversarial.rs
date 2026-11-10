@@ -1,8 +1,8 @@
 //! Adversarial stress and invariant tests for core commands (§3, §4, §6, §8, §9).
 //! Tests edge cases, hostile key sequences, mode transitions, and boundary conditions.
 
+use crate::commands::BUILTINS;
 use crate::commands::find;
-use crate::commands::table::BUILTINS;
 use crate::editor::{Mode, Prefix, Window};
 use crate::test_support::{editor, keys, point, set_mark, text, typ};
 

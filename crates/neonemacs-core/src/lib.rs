@@ -9,9 +9,6 @@ pub mod effect;
 mod eol;
 mod file;
 mod keymap;
-mod kill_ring;
-mod mode;
-mod registry;
 pub mod render;
 #[cfg(test)]
 mod scenarios;

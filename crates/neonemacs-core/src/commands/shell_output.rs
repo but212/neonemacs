@@ -3,7 +3,7 @@
 //!
 //! Also the outcome of loading `init.lua`, whose errors go to `*init-log*` (§12).
 
-use crate::commands::buffer_window::{split, switch_to};
+use crate::commands::basic::{split, switch_to};
 use crate::commands::prompt::prompt;
 use crate::editor::{Buffer, BufferId, Dir, Editor, Purpose};
 use crate::effect::{Effect, Effects, InitLoad};

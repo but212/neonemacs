@@ -15,21 +15,21 @@ use crate::effect::{Effect, WalTarget};
 use crate::eol::Eol;
 use crate::file::{Backing, FilePath};
 use crate::keymap::{KeyAliases, Keymap};
-pub use crate::kill_ring::KillRing;
-use crate::registry::CommandRegistry;
 use crate::syntax::SyntaxRegistry;
 use crate::text::Text;
 use crate::window::WindowManager;
 use documents::Documents;
 use interaction::Interaction;
+pub use documents::KillRing;
+pub use interaction::{
+    Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
+    QueryReplace, Question,
+};
+pub use settings::CommandRegistry;
 use settings::Settings;
 use std::path::{Path, PathBuf};
 
 pub use crate::buffer::{Buffer, BufferId};
-pub use crate::mode::{
-    Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
-    QueryReplace, Question,
-};
 pub use crate::text::snap_point as snap;
 pub use crate::window::{Dir, Layout, Window};
 
