@@ -19,8 +19,10 @@ pub use crate::core::effect::Recovered;
 /// Returns the WAL sibling file path: `.filename.wal`
 #[must_use]
 pub fn wal_path(path: &Path) -> PathBuf {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!(".{name}.wal"))
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(".wal");
+    path.with_file_name(name)
 }
 
 const fn eol_byte(eol: Eol) -> u8 {
@@ -255,6 +257,16 @@ mod tests {
 
         remove_wal(&target);
         assert!(!has_wal(&target));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_names_get_distinct_wal_paths() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = Path::new("d");
+        let a = dir.join(OsStr::from_bytes(b"a\xFF"));
+        let b = dir.join(OsStr::from_bytes(b"a\xFE"));
+        assert_ne!(wal_path(&a), wal_path(&b));
     }
 
     fn probe_dir() -> (tempfile::TempDir, PathBuf) {
