@@ -109,6 +109,7 @@ pub fn decode_wal(raw: &[u8], disk: DiskState) -> Option<Recovered> {
 }
 
 /// Checks if a valid WAL file exists for `path`.
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn has_wal(path: &Path) -> bool {
     let wp = wal_path(path);
@@ -176,6 +177,7 @@ pub fn scratch_path() -> Option<PathBuf> {
 ///
 /// # Errors
 /// Returns `io::Error` if reading file bytes fails or if WAL is corrupt or disk state mismatches.
+#[cfg(any(test, feature = "test-support"))]
 pub fn read_wal(path: &Path, disk: DiskState) -> io::Result<Recovered> {
     let wp = wal_path(path);
     let raw = fs::read(wp)?;
@@ -191,6 +193,7 @@ fn stale_of(wp: &Path) -> PathBuf {
 }
 
 /// Where an unusable WAL of `path` is kept: `.filename.wal.stale`.
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn stale_path(path: &Path) -> PathBuf {
     stale_of(&wal_path(path))

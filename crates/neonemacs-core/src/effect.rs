@@ -1,5 +1,6 @@
 //! What the core asks the shell to do (`Effect`) and what the shell reports back (`Event`).
-//! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15).
+//! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15), except that an interactive session answers
+//! `RunShell` and `ReloadInit` itself: a `RunShell` refused while another runs gets no `Event`.
 
 use crate::buffer::BufferId;
 use crate::config::ShellSpec;

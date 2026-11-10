@@ -146,7 +146,7 @@ Invariants about structure and types, which no user sees directly. The invariant
 | **I-02** | Gap buffer byte boundaries are strictly local and continuous | Data structure (`crates/neonemacs-core/src/text.rs`) |
 | **I-05** | A successful disk write records fresh metadata (`DiskState`) | Type (`Event::Written`) |
 | **I-14** | `neonemacs-core` never imports I/O crates: `mlua`, `crossterm` are not in its dependencies; `fs`, `process` are rejected by a text scan | Crate graph (`crates/neonemacs-core/Cargo.toml`); text scan for `std` (`crates/neonemacs-core/tests/purity.rs`) |
-| **I-15** | Every `Effect` is answered by exactly one `Event` | Type (`shell::perform`) |
+| **I-15** | Every `Effect` is answered by exactly one `Event`. Exception: an interactive session (`handle_interactive`) hands `RunShell` and `ReloadInit` to `ShellSession`; a `RunShell` refused because another one runs gets no `Event`, and one step never yields two of them | Type (`shell::perform`) + runtime (`handle_interactive`) |
 | **I-18** | Zero `&mut` in any `neonemacs-core` signature (parameters, returns, fields) | Text scan (`crates/neonemacs-core/tests/purity.rs`) |
 | **I-19** | The selected window index is strictly bounded: `selected < layout.leaf_count()` | Runtime (`WindowTree`) |
 | **I-20** | Any buffer id passed to `with_buffer` exists in the buffer pool | Runtime |

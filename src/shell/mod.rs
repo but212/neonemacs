@@ -20,7 +20,8 @@ use crate::core::effect::{Effect, Effects, Event, WalTarget, WalWrite};
 use crate::core::step;
 use mlua::Lua;
 use std::cell::RefCell;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
@@ -73,6 +74,12 @@ pub fn handle_interactive(
     let mut outcome = ShellOutcome::None;
     let mut sync_effects = Vec::new();
     for effect in effects {
+        if matches!(effect, Effect::RunShell { .. } | Effect::ReloadInit) {
+            debug_assert!(
+                matches!(outcome, ShellOutcome::None),
+                "one step yields at most one RunShell or ReloadInit (I-15)"
+            );
+        }
         match effect {
             Effect::RunShell { .. } if shell_busy => outcome = ShellOutcome::BusyRejected,
             Effect::RunShell { command, shell } => {
@@ -216,14 +223,61 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
     }
 }
 
+/// The most bytes of stdout or stderr that a shell command may produce before it is killed.
+const MAX_SHELL_OUTPUT: usize = 4 << 20;
+
 /// Runs `command` with the configured shell and returns its stdout followed by its stderr.
+/// A command that writes more than `MAX_SHELL_OUTPUT` bytes to either stream is killed.
 fn run_shell(command: &str, shell: &ShellSpec) -> Result<String, String> {
-    let output = Command::new(&shell.program)
+    run_shell_capped(command, shell, MAX_SHELL_OUTPUT)
+}
+
+/// Reads at most `cap + 1` bytes of `stream` on a thread and sends them with `index`.
+fn spawn_reader(
+    index: usize,
+    stream: impl Read + Send + 'static,
+    cap: usize,
+    tx: mpsc::Sender<(usize, Vec<u8>)>,
+) {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stream.take(cap as u64 + 1).read_to_end(&mut bytes);
+        let _ = tx.send((index, bytes));
+    });
+}
+
+fn run_shell_capped(command: &str, shell: &ShellSpec, cap: usize) -> Result<String, String> {
+    let mut child = Command::new(&shell.program)
         .args([shell.switch.as_str(), command])
-        .output();
-    let output = output.map_err(|e| format!("Cannot run command: {e}"))?;
-    let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
-    s.push_str(&String::from_utf8_lossy(&output.stderr));
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Cannot run command: {e}"))?;
+    let (tx, rx) = mpsc::channel();
+    // Both streams are `Some`: the command was spawned with `Stdio::piped()` for each.
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    spawn_reader(0, stdout, cap, tx.clone());
+    spawn_reader(1, stderr, cap, tx);
+    let mut parts = [Vec::new(), Vec::new()];
+    let mut too_long = false;
+    for (index, bytes) in rx {
+        if bytes.len() > cap {
+            // Do not wait for the other stream: a surviving descendant of the shell
+            // may hold its pipe open after the shell itself is killed.
+            too_long = true;
+            let _ = child.kill();
+            break;
+        }
+        parts[index] = bytes;
+    }
+    let _ = child.wait();
+    if too_long {
+        return Err(format!("Command output exceeds {cap} bytes; command killed"));
+    }
+    let mut s = String::from_utf8_lossy(&parts[0]).into_owned();
+    s.push_str(&String::from_utf8_lossy(&parts[1]));
     Ok(s)
 }
 
@@ -310,6 +364,19 @@ mod tests {
             lua_missing,
             Event::LuaDone(Err("No command named nope".to_owned()))
         );
+    }
+
+    #[test]
+    fn endless_shell_output_is_cut_off() {
+        let endless = if cfg!(windows) {
+            "for /L %i in (1,0,2) do @echo xxxxxxxx"
+        } else {
+            "yes"
+        };
+        let result = run_shell_capped(endless, &ShellSpec::default(), 1024);
+        assert!(matches!(result, Err(e) if e.contains("exceeds 1024 bytes")));
+        let ok = run_shell_capped("echo hi", &ShellSpec::default(), 1024);
+        assert!(matches!(ok, Ok(s) if s.starts_with("hi")));
     }
 
     #[test]
