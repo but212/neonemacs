@@ -4,6 +4,7 @@ use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
 use neonemacs::core::config::Config;
+use neonemacs::core::config::ShellSpec;
 use neonemacs::core::editor::Editor;
 use neonemacs::core::effect::Event;
 use neonemacs::core::keymap::parse_keys;
@@ -13,8 +14,23 @@ use neonemacs::shell::{ShellOutcome, handle_interactive, spawn_shell};
 use std::time::{Duration, Instant};
 
 #[test]
+fn an_unrunnable_shell_program_reports_an_error() {
+    let shell = ShellSpec {
+        program: "neonemacs-no-such-shell".to_owned(),
+        switch: "-c".to_owned(),
+    };
+    let task = spawn_shell("echo x".to_owned(), shell);
+    let res = task
+        .receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("background shell finishes in time");
+    let err = res.expect_err("the program does not exist");
+    assert!(err.starts_with("Cannot run command"), "{err}");
+}
+
+#[test]
 fn async_shell_spawns_and_receives_output() {
-    let task = spawn_shell("echo async_test_ok".to_owned());
+    let task = spawn_shell("echo async_test_ok".to_owned(), ShellSpec::default());
     // Wait for the background thread to finish
     let res = task
         .receiver
@@ -133,7 +149,7 @@ fn handle_interactive_rejects_concurrent_shell_command_when_busy() {
 
 #[test]
 fn active_shell_tracks_spinner_and_typed_notice() {
-    let task = spawn_shell("echo hi".to_owned());
+    let task = spawn_shell("echo hi".to_owned(), ShellSpec::default());
     let mut active = ActiveShell::new(task);
 
     // Initially plain spinner

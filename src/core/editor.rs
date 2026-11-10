@@ -1,4 +1,6 @@
-//! Editor state. `apply` is the single edit point: it enforces the read-only
+//! Editor state.
+//!
+//! `apply` is the single edit point: it enforces the read-only
 //! flag (I-06), records undo (§7), and moves every anchor to a boundary (I-01).
 //! Every transition takes the editor by value and returns the new one.
 
@@ -12,7 +14,7 @@ use crate::core::commands::CommandRegistry;
 use crate::core::config::Config;
 use crate::core::eol::Eol;
 use crate::core::file::{Backing, FilePath};
-use crate::core::keymap::Keymap;
+use crate::core::keymap::{KeyAliases, Keymap};
 pub use crate::core::kill_ring::KillRing;
 use crate::core::syntax::SyntaxRegistry;
 use crate::core::text::Text;
@@ -91,6 +93,20 @@ impl Editor {
         self
     }
 
+    /// Adds `note` after the message already shown, joined by `; `. The only place that joins
+    /// notices, so none replaces an earlier one (I-56).
+    #[must_use]
+    pub fn append_message(mut self, note: impl Into<String>) -> Self {
+        let note = note.into();
+        if self.interaction.message.is_empty() {
+            self.interaction.message = note;
+        } else {
+            self.interaction.message.push_str("; ");
+            self.interaction.message.push_str(&note);
+        }
+        self
+    }
+
     #[must_use]
     pub fn clear_message(mut self) -> Self {
         self.interaction.message.clear();
@@ -140,7 +156,7 @@ impl Editor {
     }
 
     #[must_use]
-    pub const fn set_config(mut self, config: Config) -> Self {
+    pub fn set_config(mut self, config: Config) -> Self {
         self.settings.config = config;
         self
     }
@@ -149,6 +165,19 @@ impl Editor {
     #[must_use]
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.settings.cwd = cwd;
+        self
+    }
+
+    #[must_use]
+    pub fn cwd(&self) -> &Path {
+        &self.settings.cwd
+    }
+
+    /// Takes the settings of `from` and keeps everything else: buffers, windows, kill ring, and
+    /// the interaction state (I-58).
+    #[must_use]
+    pub fn adopt_settings(mut self, from: Self) -> Self {
+        self.settings = from.settings;
         self
     }
 
@@ -229,6 +258,17 @@ impl Editor {
     #[must_use]
     pub fn with_keymap(mut self, f: impl FnOnce(Keymap) -> Keymap) -> Self {
         self.settings.keymap = f(self.settings.keymap);
+        self
+    }
+
+    #[must_use]
+    pub const fn key_aliases(&self) -> &KeyAliases {
+        &self.settings.key_aliases
+    }
+
+    #[must_use]
+    pub fn with_key_aliases(mut self, f: impl FnOnce(KeyAliases) -> KeyAliases) -> Self {
+        self.settings.key_aliases = f(self.settings.key_aliases);
         self
     }
 
@@ -368,7 +408,9 @@ impl Editor {
     pub fn add_buffer(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
         let (buffers, id) = self.documents.buffers.add(name, text, backing);
         self.documents.buffers = buffers;
-        (self, id)
+        let eol = self.settings.config.default_eol;
+        let ed = self.with_buffer(id, |b| b.set_eol(eol));
+        (ed, id)
     }
 
     /// Moves point to `pos`, snapped to a unit boundary (I-01).
@@ -432,13 +474,23 @@ mod tests {
     }
 
     #[test]
+    fn new_buffers_take_the_default_eol() {
+        let ed = Editor::new(Config {
+            default_eol: Eol::Crlf,
+            ..Config::default()
+        });
+        let (ed, id) = ed.add_buffer("n", Text::default(), Backing::None);
+        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
+    }
+
+    #[test]
     fn kill_ring_operations() {
         let kr = KillRing::new();
         assert!(kr.is_empty());
         assert_eq!(kr.len(), 0);
         assert_eq!(kr.last(), None);
 
-        let kr = kr.push(b"hello".to_vec());
+        let kr = kr.push(b"hello".to_vec(), 120);
         assert_eq!(kr.len(), 1);
         assert_eq!(kr.last(), Some(&b"hello"[..]));
 
@@ -446,7 +498,7 @@ mod tests {
         assert_eq!(kr.len(), 1);
         assert_eq!(kr.last(), Some(&b"hello world"[..]));
 
-        let kr = kr.push(b"second".to_vec());
+        let kr = kr.push(b"second".to_vec(), 120);
         assert_eq!(kr.len(), 2);
         assert_eq!(kr.last(), Some(&b"second"[..]));
 
@@ -468,12 +520,41 @@ mod tests {
         let ed = ed.set_quit(true);
         assert!(ed.quit());
 
-        let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec()));
+        let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec(), 120));
         assert_eq!(ed.kill_ring().last(), Some(&b"sample"[..]));
 
         let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());
         let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
         assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
+    }
+
+    #[test]
+    fn append_message_joins_notices_in_order() {
+        // I-56
+        let ed = Editor::new(Config::default()).append_message("first");
+        assert_eq!(ed.message(), "first");
+        let ed = ed.append_message("second").append_message("third");
+        assert_eq!(ed.message(), "first; second; third");
+    }
+
+    #[test]
+    fn adopt_settings_moves_settings_and_keeps_documents() {
+        // I-58
+        let ed = editor_with("kept").set_message("kept message");
+        let from = Editor::new(Config {
+            fill_column: 85,
+            ..Config::default()
+        })
+        .with_cwd(PathBuf::from("elsewhere"))
+        .with_keymap(|km| km.bind_str("C-x 9", "forward-char").unwrap())
+        .with_current_buffer(|b| b.with_text(Text::from_bytes(b"dropped")));
+        let ed = ed.adopt_settings(from);
+        assert_eq!(ed.config().fill_column, 85);
+        assert_eq!(ed.cwd(), Path::new("elsewhere"));
+        let key = crate::core::keymap::parse_key_seq("C-x 9").unwrap();
+        assert_eq!(ed.keymap().lookup(&key), Some("forward-char"));
+        assert_eq!(text(&ed), "kept");
+        assert_eq!(ed.message(), "kept message");
     }
 
     #[test]

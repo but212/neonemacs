@@ -41,9 +41,10 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
             result,
         } => commands::file_read(ed, target, path, result, fx),
         Event::WalRemoved => (ed, fx),
-        Event::WalProbed { path, line, probe } => commands::wal_probed(ed, path, line, probe, fx),
+        Event::WalProbed { path, line, probe } => commands::wal_probed(ed, &path, line, probe, fx),
         Event::ShellDone(result) => (commands::shell_done(ed, result), fx),
         Event::LuaDone(result) => (commands::lua_done(ed, result), fx),
+        Event::InitLoaded(load) => (commands::init_loaded(ed, load), fx),
     }
 }
 

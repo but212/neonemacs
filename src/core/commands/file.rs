@@ -1,10 +1,11 @@
-//! File operations: save check flow, reading, reverting, and confirmation (§8, ADR 0002).
+//! File operations: save check flow, reading, reverting, and confirmation (§8, docs/context.md §4.2).
 
 use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::core::effect::{self, Effect, Effects, ReadTarget, StatTarget, WalProbe};
 use crate::core::file::{Backing, DiskState, loaded_from};
 use crate::core::undo::Edit;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 /// Asks the shell to read `path` for a new buffer. The result comes back as `FileRead`.
@@ -50,7 +51,7 @@ fn quit_question(names: &[&str]) -> String {
     const SHOWN: usize = 3;
     let mut list = names[..names.len().min(SHOWN)].join(", ");
     if names.len() > SHOWN {
-        list.push_str(&format!(" +{}", names.len() - SHOWN));
+        let _ = write!(list, " +{}", names.len() - SHOWN);
     }
     format!("Modified: {list}; quit anyway? (y or n)")
 }
@@ -72,6 +73,7 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 }
 
 /// Applies the disk state the shell found for `path` (I-04).
+///
 /// - A save asks when the state differs from the one recorded at the read. A file created
 ///   after the buffer opened a missing path counts as a change.
 /// - A `write-file` to another path asks when a file exists there.
@@ -147,7 +149,7 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
     }
 }
 
-/// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-13).
+/// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-04).
 pub(crate) fn write_buffer(ed: &Editor, id: BufferId, fx: Effects) -> Effects {
     match ed.buffer_by_id(id).file_path() {
         Some(path) => write_to(ed, id, path.to_path_buf(), fx),
@@ -295,6 +297,7 @@ pub fn file_read(
     mut fx: Effects,
 ) -> (Editor, Effects) {
     let max_size = ed.config().max_file_size;
+    let default_eol = ed.config().default_eol;
     let file = ed.resolve_path(&path);
     match (target, result) {
         (ReadTarget::Open { line, show }, Ok(read)) => {
@@ -303,7 +306,7 @@ pub fn file_read(
                 let ed = if show { switch_to(ed, id) } else { ed };
                 return (ed, fx);
             }
-            match loaded_from(&file, read, max_size) {
+            match loaded_from(&file, read, max_size, default_eol) {
                 Ok(loaded) => {
                     let (mut ed, id) = ed.add_buffer(&name_of(&path), loaded.text, loaded.backing);
                     ed = ed.with_buffer(id, |b| b.set_eol(loaded.eol));
@@ -334,7 +337,8 @@ pub fn file_read(
             let ed = ed.set_message(format!("Revert failed: {} does not exist", path.display()));
             (ed, fx)
         }
-        (ReadTarget::Revert(id), Ok(read)) => match loaded_from(&file, read, max_size) {
+        (ReadTarget::Revert(id), Ok(read)) => match loaded_from(&file, read, max_size, default_eol)
+        {
             Ok(loaded) => {
                 let ed = ed
                     .with_buffer(id, |b| {
@@ -360,16 +364,16 @@ pub fn file_read(
 #[must_use]
 pub fn wal_probed(
     ed: Editor,
-    path: PathBuf,
+    path: &Path,
     line: Option<usize>,
     probe: WalProbe,
     fx: Effects,
 ) -> (Editor, Effects) {
-    let name = name_of(&path);
+    let name = name_of(path);
     let ed = match probe {
         WalProbe::Absent => ed,
         WalProbe::Valid(recovered) => ed
-            .restore_buffer_content(&path, &recovered.bytes, recovered.eol, line)
+            .restore_buffer_content(path, &recovered.bytes, recovered.eol, line)
             .set_message(format!("[Recovered {name} from WAL]")),
         WalProbe::Stale(Ok(kept)) => {
             ed.set_message(format!("Stale WAL kept as {}", name_of(&kept)))
@@ -604,12 +608,12 @@ mod tests {
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
     }
 
-    fn found(bytes: &[u8], disk: DiskState) -> Result<Read, String> {
-        Ok(Read::Found(RawFile {
+    fn found(bytes: &[u8], disk: DiskState) -> Read {
+        Read::Found(RawFile {
             len: bytes.len() as u64,
             disk,
             bytes: bytes.to_vec(),
-        }))
+        })
     }
 
     #[test]
@@ -624,7 +628,7 @@ mod tests {
             editor(),
             target,
             PathBuf::from("f.txt"),
-            found(b"abc", disk),
+            Ok(found(b"abc", disk)),
             Vec::new(),
         );
         assert_eq!(
@@ -639,7 +643,7 @@ mod tests {
 
     fn probed(probe: WalProbe) -> Editor {
         let ed = file_buffer(editor(), b"disk", Eol::Lf);
-        let (ed, fx) = wal_probed(ed, PathBuf::from("f.txt"), None, probe, Vec::new());
+        let (ed, fx) = wal_probed(ed, &PathBuf::from("f.txt"), None, probe, Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
         ed
     }
@@ -907,7 +911,7 @@ mod tests {
         let [Effect::StatDisk { target, path }] = fx.as_slice() else {
             panic!("expected StatDisk, got {fx:?}");
         };
-        (ed.clone(), *target, path.clone())
+        (ed, *target, path.clone())
     }
 
     #[test]

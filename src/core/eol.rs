@@ -11,19 +11,25 @@ pub enum Eol {
 impl Eol {
     /// Detects line ending mode via majority vote and normalizes CRLF pairs to LF in memory.
     ///
-    /// Pure LF or tie (including empty / no newlines) yields `Lf`.
+    /// A file without any line break takes `default`. Pure LF or a tie yields `Lf`.
     /// Strictly more CRLF pairs than lone LF yields `Crlf`.
     /// All CRLF pairs are normalized by stripping the `\r` immediately preceding `\n`.
     /// Standalone `\r` characters not followed by `\n` are preserved.
     #[must_use]
-    pub fn from_raw(raw: Vec<u8>) -> (Self, Vec<u8>) {
+    pub fn from_raw(raw: Vec<u8>, default: Self) -> (Self, Vec<u8>) {
         let lf = memchr_iter(b'\n', &raw).count();
         let crlf = raw
             .windows(2)
             .filter(|w| w[0] == b'\r' && w[1] == b'\n')
             .count();
         let lone_lf = lf.saturating_sub(crlf);
-        let eol = if crlf > lone_lf { Self::Crlf } else { Self::Lf };
+        let eol = if lf == 0 {
+            default
+        } else if crlf > lone_lf {
+            Self::Crlf
+        } else {
+            Self::Lf
+        };
 
         if crlf == 0 {
             return (eol, raw);
@@ -81,15 +87,28 @@ mod tests {
 
     #[test]
     fn pure_crlf_is_detected_and_normalized() {
-        let (eol, text) = Eol::from_raw(b"a\r\nb\r\n".to_vec());
+        let (eol, text) = Eol::from_raw(b"a\r\nb\r\n".to_vec(), Eol::Lf);
         assert_eq!(eol, Eol::Crlf);
         assert_eq!(text, b"a\nb\n");
     }
 
     #[test]
+    fn default_eol_applies_only_when_there_is_no_line_break() {
+        for raw in [&b"abc"[..], b""] {
+            let (eol, text) = Eol::from_raw(raw.to_vec(), Eol::Crlf);
+            assert_eq!(eol, Eol::Crlf);
+            assert_eq!(text, raw);
+        }
+        let (eol, _) = Eol::from_raw(b"a\nb\n".to_vec(), Eol::Crlf);
+        assert_eq!(eol, Eol::Lf);
+        let (eol, _) = Eol::from_raw(b"a\r\nb\r\n".to_vec(), Eol::Lf);
+        assert_eq!(eol, Eol::Crlf);
+    }
+
+    #[test]
     fn lf_files_are_kept_raw() {
         for raw in [&b"a\nb\n"[..], b"a\rb", b""] {
-            let (eol, text) = Eol::from_raw(raw.to_vec());
+            let (eol, text) = Eol::from_raw(raw.to_vec(), Eol::Lf);
             assert_eq!(eol, Eol::Lf);
             assert_eq!(text, raw);
         }
@@ -98,7 +117,7 @@ mod tests {
     #[test]
     fn majority_crlf_detected_and_normalized() {
         // 2 CRLF vs 1 LF -> CRLF mode, normalized text
-        let (eol, text) = Eol::from_raw(b"a\r\nb\r\nc\n".to_vec());
+        let (eol, text) = Eol::from_raw(b"a\r\nb\r\nc\n".to_vec(), Eol::Lf);
         assert_eq!(eol, Eol::Crlf);
         assert_eq!(text, b"a\nb\nc\n");
         assert_eq!(eol.encode(&text), b"a\r\nb\r\nc\r\n");
@@ -107,13 +126,13 @@ mod tests {
     #[test]
     fn majority_lf_or_tie_detected_and_normalized() {
         // 1 CRLF vs 1 LF -> tie -> LF mode, normalized text
-        let (eol, text) = Eol::from_raw(b"a\r\nb\n".to_vec());
+        let (eol, text) = Eol::from_raw(b"a\r\nb\n".to_vec(), Eol::Lf);
         assert_eq!(eol, Eol::Lf);
         assert_eq!(text, b"a\nb\n");
         assert_eq!(eol.encode(&text), b"a\nb\n");
 
         // 1 CRLF vs 2 LF -> LF mode, normalized text
-        let (eol, text) = Eol::from_raw(b"a\r\nb\nc\n".to_vec());
+        let (eol, text) = Eol::from_raw(b"a\r\nb\nc\n".to_vec(), Eol::Lf);
         assert_eq!(eol, Eol::Lf);
         assert_eq!(text, b"a\nb\nc\n");
         assert_eq!(eol.encode(&text), b"a\nb\nc\n");
@@ -127,7 +146,7 @@ mod tests {
 
     #[test]
     fn double_cr_before_lf_keeps_one_cr_in_text() {
-        let (eol, text) = Eol::from_raw(b"a\r\r\n".to_vec());
+        let (eol, text) = Eol::from_raw(b"a\r\r\n".to_vec(), Eol::Lf);
         assert_eq!(eol, Eol::Crlf);
         assert_eq!(text, b"a\r\n");
         assert_eq!(eol.encode(&text), b"a\r\r\n");
@@ -135,7 +154,7 @@ mod tests {
 
     #[test]
     fn standalone_cr_preserved_in_memory() {
-        let (eol, text) = Eol::from_raw(b"a\rb\r\n".to_vec());
+        let (eol, text) = Eol::from_raw(b"a\rb\r\n".to_vec(), Eol::Lf);
         assert_eq!(eol, Eol::Crlf);
         assert_eq!(text, b"a\rb\n");
         assert_eq!(eol.encode(&text), b"a\rb\r\n");
@@ -150,12 +169,12 @@ mod tests {
     #[test]
     fn pure_files_round_trip() {
         for pure_lf in [b"" as &[u8], b"a", b"a\nb\n", b"line1\nline2\n"] {
-            let (eol, text) = Eol::from_raw(pure_lf.to_vec());
+            let (eol, text) = Eol::from_raw(pure_lf.to_vec(), Eol::Lf);
             assert_eq!(eol, Eol::Lf);
             assert_eq!(eol.encode(&text), pure_lf);
         }
         for pure_crlf in [b"a\r\n" as &[u8], b"a\r\nb\r\n", b"\r\n\r\n"] {
-            let (eol, text) = Eol::from_raw(pure_crlf.to_vec());
+            let (eol, text) = Eol::from_raw(pure_crlf.to_vec(), Eol::Lf);
             assert_eq!(eol, Eol::Crlf);
             assert_eq!(eol.encode(&text), pure_crlf);
         }

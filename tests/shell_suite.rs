@@ -1,3 +1,3 @@
-//! Imperative Shell integration test runner (§2, ADR 0002).
+//! Imperative Shell integration test runner (§2, docs/context.md §4.1).
 
 mod shell;

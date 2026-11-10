@@ -1,10 +1,11 @@
 //! Screen model: window rectangles, per-cell grid, and line diffs (§5, §11, A5).
 //! `scroll` adjusts the view so point stays visible; `frame` is pure.
 
+use crate::core::config::Toggles;
 use crate::core::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::core::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::core::text::{Text, Unit};
-use crate::core::width::{char_width, column, unit_width};
+use crate::core::width::{Metrics, column, unit_width};
 
 /// A single terminal cell containing display glyph and syntax style (I-22).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,15 +130,14 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
 /// Moves each window's `top` and `left_col` so that its point is visible.
 #[must_use]
 pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
-    let tab = usize::from(ed.config().tab_width);
-    let windows: Vec<Window> = ed.windows().windows().into_iter().copied().collect();
-    let scrolled: Vec<Window> = windows
+    let m = ed.config().metrics();
+    let scrolled: Vec<Window> = ed
+        .windows()
+        .windows()
         .into_iter()
+        .copied()
         .zip(areas(&ed, cols, rows))
-        .map(|(w, area)| {
-            let text = ed.buffer_by_id(w.buffer).text();
-            scroll_window(text, w, area, tab)
-        })
+        .map(|(w, area)| scroll_window(ed.buffer_by_id(w.buffer).text(), w, area, m))
         .collect();
     ed.with_windows(|mut win| {
         for (i, w) in scrolled.into_iter().enumerate() {
@@ -147,7 +147,7 @@ pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
     })
 }
 
-fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
+fn scroll_window(text: &Text, mut w: Window, area: Rect, m: Metrics) -> Window {
     let height = area.h.saturating_sub(1).max(1);
     w.height = height;
     let width = area.w.max(1);
@@ -160,7 +160,7 @@ fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
     if index >= height {
         w.top = text.line_start(p);
     }
-    let col = column(text, p, tab);
+    let col = column(text, p, m);
     if col < w.left_col {
         w.left_col = col;
     } else if col >= w.left_col + width {
@@ -171,7 +171,7 @@ fn scroll_window(text: &Text, mut w: Window, area: Rect, tab: usize) -> Window {
 
 /// Builds the screen. Pure: call `scroll` first to bring point into view.
 pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
-    let tab = usize::from(ed.config().tab_width);
+    let m = ed.config().metrics();
     let mut grid = vec![vec![Cell::space(); cols]; rows];
     let leaves = ed.windows().windows();
     let mut cursor = (0, 0);
@@ -179,17 +179,22 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
 
     for (i, (w, area)) in leaves.into_iter().zip(areas(ed, cols, rows)).enumerate() {
         let buf = ed.buffer_by_id(w.buffer);
-        let syntax = ed.syntax_registry().find_by_filename(buf.name());
+        let syntax = ed
+            .config()
+            .toggles
+            .contains(Toggles::SYNTAX_HIGHLIGHT)
+            .then(|| ed.syntax_registry().find_by_filename(buf.name()))
+            .flatten();
         let marks = if i == ed.windows().selected() {
             reversed.as_slice()
         } else {
             &[]
         };
-        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, tab, marks);
+        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, m, marks);
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
-        let status = fit(&status_text(buf, w.point, area.w, tab), area.w, '-');
+        let status = fit(&status_text(buf, w.point, area.w, m), area.w, '-', m);
         let status_cells: Vec<Cell> = status.into_iter().map(Cell::plain).collect();
         grid = put(
             grid,
@@ -206,22 +211,22 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         // While a prompt is shown, the cursor sits in the echo area and the tail of a long line stays visible.
         let message = match ed.mode() {
             Mode::Prompt(p) if ed.message() == p.echo() => {
-                let want = (p.cursor_width() + 1).saturating_sub(cols);
-                let (rest, skipped) = skip_cells(ed.message(), want);
-                let x = p.cursor_width().saturating_sub(skipped);
+                let want = (p.cursor_width(m) + 1).saturating_sub(cols);
+                let (rest, skipped) = skip_cells(ed.message(), want, m);
+                let x = p.cursor_width(m).saturating_sub(skipped);
                 cursor = (x.min(cols.saturating_sub(1)), rows - 1);
                 rest
             }
             // A pending prefix key shows until the sequence ends.
             Mode::Normal {
                 prefix: Prefix::CtlX,
-            } => "C-x-",
+            } if ed.config().toggles.contains(Toggles::ECHO_PREFIX) => "C-x-",
             Mode::Normal {
                 prefix: Prefix::Meta,
-            } => "ESC-",
+            } if ed.config().toggles.contains(Toggles::ECHO_PREFIX) => "ESC-",
             _ => ed.message(),
         };
-        let echo = fit(message, cols, ' ');
+        let echo = fit(message, cols, ' ', m);
         let echo_cells: Vec<Cell> = echo.into_iter().map(Cell::plain).collect();
         grid = put(grid, rows - 1, 0, echo_cells);
     }
@@ -244,36 +249,36 @@ fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -
 fn window_cells(
     syntax: Option<&SyntaxDef>,
     text: &Text,
-    w: &Window,
+    window: &Window,
     area: Rect,
-    tab: usize,
+    metrics: Metrics,
     marks: &[(usize, usize)],
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
-    let p = w.point.min(text.len());
+    let point = window.point.min(text.len());
     let mut cursor = (0, 0);
     let mut body = Vec::with_capacity(height);
-    let mut s = w.top;
-    for r in 0..height {
-        if s > text.len() {
+    let mut line_start = window.top;
+    for row in 0..height {
+        if line_start > text.len() {
             body.push(vec![Cell::space(); area.w]);
             continue;
         }
-        let e = text.line_end(s);
-        if s <= p && p <= e {
-            let col = column(text, p, tab).saturating_sub(w.left_col);
-            cursor = (r, col);
+        let line_end = text.line_end(line_start);
+        if line_start <= point && point <= line_end {
+            let col = column(text, point, metrics).saturating_sub(window.left_col);
+            cursor = (row, col);
         }
         body.push(line_cells(
             syntax,
             text,
-            s..e,
-            w.left_col,
+            line_start..line_end,
+            window.left_col,
             area.w,
-            tab,
+            metrics,
             marks,
         ));
-        s = e + 1;
+        line_start = line_end + 1;
     }
     (body, cursor)
 }
@@ -286,53 +291,56 @@ fn line_cells(
     line: std::ops::Range<usize>,
     left: usize,
     width: usize,
-    tab: usize,
+    metrics: Metrics,
     marks: &[(usize, usize)],
 ) -> Vec<Cell> {
     let (start, end) = (line.start, line.end);
     let mut cells = vec![Cell::space(); width];
     let right = left + width;
     let mut col = 0;
-    let mut p = start;
+    let mut pos = start;
     let mut cut = false;
 
     let line_bytes = text.bytes(start..end);
     let token_kinds = highlight_line(syntax, &line_bytes);
 
-    while p < end {
-        let Some((unit, n)) = text.unit_at(p) else {
+    while pos < end {
+        let Some((unit, len)) = text.unit_at(pos) else {
             break;
         };
         let style = token_kinds
-            .get(p - start)
+            .get(pos - start)
             .copied()
             .unwrap_or(TokenKind::Normal);
-        let reverse = marks.iter().any(|&(a, b)| a <= p && p < b);
+        let reverse = marks.iter().any(|&(from, to)| from <= pos && pos < to);
 
         if col >= right {
             cut = true;
             break;
         }
-        let w = unit_width(unit, col, tab);
-        if w == 0 {
+        let width_of_unit = unit_width(unit, col, metrics);
+        if width_of_unit == 0 {
             // Combining mark: attach to the cell before it.
             if col > left && col - left - 1 < width {
                 cells[col - left - 1].glyph.push(unit_char(unit));
             }
         } else {
-            for (k, g) in glyph(unit_char(unit), w).into_iter().enumerate() {
-                let c = col + k;
-                if c >= left && c < right {
-                    cells[c - left] = Cell {
-                        glyph: g,
+            for (offset, piece) in glyph(unit_char(unit), width_of_unit)
+                .into_iter()
+                .enumerate()
+            {
+                let cell_col = col + offset;
+                if cell_col >= left && cell_col < right {
+                    cells[cell_col - left] = Cell {
+                        glyph: piece,
                         style,
                         reverse,
                     };
                 }
             }
         }
-        col += w;
-        p += n;
+        col += width_of_unit;
+        pos += len;
     }
     if cut && width > 0 {
         cells[width - 1] = Cell::plain("$".to_owned());
@@ -372,7 +380,7 @@ fn glyph(c: char, w: usize) -> Vec<String> {
 
 /// The status line for a window `width` cells wide. Line and column are 1-based; the column is the display column.
 /// What does not fit is dropped in this order: the EOL mode, then the percentage.
-fn status_text(buf: &Buffer, point: usize, width: usize, tab: usize) -> String {
+fn status_text(buf: &Buffer, point: usize, width: usize, m: Metrics) -> String {
     let mark = if buf.modified() { "**" } else { "--" };
     let view = if buf.view_only() { " (view)" } else { "" };
     let percent = (point as u64 * 100)
@@ -381,7 +389,7 @@ fn status_text(buf: &Buffer, point: usize, width: usize, tab: usize) -> String {
     let text = buf.text();
     let p = point.min(text.len());
     let line = text.count_lines(0, p) + 1;
-    let col = column(text, p, tab) + 1;
+    let col = column(text, p, m) + 1;
     let head = format!("-{mark}-  {}{view}", buf.name());
     let eol = buf.eol().label();
     let pos = format!("{line}:{col}");
@@ -390,31 +398,31 @@ fn status_text(buf: &Buffer, point: usize, width: usize, tab: usize) -> String {
         format!("{head}  {pos}  {percent}%"),
     ]
     .into_iter()
-    .find(|s| text_width(s) <= width)
+    .find(|s| text_width(s, m) <= width)
     .unwrap_or_else(|| format!("{head}  {pos}"))
 }
 
 /// Drops leading characters until at least `cells` display columns are gone. Returns the rest and the columns dropped.
-fn skip_cells(s: &str, cells: usize) -> (&str, usize) {
+fn skip_cells(s: &str, cells: usize, m: Metrics) -> (&str, usize) {
     let mut skipped = 0;
     for (i, c) in s.char_indices() {
         if skipped >= cells {
             return (&s[i..], skipped);
         }
-        skipped += char_width(c);
+        skipped += m.char(c);
     }
     ("", skipped)
 }
 
-fn text_width(s: &str) -> usize {
-    s.chars().map(char_width).sum()
+fn text_width(s: &str, m: Metrics) -> usize {
+    s.chars().map(|c| m.char(c)).sum()
 }
 
 /// Fits `s` into `width` cells, padding with `fill`. Wide characters are not split.
-fn fit(s: &str, width: usize, fill: char) -> Vec<String> {
+fn fit(s: &str, width: usize, fill: char, m: Metrics) -> Vec<String> {
     let mut cells: Vec<String> = Vec::with_capacity(width);
     for c in s.chars() {
-        let w = char_width(c);
+        let w = m.char(c);
         if w == 0 {
             if let Some(last) = cells.last_mut() {
                 last.push(c);
@@ -486,10 +494,18 @@ mod tests {
 
     fn cells_of(s: &str, left: usize, width: usize) -> Vec<String> {
         let text = Text::from_bytes(s.as_bytes());
-        line_cells(None, &text, 0..text.len(), left, width, 8, &[])
-            .into_iter()
-            .map(|c| c.glyph)
-            .collect()
+        line_cells(
+            None,
+            &text,
+            0..text.len(),
+            left,
+            width,
+            Metrics { tab: 8, cjk: false },
+            &[],
+        )
+        .into_iter()
+        .map(|c| c.glyph)
+        .collect()
     }
 
     #[test]
@@ -547,6 +563,58 @@ mod tests {
         res.unwrap();
         let want: Vec<bool> = (0..10).map(|i| (4..7).contains(&i)).collect();
         assert_eq!(reversed(&drawn(ed, 10, 4), 0), want);
+    }
+
+    #[test]
+    fn echo_prefix_off_keeps_the_message_visible() {
+        let ed = Editor::new(Config {
+            toggles: Toggles::DEFAULT.difference(Toggles::ECHO_PREFIX),
+            ..Config::default()
+        })
+        .set_message("Wrote f");
+        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
+        assert_eq!(echo(keys(ed.clone(), "C-x")), "Wrote f");
+        assert_eq!(echo(keys(ed, "ESC")), "Wrote f");
+    }
+
+    #[test]
+    fn syntax_highlight_off_draws_every_cell_plain() {
+        let styled = |highlight: bool| {
+            let ed = Editor::new(Config {
+                toggles: if highlight {
+                    Toggles::DEFAULT
+                } else {
+                    Toggles::DEFAULT.difference(Toggles::SYNTAX_HIGHLIGHT)
+                },
+                ..Config::default()
+            })
+            .with_syntax_registry(|reg| {
+                reg.register(SyntaxDef::new(
+                    "t",
+                    vec!["t".to_owned()],
+                    vec![],
+                    None,
+                    vec!["let".to_owned()],
+                    vec![],
+                    false,
+                ))
+            });
+            let (ed, id) = ed.add_buffer(
+                "a.t",
+                Text::from_bytes(b"let x"),
+                crate::core::file::Backing::None,
+            );
+            let ed = ed.with_window(|w| Window {
+                buffer: id,
+                point: 0,
+                ..w
+            });
+            drawn(ed, 10, 4).rows[0]
+                .iter()
+                .any(|c| c.style != TokenKind::Normal)
+        };
+        assert!(styled(true));
+        assert!(!styled(false));
     }
 
     #[test]
@@ -661,10 +729,12 @@ mod tests {
             crate::core::file::Backing::None,
         );
         let end = buf.text().len();
-        assert!(status_text(&buf, end, 60, 8).contains("  2:10  "));
-        assert!(status_text(&buf, 0, 60, 8).contains("  1:1  "));
+        assert!(status_text(&buf, end, 60, Metrics { tab: 8, cjk: false }).contains("  2:10  "));
+        assert!(status_text(&buf, 0, 60, Metrics { tab: 8, cjk: false }).contains("  1:1  "));
         // Point past the end is clamped.
-        assert!(status_text(&buf, end + 99, 60, 8).contains("  2:10  "));
+        assert!(
+            status_text(&buf, end + 99, 60, Metrics { tab: 8, cjk: false }).contains("  2:10  ")
+        );
     }
 
     #[test]
@@ -685,7 +755,7 @@ mod tests {
             text,
             crate::core::file::Backing::None,
         );
-        let s = status_text(&buf, 5, 40, 8);
+        let s = status_text(&buf, 5, 40, Metrics { tab: 8, cjk: false });
         // 5 * 100 / 11 = 45%
         assert!(s.contains("45%"));
     }

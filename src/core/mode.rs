@@ -2,7 +2,7 @@
 
 use crate::core::buffer::BufferId;
 use crate::core::search::Pattern;
-use crate::core::width::char_width;
+use crate::core::width::Metrics;
 use std::path::PathBuf;
 
 /// Kind of a command, for commands that chain (§6, §7, I-09).
@@ -72,11 +72,11 @@ impl Prompt {
 
     /// Display column of the cursor in the echo area.
     #[must_use]
-    pub fn cursor_width(&self) -> usize {
+    pub fn cursor_width(&self, m: Metrics) -> usize {
         self.label
             .chars()
             .chain(self.before.chars())
-            .map(char_width)
+            .map(|c| m.char(c))
             .sum()
     }
 }

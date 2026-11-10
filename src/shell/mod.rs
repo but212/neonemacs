@@ -3,7 +3,7 @@
 //!
 //! The core returns effects, and this module performs them in order. Each one yields one event,
 //! which goes back to the core. A Lua command runs inside the event that started it: the `run`
-//! function in Lua calls back into the core synchronously, with no `RefCell` borrow held (I-17).
+//! function in Lua calls back into the core synchronously, with no `RefCell` borrow held (I-21).
 
 pub mod atomic;
 pub mod file;
@@ -14,6 +14,7 @@ pub mod terminal;
 pub mod terminal_guard;
 pub mod wal;
 
+use crate::core::config::ShellSpec;
 use crate::core::editor::Editor;
 use crate::core::effect::{Effect, Effects, Event};
 use crate::core::step;
@@ -35,21 +36,26 @@ pub enum ShellOutcome {
     None,
     Spawned(ShellTask),
     BusyRejected,
+    /// The caller must reload `init.lua`: only it can replace the Lua state.
+    ReloadInit,
 }
 
 /// Runs `command` in a background thread without blocking the editor UI (I-24).
 #[must_use]
-pub fn spawn_shell(command: String) -> ShellTask {
+pub fn spawn_shell(command: String, shell: ShellSpec) -> ShellTask {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let res = run_shell(&command);
+        let res = run_shell(&command, &shell);
         let _ = tx.send(res);
     });
     ShellTask { receiver: rx }
 }
 
-/// Applies `event` in an interactive session. Spawns `RunShell` in the background (I-24)
-/// while performing other effects immediately. If `shell_busy` is true, rejects new shell commands.
+/// Applies `event` in an interactive session.
+///
+/// Spawns `RunShell` in the background (I-24) while performing other effects immediately. If
+/// `shell_busy` is true, rejects new shell commands.
+/// `ReloadInit` is handed back to the caller, since the Lua state is borrowed here.
 #[must_use]
 pub fn handle_interactive(
     ed: Editor,
@@ -61,14 +67,13 @@ pub fn handle_interactive(
     let mut outcome = ShellOutcome::None;
     let mut sync_effects = Vec::new();
     for effect in effects {
-        if let Effect::RunShell { command } = effect {
-            if shell_busy {
-                outcome = ShellOutcome::BusyRejected;
-            } else {
-                outcome = ShellOutcome::Spawned(spawn_shell(command));
+        match effect {
+            Effect::RunShell { .. } if shell_busy => outcome = ShellOutcome::BusyRejected,
+            Effect::RunShell { command, shell } => {
+                outcome = ShellOutcome::Spawned(spawn_shell(command, shell));
             }
-        } else {
-            sync_effects.push(effect);
+            Effect::ReloadInit => outcome = ShellOutcome::ReloadInit,
+            effect => sync_effects.push(effect),
         }
     }
     let ed = perform_all(ed, lua, sync_effects);
@@ -77,7 +82,7 @@ pub fn handle_interactive(
         ShellOutcome::BusyRejected => {
             ed.set_message("[Running...] A shell command is already running")
         }
-        ShellOutcome::None => ed,
+        ShellOutcome::None | ShellOutcome::ReloadInit => ed,
     };
     (ed, outcome)
 }
@@ -126,7 +131,7 @@ pub fn step_in(cell: &RefCell<Option<Editor>>, event: Event) -> Effects {
 }
 
 /// Performs `effects` against the editor in `cell`. Each event goes back to the core.
-/// No `RefCell` borrow is held while an effect runs (I-17).
+/// No `RefCell` borrow is held while an effect runs (I-21).
 pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Effects) {
     for effect in effects {
         let event = perform(effect, lua);
@@ -136,9 +141,10 @@ pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Ef
 }
 
 /// Runs Lua source with the API bound to `ed`. Commands that `run` performs take effect as they do from a key.
-pub fn run_source(ed: Editor, lua: &Lua, source: &str) -> (Editor, mlua::Result<()>) {
+/// `name` is the chunk name that error messages show: `=init.lua` reads as `init.lua:<line>:` (I-55).
+pub fn run_source(ed: Editor, lua: &Lua, name: &str, source: &str) -> (Editor, mlua::Result<()>) {
     let cell = RefCell::new(Some(ed));
-    let result = lua::with_api(lua, &cell, |lua| lua.load(source).exec());
+    let result = lua::with_api(lua, &cell, |lua| lua.load(source).set_name(name).exec());
     (into_editor(cell), result)
 }
 
@@ -183,18 +189,18 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             path,
             line,
         },
-        Effect::RunShell { command } => Event::ShellDone(run_shell(&command)),
+        Effect::RunShell { command, shell } => Event::ShellDone(run_shell(&command, &shell)),
         Effect::RunLua { name } => Event::LuaDone(run_lua(lua, &name)),
+        // Reached from a Lua command, which runs inside the state that a reload would replace.
+        Effect::ReloadInit => Event::InitLoaded(None),
     }
 }
 
-/// Runs `command` with the platform shell and returns its stdout followed by its stderr.
-fn run_shell(command: &str) -> Result<String, String> {
-    let output = if cfg!(windows) {
-        Command::new("cmd").args(["/C", command]).output()
-    } else {
-        Command::new("sh").args(["-c", command]).output()
-    };
+/// Runs `command` with the configured shell and returns its stdout followed by its stderr.
+fn run_shell(command: &str, shell: &ShellSpec) -> Result<String, String> {
+    let output = Command::new(&shell.program)
+        .args([shell.switch.as_str(), command])
+        .output();
     let output = output.map_err(|e| format!("Cannot run command: {e}"))?;
     let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
     s.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -202,10 +208,10 @@ fn run_shell(command: &str) -> Result<String, String> {
 }
 
 fn run_lua(lua: Option<&Lua>, name: &str) -> Result<(), String> {
-    match lua {
-        Some(lua) => lua::call_lua(lua, name).map_err(|e| e.to_string()),
-        None => Err(format!("No command named {name}")),
-    }
+    lua.map_or_else(
+        || Err(format!("No command named {name}")),
+        |lua| lua::call_lua(lua, name).map_err(|e| e.to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -269,6 +275,7 @@ mod tests {
         let shell = perform(
             Effect::RunShell {
                 command: "echo hi".to_owned(),
+                shell: ShellSpec::default(),
             },
             None,
         );
@@ -283,5 +290,18 @@ mod tests {
             lua_missing,
             Event::LuaDone(Err("No command named nope".to_owned()))
         );
+    }
+
+    #[test]
+    fn reload_init_is_handed_to_the_session_and_refused_elsewhere() {
+        use crate::core::config::Config;
+        let ed = Editor::new(Config::default());
+        let (ed, outcome) =
+            handle_interactive(ed, None, Event::Run("reload-init".to_owned()), false);
+        assert!(matches!(outcome, ShellOutcome::ReloadInit));
+        assert_eq!(ed.message(), "");
+
+        let ed = handle(ed, None, Event::Run("reload-init".to_owned()));
+        assert_eq!(ed.message(), "reload-init: not available from Lua");
     }
 }

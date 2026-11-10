@@ -63,10 +63,10 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
         "width",
         scope.create_function(|_, s: mlua::LuaString| {
             let ed = editor_ref(cell);
-            let tab = usize::from(ed.config().tab_width);
+            let m = ed.config().metrics();
             let bytes = s.as_bytes();
             let lossy = String::from_utf8_lossy(&bytes);
-            Ok(crate::core::width::str_width(&lossy, tab))
+            Ok(crate::core::width::str_width(&lossy, m))
         })?,
     )?;
     buffer_table.set(

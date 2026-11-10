@@ -8,6 +8,7 @@ use crate::core::syntax::TokenKind;
 use crate::core::text::Text;
 use crate::shell::ShellTask;
 use crate::shell::lua;
+use crate::shell::startup::InitSource;
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent,
     MouseEventKind,
@@ -530,4 +531,108 @@ fn render_sized_caches_unchanged_rows_redraws_style_changes_and_handles_resize()
     let mut out_zero = Vec::new();
     session.render_sized(&mut out_zero, 0, 0).unwrap();
     session.render_sized(&mut out_zero, 1, 1).unwrap();
+}
+
+fn bound(session: &ShellSession, keys: &str) -> Option<String> {
+    session
+        .ed
+        .keymap()
+        .lookup(&crate::core::keymap::parse_key_seq(keys).unwrap())
+        .map(str::to_owned)
+}
+
+fn reload(session: &mut ShellSession, src: &str) {
+    session.reload_init(InitSource::Loaded(src.to_owned()));
+}
+
+#[test]
+fn reload_init_replaces_settings_and_keeps_documents() {
+    // I-58
+    let mut session = make_session();
+    session.handle_event(&press(KeyCode::Char('a'), KeyModifiers::NONE));
+    session.handle_event(&press(KeyCode::Char('b'), KeyModifiers::NONE));
+
+    reload(
+        &mut session,
+        "bind(\"C-x 9\", \"hello\")\nset(\"fill-column\", 85)\n\
+         command(\"hello\", function() message(\"hi\") end)",
+    );
+    assert_eq!(session.ed.message(), "Loaded init.lua");
+    assert_eq!(bound(&session, "C-x 9").as_deref(), Some("hello"));
+    assert_eq!(session.ed.config().fill_column, 85);
+    assert_eq!(session.ed.buffer().text().to_bytes(), b"ab");
+    assert!(session.ed.buffer().modified());
+
+    // The new Lua state holds the new command.
+    session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    session.handle_event(&press(KeyCode::Char('9'), KeyModifiers::NONE));
+    assert_eq!(session.ed.message(), "hi");
+
+    // A setting that the new file no longer makes is gone, as after a restart.
+    reload(&mut session, "");
+    assert_eq!(bound(&session, "C-x 9"), None);
+    assert_eq!(session.ed.config().fill_column, 70);
+    assert_eq!(
+        bound(&session, "C-x 2").as_deref(),
+        Some("split-window-below")
+    );
+
+    // The undo history survived both reloads.
+    session.handle_event(&press(KeyCode::Char('/'), KeyModifiers::CONTROL));
+    assert_eq!(session.ed.buffer().text().to_bytes(), b"");
+
+    session.reload_init(InitSource::Absent);
+    assert_eq!(session.ed.message(), "No init.lua");
+}
+
+#[test]
+fn a_failed_reload_keeps_the_previous_settings_and_commands() {
+    // I-54
+    let mut session = make_session();
+    reload(
+        &mut session,
+        "bind(\"C-x 9\", \"hello\")\ncommand(\"hello\", function() message(\"hi\") end)",
+    );
+
+    reload(
+        &mut session,
+        "bind(\"C-x 8\", \"forward-char\")\nunbind(\"C-x 9\")\nerror(\"boom\")",
+    );
+    assert!(
+        session.ed.message().starts_with("init.lua: ") && session.ed.message().contains("boom"),
+        "{}",
+        session.ed.message()
+    );
+    assert_eq!(bound(&session, "C-x 8"), None);
+    assert_eq!(bound(&session, "C-x 9").as_deref(), Some("hello"));
+    let log = session.ed.buffers().find_by_name("*init-log*").unwrap();
+    assert!(String::from_utf8_lossy(&log.text().to_bytes()).contains("init.lua:3:"));
+
+    session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    session.handle_event(&press(KeyCode::Char('9'), KeyModifiers::NONE));
+    assert_eq!(session.ed.message(), "hi");
+
+    session.reload_init(InitSource::Unreadable {
+        reason: "cannot read x".to_owned(),
+    });
+    assert_eq!(session.ed.message(), "init.lua: cannot read x");
+    assert_eq!(bound(&session, "C-x 9").as_deref(), Some("hello"));
+
+    // A later success empties the log.
+    reload(&mut session, "");
+    let log = session.ed.buffers().find_by_name("*init-log*").unwrap();
+    assert_eq!(log.text().to_bytes(), b"");
+}
+
+#[test]
+fn reload_init_from_lua_is_refused() {
+    let mut session = make_session();
+    reload(
+        &mut session,
+        "bind(\"C-x 9\", \"again\")\ncommand(\"again\", function() run(\"reload-init\") end)",
+    );
+    session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    session.handle_event(&press(KeyCode::Char('9'), KeyModifiers::NONE));
+    assert_eq!(session.ed.message(), "reload-init: not available from Lua");
+    assert_eq!(bound(&session, "C-x 9").as_deref(), Some("again"));
 }

@@ -12,6 +12,7 @@ use std::path::Path;
 
 /// Puts the unsaved text left in the scratch `slot` by an earlier run into the scratch buffer.
 /// An unusable slot is moved aside and reported (I-44). The notice follows an earlier message.
+#[must_use]
 pub fn restore_scratch(ed: Editor, slot: Option<&Path>) -> Editor {
     let Some(slot) = slot else {
         return ed;
@@ -28,11 +29,7 @@ pub fn restore_scratch(ed: Editor, slot: Option<&Path>) -> Editor {
         }
         WalProbe::Stale(Err(e)) => (ed, format!("Stale WAL for *scratch* not kept: {e}")),
     };
-    let message = match ed.message() {
-        "" => note,
-        earlier => format!("{earlier}; {note}"),
-    };
-    ed.set_message(message)
+    ed.append_message(note)
 }
 
 /// Opens one file in the background. Its notice (recovered, stale WAL, refused, unreadable) is
@@ -44,8 +41,9 @@ fn open_one(ed: Editor, lua: Option<&mlua::Lua>, arg: &FileArg) -> Editor {
 }
 
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
-/// The notices of all files are joined by `; `. Without any, the earlier message (for example an
-/// `init.lua` error) stays.
+///
+/// The notices of all files follow the earlier message (for example an `init.lua` error), joined
+/// by `; ` (I-56).
 pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Editor {
     let first_new = ed.buffers().len();
     let before = ed.message().to_owned();
@@ -58,11 +56,10 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
         }
     }
 
-    ed = ed.set_message(if notes.is_empty() {
-        before
-    } else {
-        notes.join("; ")
-    });
+    ed = ed.set_message(before);
+    for note in notes {
+        ed = ed.append_message(note);
+    }
 
     match ed.buffers().get(first_new).map(Buffer::id) {
         Some(id) => switch_to(ed, id),
@@ -330,6 +327,20 @@ mod tests {
         let ed = Editor::new(Config::default()).set_message("init.lua: boom");
         let ed = open_files(ed, None, &files);
         assert_eq!(ed.message(), "init.lua: boom");
+    }
+
+    #[test]
+    fn file_notices_follow_an_earlier_message() {
+        // I-56
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        fs::write(&path, "disk a").unwrap();
+        let disk = crate::shell::file::disk_state(&path);
+        wal::write_wal(&path, disk, Eol::Lf, b"recovered a").unwrap();
+        let files = vec![FileArg { path, line: None }];
+        let ed = Editor::new(Config::default()).set_message("init.lua: boom");
+        let ed = open_files(ed, None, &files);
+        assert_eq!(ed.message(), "init.lua: boom; [Recovered a.txt from WAL]");
     }
 
     #[test]

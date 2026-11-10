@@ -1,6 +1,6 @@
 //! Documents group: the buffers, the window layout, the kill ring, and the edit counter (I-32).
 //! `edit_seq` belongs here, so `Editor::apply` changes it in the same group it changes buffers
-//! and windows (I-33). Fields are visible only to `editor`.
+//! and windows (I-31). Fields are visible only to `editor`.
 
 use crate::core::buffer::BufferPool;
 use crate::core::kill_ring::KillRing;

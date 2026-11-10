@@ -1,11 +1,8 @@
 //! Entry point: terminal setup and restore, and the event loop (§5, §12, §13).
 
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::Editor;
-use neonemacs::shell::lua;
 use neonemacs::shell::session::ShellSession;
 use neonemacs::shell::startup::{
-    FileArg, Invocation, USAGE, load_init, open_files, parse_args, restore_scratch,
+    FileArg, Invocation, USAGE, init_source, open_files, parse_args, restore_scratch, start,
 };
 use neonemacs::shell::terminal_guard::TerminalGuard;
 use neonemacs::shell::wal;
@@ -13,10 +10,8 @@ use std::env;
 use std::io::{self, Write};
 
 fn run(files: &[FileArg]) -> io::Result<()> {
-    let lua = lua::new_state().map_err(|e| io::Error::other(e.to_string()))?;
-    let ed = Editor::new(Config::default()).with_cwd(env::current_dir()?);
-    let ed = lua::bootstrap(ed, &lua);
-    let ed = load_init(ed, &lua);
+    let (ed, lua) =
+        start(env::current_dir()?, init_source()).map_err(|e| io::Error::other(e.to_string()))?;
     let slot = wal::scratch_path();
     let ed = restore_scratch(ed, slot.as_deref());
     let ed = open_files(ed, Some(&lua), files);

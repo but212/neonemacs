@@ -385,6 +385,23 @@ impl BufferPool {
         self.buffers.iter().find(|b| b.name() == name)
     }
 
+    /// The buffer named `name` that visits no file: one that the editor fills itself, such as
+    /// `*init-log*`. A buffer that visits a file is never one, even when the file has that name.
+    #[must_use]
+    pub fn find_unbacked(&self, name: &str) -> Option<&Buffer> {
+        self.buffers
+            .iter()
+            .find(|b| b.name() == name && b.file_path().is_none())
+    }
+
+    /// The buffer that the name `name` means to the user. Among buffers with the same name, the
+    /// one without a file comes first: a file named like `*init-log*` must not hide the buffer
+    /// that the editor fills.
+    #[must_use]
+    pub fn find_named(&self, name: &str) -> Option<&Buffer> {
+        self.find_unbacked(name).or_else(|| self.find_by_name(name))
+    }
+
     /// Adds a buffer with an automatically assigned unique id. Ids are never reused.
     #[must_use]
     pub fn add(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
@@ -433,6 +450,7 @@ impl BufferPool {
     }
 
     /// Removes buffer `id`. If `id` was the only buffer, an empty `*scratch*` buffer is created first.
+    ///
     /// Returns the new pool and the `BufferId` of the replacement buffer that windows should switch to (I-08).
     ///
     /// # Panics

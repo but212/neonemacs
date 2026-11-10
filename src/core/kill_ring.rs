@@ -1,8 +1,5 @@
 //! The kill ring: killed text, newest last, with ring rotation for `yank-pop`.
 
-/// Most entries the kill ring keeps (I-26).
-pub const KILL_RING_MAX: usize = 120;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KillRing {
     entries: Vec<Vec<u8>>,
@@ -16,7 +13,7 @@ impl KillRing {
         }
     }
 
-    /// Builds a ring from entries without the `KILL_RING_MAX` check, so tests only (I-26).
+    /// Builds a ring from entries without the `max` check, so tests only (I-26).
     #[cfg(test)]
     #[must_use]
     pub const fn from_entries(entries: Vec<Vec<u8>>) -> Self {
@@ -28,13 +25,12 @@ impl KillRing {
         &self.entries
     }
 
-    /// Adds a new entry. Past `KILL_RING_MAX` the oldest entry is dropped first (I-26).
+    /// Adds a new entry, then drops the oldest entries until at most `max` remain (I-26).
     #[must_use]
-    pub fn push(mut self, bytes: Vec<u8>) -> Self {
-        if self.entries.len() == KILL_RING_MAX {
-            self.entries.remove(0);
-        }
+    pub fn push(mut self, bytes: Vec<u8>, max: usize) -> Self {
         self.entries.push(bytes);
+        let excess = self.entries.len().saturating_sub(max);
+        self.entries.drain(..excess);
         self
     }
 
@@ -79,12 +75,20 @@ mod tests {
 
     #[test]
     fn push_drops_oldest_past_max() {
+        let max = 120;
         let mut kr = KillRing::new();
-        for i in 0..=KILL_RING_MAX {
-            kr = kr.push(i.to_string().into_bytes());
+        for i in 0..=max {
+            kr = kr.push(i.to_string().into_bytes(), max);
         }
-        assert_eq!(kr.len(), KILL_RING_MAX);
+        assert_eq!(kr.len(), max);
         assert_eq!(kr.entries()[0], b"1".to_vec());
-        assert_eq!(kr.last(), Some(KILL_RING_MAX.to_string().as_bytes()));
+        assert_eq!(kr.last(), Some(max.to_string().as_bytes()));
+    }
+
+    #[test]
+    fn lowering_max_drops_oldest_entries_on_next_push() {
+        let kr = KillRing::from_entries(vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+        let kr = kr.push(b"d".to_vec(), 2);
+        assert_eq!(kr.entries(), &[b"c".to_vec(), b"d".to_vec()]);
     }
 }

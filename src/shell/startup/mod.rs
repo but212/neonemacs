@@ -5,7 +5,7 @@ mod init;
 mod open;
 
 pub use args::{FileArg, Invocation, USAGE, parse_args};
-pub use init::load_init;
+pub use init::{InitSource, configure, init_source, start};
 pub use open::{open_files, restore_scratch};
 
 #[cfg(test)]

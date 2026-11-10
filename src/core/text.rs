@@ -149,10 +149,7 @@ impl Text {
             }
             cp = cp << 6 | u32::from(b & 0x3F);
         }
-        match char::from_u32(cp) {
-            Some(c) => (Unit::Char(c), extra + 1),
-            None => (Unit::Raw(lead), 1),
-        }
+        char::from_u32(cp).map_or((Unit::Raw(lead), 1), |c| (Unit::Char(c), extra + 1))
     }
 
     /// Unit starting at `pos`, with its byte length. `None` at end.
@@ -268,11 +265,10 @@ impl Text {
             memchr::memrchr(b'\n', &left[..pos]).map_or(0, |i| i + 1)
         } else {
             let right_offset = pos - left_len;
-            if let Some(i) = memchr::memrchr(b'\n', &right[..right_offset]) {
-                left_len + i + 1
-            } else {
-                memchr::memrchr(b'\n', left).map_or(0, |i| i + 1)
-            }
+            memchr::memrchr(b'\n', &right[..right_offset]).map_or_else(
+                || memchr::memrchr(b'\n', left).map_or(0, |i| i + 1),
+                |i| left_len + i + 1,
+            )
         }
     }
 
@@ -285,20 +281,13 @@ impl Text {
         let left_len = left.len();
 
         if pos < left_len {
-            if let Some(i) = memchr::memchr(b'\n', &left[pos..]) {
-                pos + i
-            } else if let Some(i) = memchr::memchr(b'\n', right) {
-                left_len + i
-            } else {
-                len
-            }
+            memchr::memchr(b'\n', &left[pos..]).map_or_else(
+                || memchr::memchr(b'\n', right).map_or(len, |i| left_len + i),
+                |i| pos + i,
+            )
         } else {
             let right_offset = pos - left_len;
-            if let Some(i) = memchr::memchr(b'\n', &right[right_offset..]) {
-                pos + i
-            } else {
-                len
-            }
+            memchr::memchr(b'\n', &right[right_offset..]).map_or(len, |i| pos + i)
         }
     }
 }

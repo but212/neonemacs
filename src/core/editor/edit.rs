@@ -2,12 +2,10 @@
 //! to a buffer goes through it, so the read-only check, undo, and anchor moves stay in one place.
 
 use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
+use crate::core::config::Toggles;
 use crate::core::effect::{Effect, Effects};
 use crate::core::undo::Edit;
 use crate::core::width::column;
-
-/// Typed characters that share one undo group.
-const TYPED_GROUP: usize = 20;
 
 impl Editor {
     /// Applies `edit` to the buffer of the selected window. Returns the new editor and
@@ -72,12 +70,13 @@ impl Editor {
         if bytes.is_empty() {
             return ed;
         }
+        let max = ed.config().kill_ring_max;
         let ed = if ed.interaction.prev == LastCommand::Kill
             || ed.interaction.last == LastCommand::Kill
         {
             ed.with_kill_ring(|kr| kr.append_last(&bytes))
         } else {
-            ed.with_kill_ring(|kr| kr.push(bytes))
+            ed.with_kill_ring(|kr| kr.push(bytes, max))
         };
         ed.set_last(LastCommand::Kill)
     }
@@ -117,20 +116,25 @@ impl Editor {
         }
     }
 
-    /// Inserts a typed character at point. Up to `TYPED_GROUP` characters share an undo group.
+    /// Inserts a typed character at point. Up to `amalgamating-undo-limit` characters share an undo group.
     #[must_use]
     pub fn self_insert(mut self, c: char) -> Self {
         let count = match self.interaction.prev {
-            LastCommand::Insert { count } if count < TYPED_GROUP => count + 1,
+            LastCommand::Insert { count }
+                if count < self.settings.config.amalgamating_undo_limit =>
+            {
+                count + 1
+            }
             _ => {
                 self = self.boundary();
                 1
             }
         };
         let at = snap(self.buffer().text(), self.window().point);
-        let bytes = if c == '\t' && self.settings.config.expand_tabs {
-            let tab = usize::from(self.settings.config.tab_width);
-            let col = column(self.buffer().text(), at, tab);
+        let bytes = if c == '\t' && self.settings.config.toggles.contains(Toggles::EXPAND_TABS) {
+            let m = self.settings.config.metrics();
+            let tab = m.tab;
+            let col = column(self.buffer().text(), at, m);
             " ".repeat(tab - col % tab).into_bytes()
         } else {
             c.to_string().into_bytes()
@@ -169,12 +173,11 @@ impl Editor {
         for edit in group.edits().iter().rev() {
             let (next, applied) = ed.apply(&edit.inverse());
             ed = next;
-            match applied {
-                Some(d) => dropped += d,
-                None => {
-                    complete = false;
-                    break;
-                }
+            if let Some(d) = applied {
+                dropped += d;
+            } else {
+                complete = false;
+                break;
             }
         }
         let mut ed = ed.boundary();
@@ -518,9 +521,46 @@ mod tests {
         assert_eq!(ed.kill_ring().entries(), &[b"hello wonderful ".to_vec()]);
     }
 
+    #[test]
+    fn amalgamating_undo_limit_sets_the_typed_group_size() {
+        let ed = Editor::new(Config {
+            amalgamating_undo_limit: 2,
+            ..Config::default()
+        });
+        let ed = crate::test_support::typ(ed, "abcde");
+        let ed = crate::test_support::keys(ed, "C-/");
+        assert_eq!(ed.buffer().text().to_bytes(), b"abcd");
+        let ed = crate::test_support::keys(ed, "C-/");
+        assert_eq!(ed.buffer().text().to_bytes(), b"ab");
+    }
+
+    #[test]
+    fn kill_ring_max_setting_bounds_the_ring() {
+        let ed = Editor::new(Config {
+            kill_ring_max: 1,
+            ..Config::default()
+        });
+        let (ed, id) = ed.add_buffer(
+            "test",
+            crate::core::text::Text::from_bytes(b"ab"),
+            crate::core::editor::Backing::None,
+        );
+        let ed = ed.with_window(|w| Window {
+            buffer: id,
+            point: 0,
+            ..w
+        });
+        let ed = ed
+            .kill_range(0, 1)
+            .set_last(LastCommand::Other)
+            .set_last(LastCommand::Other)
+            .kill_range(0, 1);
+        assert_eq!(ed.kill_ring().entries(), &[b"b".to_vec()]);
+    }
+
     fn soft_tabs(s: &str) -> Editor {
         let config = Config {
-            expand_tabs: true,
+            toggles: Toggles::DEFAULT.union(Toggles::EXPAND_TABS),
             ..Config::default()
         };
         Editor::new(config).with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
@@ -552,7 +592,7 @@ mod tests {
     #[test]
     fn expand_tabs_follows_tab_width() {
         let config = Config {
-            expand_tabs: true,
+            toggles: Toggles::DEFAULT.union(Toggles::EXPAND_TABS),
             tab_width: 4,
             ..Config::default()
         };

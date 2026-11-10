@@ -50,12 +50,12 @@ pub(crate) fn previous_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 /// Moves to the goal column on the next or previous line.
 fn vertical(ed: Editor, down: bool) -> Editor {
-    let tab = usize::from(ed.config().tab_width);
+    let m = ed.config().metrics();
     let p = ed.window().point;
     let text = ed.buffer().text();
     let goal = match ed.prev() {
         LastCommand::Vertical { col } => col,
-        _ => column(text, p, tab),
+        _ => column(text, p, m),
     };
     let line = text.line_start(p);
     let target = if down {
@@ -64,7 +64,7 @@ fn vertical(ed: Editor, down: bool) -> Editor {
     } else {
         (line > 0).then(|| text.line_start(line - 1))
     };
-    let target_pos = target.map(|start| pos_at_column(text, start, goal, tab));
+    let target_pos = target.map(|start| pos_at_column(text, start, goal, m));
     let ed = if let Some(pos) = target_pos {
         ed.move_point(pos)
     } else {

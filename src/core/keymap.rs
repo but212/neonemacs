@@ -1,7 +1,7 @@
 //! Keys, their normalization from the terminal (I-12), the key-string parser,
 //! and the survival-set bindings (§3).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Code {
@@ -167,6 +167,73 @@ fn parse_key(tok: &str) -> Result<Key, KeyError> {
     Ok(if meta { key.with_meta() } else { key })
 }
 
+/// One ASCII graphic character (`!`..=`~`): what a key alias stands for (I-48).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AliasTarget(char);
+
+impl AliasTarget {
+    #[must_use]
+    pub const fn char(self) -> char {
+        self.0
+    }
+
+    /// Parses an alias target from its character.
+    ///
+    /// # Errors
+    /// Returns a message unless `s` is exactly one ASCII graphic character.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let mut chars = s.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii_graphic() => Ok(Self(c)),
+            _ => Err(format!(
+                "alias target must be one ASCII graphic character: '{s}'"
+            )),
+        }
+    }
+}
+
+/// Characters typed in another layout that stand for an ASCII key. Empty by default (I-48).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct KeyAliases(BTreeMap<char, AliasTarget>);
+
+impl KeyAliases {
+    /// Makes `from` mean `to`, replacing any earlier alias for `from`.
+    #[must_use]
+    pub fn alias(mut self, from: char, to: AliasTarget) -> Self {
+        self.0.insert(from, to);
+        self
+    }
+
+    /// Removes the alias for `from`. An absent alias is a no-op.
+    #[must_use]
+    pub fn unalias(mut self, from: char) -> Self {
+        self.0.remove(&from);
+        self
+    }
+
+    /// The character `c` stands for, by exact match.
+    #[must_use]
+    pub fn get(&self, c: char) -> Option<char> {
+        self.0.get(&c).map(|t| t.char())
+    }
+
+    /// `key` with its character replaced by its alias, modifiers kept. `None` when `key` is not
+    /// a character key or its character has no alias.
+    #[must_use]
+    pub fn rewrite(&self, key: Key) -> Option<Key> {
+        let Code::Char(c) = key.code else {
+            return None;
+        };
+        let to = self.get(c)?;
+        let base = if key.ctrl {
+            ctrl_key(to)
+        } else {
+            Key::plain(Code::Char(to))
+        };
+        Some(if key.meta { base.with_meta() } else { base })
+    }
+}
+
 /// Maps key sequences to command names.
 #[derive(Debug, Default, Clone)]
 pub struct Keymap {
@@ -303,6 +370,49 @@ mod tests {
 
         let unmapped = map.unbind(&key);
         assert_eq!(unmapped.lookup(&key), None);
+    }
+
+    fn target(s: &str) -> AliasTarget {
+        AliasTarget::parse(s).unwrap()
+    }
+
+    #[test]
+    fn alias_target_parses_one_ascii_graphic_character() {
+        for ok in ["a", "Z", "!", "~", "0"] {
+            assert_eq!(AliasTarget::parse(ok).unwrap().char().to_string(), ok);
+        }
+        for bad in ["", "ab", " ", "ㅛ", "\x7f", "\n", "é"] {
+            assert!(AliasTarget::parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn key_aliases_alias_replace_and_unalias() {
+        let a = KeyAliases::default();
+        assert_eq!(a.get('н'), None);
+        let a = a.alias('н', target("y"));
+        assert_eq!(a.get('н'), Some('y'));
+        let a = a.alias('н', target("n"));
+        assert_eq!(a.get('н'), Some('n'));
+        let a = a.unalias('н');
+        assert_eq!(a.get('н'), None);
+        assert_eq!(a.clone().unalias('н'), a, "absent alias is a no-op");
+    }
+
+    #[test]
+    fn rewrite_swaps_the_character_and_keeps_modifiers() {
+        let a = KeyAliases::default().alias('ㅠ', target("b"));
+        let key = |s: &str| parse_keys(s).unwrap()[0];
+        assert_eq!(a.rewrite(key("ㅠ")), Some(key("b")));
+        assert_eq!(a.rewrite(key("M-ㅠ")), Some(key("M-b")));
+        assert_eq!(
+            a.rewrite(key("C-ㅠ")),
+            Some(key("C-b")),
+            "ctrl form is normalized"
+        );
+        assert_eq!(a.rewrite(key("C-M-ㅠ")), Some(key("C-M-b")));
+        assert_eq!(a.rewrite(key("x")), None, "no alias");
+        assert_eq!(a.rewrite(key("RET")), None, "not a character key");
     }
 
     #[test]

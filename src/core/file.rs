@@ -163,12 +163,17 @@ impl TooLarge {
 ///
 /// # Errors
 /// Returns `TooLarge` if the raw file length exceeds `max_size`.
-pub fn loaded_from(path: &FilePath, read: Read, max_size: u64) -> Result<Loaded, TooLarge> {
+pub fn loaded_from(
+    path: &FilePath,
+    read: Read,
+    max_size: u64,
+    default_eol: Eol,
+) -> Result<Loaded, TooLarge> {
     match read {
         Read::Missing => Ok(Loaded {
             text: Text::default(),
             backing: Backing::file(path.clone(), DiskState::Unknown),
-            eol: Eol::default(),
+            eol: default_eol,
         }),
         Read::Found(raw) => {
             if raw.len > max_size {
@@ -177,7 +182,7 @@ pub fn loaded_from(path: &FilePath, read: Read, max_size: u64) -> Result<Loaded,
                     max: max_size,
                 });
             }
-            let (eol, text) = Eol::from_raw(raw.bytes);
+            let (eol, text) = Eol::from_raw(raw.bytes, default_eol);
             Ok(Loaded {
                 text: Text::from_vec(text),
                 backing: Backing::file(path.clone(), raw.disk),
@@ -207,6 +212,7 @@ mod tests {
             &FilePath::resolve(Path::new(""), Path::new("f")),
             read,
             max_size,
+            Eol::Lf,
         )
         .unwrap()
     }
@@ -269,9 +275,16 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_file_takes_the_default_eol() {
+        let path = FilePath::resolve(Path::new(""), Path::new("new.txt"));
+        let loaded = loaded_from(&path, Read::Missing, 4, Eol::Crlf).unwrap();
+        assert_eq!(loaded.eol, Eol::Crlf);
+    }
+
+    #[test]
     fn oversized_file_is_refused() {
         let big = FilePath::resolve(Path::new(""), Path::new("big.txt"));
-        let err = loaded_from(&big, found(10, b"0123"), 4).err();
+        let err = loaded_from(&big, found(10, b"0123"), 4, Eol::Lf).err();
         assert_eq!(err, Some(TooLarge { len: 10, max: 4 }));
     }
 

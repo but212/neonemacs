@@ -1,4 +1,6 @@
 //! Helpers shared by unit tests. Each one drives the editor the way the event loop does (§5, I-15).
+//!
+//! Unit tests always see them; integration tests need the `test-support` feature.
 
 use crate::core::config::Config;
 use crate::core::editor::Editor;

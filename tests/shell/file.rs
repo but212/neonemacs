@@ -27,7 +27,7 @@ fn oversized_file_is_refused_and_untouched() {
     fs::write(&path, b"0123456789").unwrap();
     let ed = editor().set_config(Config {
         max_file_size: 4,
-        ..*editor().config()
+        ..Config::default()
     });
     let count = ed.buffers().iter().count();
     let ed = visit(ed, &path);

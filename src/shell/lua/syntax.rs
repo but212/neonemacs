@@ -57,6 +57,14 @@ fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
     let keywords = parse_string_list(spec, "keywords")?;
     let types = parse_string_list(spec, "types")?;
     let case_insensitive: bool = spec.get("case_insensitive").unwrap_or(false);
+    let heading_prefix: Option<String> = spec
+        .get("heading")
+        .map_err(|_| mlua::Error::RuntimeError("heading must be a string".to_string()))?;
+    if heading_prefix.as_deref() == Some("") {
+        return Err(mlua::Error::RuntimeError(
+            "heading must not be empty".to_string(),
+        ));
+    }
 
     Ok(SyntaxDef::new(
         name,
@@ -66,5 +74,6 @@ fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
         keywords,
         types,
         case_insensitive,
-    ))
+    )
+    .with_heading_prefix(heading_prefix))
 }

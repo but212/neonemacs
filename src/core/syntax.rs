@@ -12,7 +12,7 @@ pub enum TokenKind {
     Number,
 }
 
-/// Definition of syntax highlighting rules for a language (I-27, I-28).
+/// Definition of syntax highlighting rules for a language (I-27, I-49).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SyntaxDef {
     pub name: String,
@@ -22,10 +22,13 @@ pub struct SyntaxDef {
     pub keywords: Vec<String>,
     pub types: Vec<String>,
     pub case_insensitive: bool,
+    /// A line starting with this prefix is a heading, drawn whole as a keyword. A definition with
+    /// a heading prefix does no other highlighting (I-49).
+    pub heading_prefix: Option<String>,
 }
 
 impl SyntaxDef {
-    /// Creates a validated and normalized `SyntaxDef` (I-28, I-29).
+    /// Creates a validated and normalized `SyntaxDef` (I-49, I-50).
     ///
     /// # Panics
     /// Panics if `name` is empty or if both `extensions` and `filenames` are empty.
@@ -42,7 +45,7 @@ impl SyntaxDef {
         assert!(!name.trim().is_empty(), "syntax name must not be empty");
         assert!(
             !extensions.is_empty() || !filenames.is_empty(),
-            "syntax spec must have at least one extension or filename (I-28)"
+            "syntax spec must have at least one extension or filename (I-49)"
         );
 
         if case_insensitive {
@@ -66,7 +69,14 @@ impl SyntaxDef {
             keywords,
             types,
             case_insensitive,
+            heading_prefix: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_heading_prefix(mut self, prefix: Option<String>) -> Self {
+        self.heading_prefix = prefix;
+        self
     }
 
     fn contains_word(&self, list: &[String], word: &str) -> bool {
@@ -78,13 +88,13 @@ impl SyntaxDef {
         }
     }
 
-    /// Checks if a word is a keyword using binary search in $O(\log K)$ (I-29).
+    /// Checks if a word is a keyword using binary search in $O(\log K)$ (I-50).
     #[must_use]
     pub fn is_keyword(&self, word: &str) -> bool {
         self.contains_word(&self.keywords, word)
     }
 
-    /// Checks if a word is a type using binary search in $O(\log T)$ (I-29).
+    /// Checks if a word is a type using binary search in $O(\log T)$ (I-50).
     #[must_use]
     pub fn is_type(&self, word: &str) -> bool {
         self.contains_word(&self.types, word)
@@ -122,7 +132,7 @@ impl SyntaxRegistry {
     }
 
     /// Finds the syntax definition matching the file or buffer name.
-    /// Priority (I-28): Exact basename match against `filenames` > extension match against `extensions`.
+    /// Priority (I-49): Exact basename match against `filenames` > extension match against `extensions`.
     #[must_use]
     pub fn find_by_filename<'a>(&'a self, name: &str) -> Option<&'a SyntaxDef> {
         let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
@@ -167,14 +177,14 @@ pub fn highlight_line(syntax: Option<&SyntaxDef>, line: impl AsRef<[u8]>) -> Vec
         return vec![TokenKind::Normal; bytes.len()];
     };
 
-    if syntax.name == "markdown" {
-        return highlight_markdown(bytes);
+    if let Some(prefix) = &syntax.heading_prefix {
+        return highlight_heading(bytes, prefix.as_bytes());
     }
 
     LineLexer::new(syntax, bytes).tokenize()
 }
 
-/// Single-line stateless lexer encapsulating tokenization rules (I-30).
+/// Single-line stateless lexer encapsulating tokenization rules (I-51).
 struct LineLexer<'a> {
     bytes: &'a [u8],
     syntax: &'a SyntaxDef,
@@ -318,16 +328,13 @@ impl<'a> LineLexer<'a> {
     }
 }
 
-fn highlight_markdown(bytes: &[u8]) -> Vec<TokenKind> {
-    let mut out = vec![TokenKind::Normal; bytes.len()];
-    if bytes.is_empty() {
-        return out;
-    }
-    // Headings starting with #
-    if bytes[0] == b'#' {
-        out.fill(TokenKind::Keyword);
-    }
-    out
+fn highlight_heading(bytes: &[u8], prefix: &[u8]) -> Vec<TokenKind> {
+    let kind = if bytes.starts_with(prefix) {
+        TokenKind::Keyword
+    } else {
+        TokenKind::Normal
+    };
+    vec![kind; bytes.len()]
 }
 
 const fn is_ident_start_byte(b: u8) -> bool {
@@ -342,7 +349,7 @@ const fn is_ident_byte(b: u8) -> bool {
 mod tests {
     use super::*;
 
-    /// The language name that `name` (a file or buffer name) resolves to (I-28).
+    /// The language name that `name` (a file or buffer name) resolves to (I-49).
     fn lang<'a>(reg: &'a SyntaxRegistry, name: &str) -> Option<&'a str> {
         reg.find_by_filename(name).map(|d| d.name.as_str())
     }
@@ -522,6 +529,37 @@ mod tests {
         let num_start = line.find("42").unwrap();
         assert_eq!(tokens[num_start], TokenKind::Number);
         assert_eq!(tokens[num_start + 1], TokenKind::Number);
+    }
+
+    fn heading_def(name: &str, prefix: Option<&str>) -> SyntaxDef {
+        SyntaxDef::new(
+            name,
+            vec!["md".to_string()],
+            Vec::new(),
+            None,
+            vec!["let".to_string()],
+            Vec::new(),
+            false,
+        )
+        .with_heading_prefix(prefix.map(str::to_owned))
+    }
+
+    #[test]
+    fn heading_prefix_colors_the_whole_line_and_nothing_else() {
+        let def = heading_def("notes", Some("#"));
+        let heading = highlight_line(Some(&def), "# let");
+        assert!(heading.iter().all(|t| *t == TokenKind::Keyword));
+        let other = highlight_line(Some(&def), "x # let");
+        assert!(other.iter().all(|t| *t == TokenKind::Normal));
+    }
+
+    #[test]
+    fn a_syntax_named_markdown_has_no_special_case_without_heading_prefix() {
+        let def = heading_def("markdown", None);
+        let heading = highlight_line(Some(&def), "# x");
+        assert!(heading.iter().all(|t| *t == TokenKind::Normal));
+        let kw = highlight_line(Some(&def), "let");
+        assert!(kw.iter().all(|t| *t == TokenKind::Keyword));
     }
 
     #[test]

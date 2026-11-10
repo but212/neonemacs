@@ -1,6 +1,7 @@
 //! Incremental search and interactive query-replace commands (§9).
 
 use crate::core::commands::prompt::prompt;
+use crate::core::config::Toggles;
 use crate::core::dispatch::answer_char;
 use crate::core::editor::{
     Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
@@ -105,7 +106,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
             return (ed.set_message(format!("Invalid regexp: {e}")), s);
         }
     };
-    let fold = ed.config().case_fold_search;
+    let fold = ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH);
     let mut wrapped = false;
     let text = ed.buffer().text();
     let mut found = if !wrap && s.direction == Direction::Backward && from <= text.len() {
@@ -116,7 +117,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     } else {
         find_in_direction(&ed, &pattern, s.direction, from, fold)
     };
-    if found.is_none() && wrap {
+    if found.is_none() && wrap && ed.config().toggles.contains(Toggles::ISEARCH_WRAP) {
         let other_end = if s.direction == Direction::Forward {
             0
         } else {
@@ -178,7 +179,7 @@ pub fn start_query_replace(
         },
         MatchKind::Literal => Pattern::literal(pattern),
     };
-    let fold = ed.config().case_fold_search;
+    let fold = ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH);
     let from = ed.window().point;
     let Some(current) = next_match(&ed, &pattern, fold, from) else {
         return (ed.set_message("No match"), Ok(()));
@@ -212,7 +213,7 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
         return ed;
     };
     let (start, end) = q.current;
-    match answer_char(key) {
+    match answer_char(ed.key_aliases(), key) {
         Some('y' | ' ') => match replace_match(ed, &q, start, end) {
             (ed, Some(from)) => {
                 q.count += 1;
@@ -361,10 +362,16 @@ mod tests {
         );
     }
 
+    fn with_jamo() -> Editor {
+        use crate::core::keymap::AliasTarget;
+        let to = |s| AliasTarget::parse(s).unwrap();
+        editor().with_key_aliases(|a| a.alias('ㅜ', to("n")).alias('ㅂ', to("q")))
+    }
+
     #[test]
     fn query_replace_folds_answers_and_esc_stops() {
         for stop in ["ESC", "ㅂ", "Q"] {
-            let ed = typ(editor(), "foo foo");
+            let ed = typ(with_jamo(), "foo foo");
             let ed = keys(ed, "C-a");
             let ed = run_command(ed, |e, fx| {
                 (start_query(e, "foo", "qux", MatchKind::Literal), fx)
@@ -379,7 +386,7 @@ mod tests {
             assert_eq!(ed.mode(), &Mode::normal(), "{stop}");
             assert_eq!(ed.message(), "Replaced 1 occurrence(s)", "{stop}");
         }
-        let ed = typ(editor(), "foo foo");
+        let ed = typ(with_jamo(), "foo foo");
         let ed = keys(ed, "C-a");
         let ed = run_command(ed, |e, fx| {
             (start_query(e, "foo", "qux", MatchKind::Literal), fx)
@@ -462,6 +469,22 @@ mod tests {
         let ed = keys(ed, "C-s");
         assert_eq!(point(&ed), 3);
         assert!(ed.message().contains("Wrapped"));
+    }
+
+    #[test]
+    fn isearch_wrap_off_fails_at_the_end_instead_of_wrapping() {
+        let ed = Editor::new(crate::core::config::Config {
+            toggles: Toggles::DEFAULT.difference(Toggles::ISEARCH_WRAP),
+            ..crate::core::config::Config::default()
+        });
+        let ed = typ(ed, "abc abd");
+        let ed = keys(ed, "C-a C-s");
+        let ed = typ(ed, "c");
+        assert_eq!(point(&ed), 3);
+        let ed = keys(ed, "C-s");
+        assert_eq!(point(&ed), 3);
+        assert!(!ed.message().contains("Wrapped"));
+        assert!(ed.message().starts_with("Failing I-search"));
     }
 
     #[test]
