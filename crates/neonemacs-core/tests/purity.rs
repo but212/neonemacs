@@ -42,7 +42,7 @@ fn has_signature_mut(line: &str) -> bool {
 
 #[test]
 fn core_has_no_mut_signatures() {
-    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/neonemacs-core/src");
+    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut hits = Vec::new();
     for file in rust_files(&core) {
         let source = fs::read_to_string(&file).expect("readable source file");
@@ -97,7 +97,7 @@ fn has_word(text: &str, word: &str) -> bool {
 
 #[test]
 fn core_imports_no_io_crate() {
-    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/neonemacs-core/src");
+    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut hits = Vec::new();
     for file in rust_files(&core) {
         let source = fs::read_to_string(&file).expect("readable source file");
@@ -130,4 +130,86 @@ fn io_scanner_tells_imports_from_comments() {
     assert!(!has_io_import("use std::collections::BTreeMap;"));
     assert!(!has_io_import("use std::path::{Path, PathBuf};"));
     assert!(!has_io_import("let filesystem = 1;"));
+}
+
+/// I-59: the `crate::<module>` references between top-level core modules. Test code (everything from
+/// the first `#[cfg(test)]` on) and `lib.rs`, the root that declares the modules, are left out.
+fn module_edges(core: &Path) -> std::collections::BTreeSet<(String, String)> {
+    let mut edges = std::collections::BTreeSet::new();
+    for file in rust_files(core) {
+        let rel = file.strip_prefix(core).expect("file is under core/src");
+        let top = rel
+            .components()
+            .next()
+            .expect("non-empty path")
+            .as_os_str()
+            .to_string_lossy()
+            .trim_end_matches(".rs")
+            .to_owned();
+        if matches!(top.as_str(), "lib" | "test_support" | "scenarios") {
+            continue;
+        }
+        let source = fs::read_to_string(&file).expect("readable source file");
+        let production = source.split("#[cfg(test)]").next().unwrap_or("");
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            for (at, _) in code.match_indices("crate::") {
+                let name: String = code[at + "crate::".len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect();
+                if !name.is_empty() && name != top {
+                    edges.insert((top.clone(), name));
+                }
+            }
+        }
+    }
+    edges
+}
+
+/// The pairs of modules that reach each other.
+fn mutual_pairs(
+    edges: &std::collections::BTreeSet<(String, String)>,
+) -> std::collections::BTreeSet<(String, String)> {
+    let mut reach = edges.clone();
+    loop {
+        let more: Vec<_> = reach
+            .iter()
+            .flat_map(|(a, b)| {
+                reach
+                    .iter()
+                    .filter(move |(c, _)| c == b)
+                    .map(move |(_, d)| (a.clone(), d.clone()))
+            })
+            .filter(|pair| !reach.contains(pair))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        reach.extend(more);
+    }
+    reach
+        .iter()
+        .filter(|(a, b)| a < b && reach.contains(&(b.clone(), a.clone())))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn core_modules_form_no_cycle_but_commands_and_dispatch() {
+    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let cycles = mutual_pairs(&module_edges(&core));
+    let accepted =
+        std::collections::BTreeSet::from([("commands".to_owned(), "dispatch".to_owned())]);
+    assert_eq!(cycles, accepted, "I-59: module cycles in core");
+}
+
+#[test]
+fn cycle_finder_sees_indirect_cycles() {
+    let edge = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+    let edges = std::collections::BTreeSet::from([edge("a", "b"), edge("b", "c"), edge("c", "a")]);
+    let pairs = mutual_pairs(&edges);
+    assert_eq!(pairs.len(), 3);
+    let line = std::collections::BTreeSet::from([edge("a", "b"), edge("b", "c")]);
+    assert!(mutual_pairs(&line).is_empty());
 }

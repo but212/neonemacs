@@ -1,8 +1,8 @@
 //! Lua `bind` and `unbind`: keymap changes made from Lua.
 
 use super::mutate_editor;
-use crate::core::editor::Editor;
-use crate::core::keymap::{KeyError, parse_key_seq};
+use crate::core::Editor;
+use crate::core::{KeyError, parse_key_seq};
 use mlua::{Scope, Table};
 use std::cell::RefCell;
 

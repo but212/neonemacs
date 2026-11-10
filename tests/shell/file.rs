@@ -1,13 +1,13 @@
 //! Commands that touch files: saving, reverting, opening, and quitting with unsaved changes.
 //! They run against real files in a temporary directory.
 
-use neonemacs::core::commands::{confirmed, request_open};
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::{Confirm, Editor, Mode, Prefix, Window};
-use neonemacs::core::effect::{Effect, Event, StatTarget};
-use neonemacs::core::file::{Backing, FilePath};
-use neonemacs::core::keymap::parse_keys;
+use neonemacs::core::Config;
+use neonemacs::core::effect::{Effect, Event, StatTarget, WalTarget};
+use neonemacs::core::parse_keys;
 use neonemacs::core::step;
+use neonemacs::core::{Backing, FilePath};
+use neonemacs::core::{Confirm, Editor, Mode, Prefix, Window};
+use neonemacs::core::{confirmed, request_open};
 use neonemacs::shell::file;
 use neonemacs::shell::perform_all;
 use neonemacs::test_support::{editor, keys, point, text, typ};
@@ -263,7 +263,13 @@ fn written_records_disk_and_reports_wrote() {
         *buf.backing(),
         Backing::file(FilePath::resolve(Path::new(""), &path), disk)
     );
-    assert_eq!(fx, [] as [Effect; 0]);
+    // The save made the WAL obsolete, so the core asks for its removal (I-25).
+    assert_eq!(
+        fx,
+        vec![Effect::RemoveWal {
+            target: WalTarget::Sibling(path.clone())
+        }]
+    );
     assert_eq!(ed.message(), format!("Wrote {}", path.display()));
 }
 

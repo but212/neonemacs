@@ -5,6 +5,7 @@
 use crate::buffer::BufferPool;
 use crate::kill_ring::KillRing;
 use crate::window::{Window, WindowManager};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Documents {
@@ -12,6 +13,8 @@ pub struct Documents {
     pub(super) windows: WindowManager,
     pub(super) kill_ring: KillRing,
     pub(super) edit_seq: u64,
+    /// Where the unsaved text of the scratch buffer is kept. `None` keeps it in memory only (I-43).
+    pub(super) scratch_slot: Option<PathBuf>,
 }
 
 impl Documents {
@@ -21,6 +24,7 @@ impl Documents {
             windows: WindowManager::new(initial_window),
             kill_ring: KillRing::new(),
             edit_seq: 0,
+            scratch_slot: None,
         }
     }
 }

@@ -5,7 +5,7 @@
 //! - Layer 2: Built-in command adapters operating on `Editor`.
 
 use crate::editor::{BufferId, Confirm, Dir, Editor, Window};
-use crate::effect::{Effect, Effects};
+use crate::effect::Effects;
 use crate::window::WindowManager;
 
 pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -59,9 +59,7 @@ pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
             fx,
         )
     } else {
-        if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
-            fx.push(eff);
-        }
+        fx.extend(ed.remove_wal_effect(id));
         (ed.kill_buffer_id(id), fx)
     }
 }

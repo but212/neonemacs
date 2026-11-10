@@ -7,16 +7,22 @@ pub mod file;
 pub mod load;
 pub mod motion;
 pub mod prompt;
-pub mod registry;
 pub mod search;
 pub mod shell_output;
 pub mod table;
+pub mod wal;
 
-pub use buffer_window::{kill_buffer, switch_to};
-pub use file::{confirmed, disk_checked, save_buffer, written};
+pub use buffer_window::switch_to;
+pub use file::{confirmed, disk_checked, written};
 pub use load::{file_read, request_open, wal_probed};
-pub use prompt::{completions, prompt_key};
-pub use registry::CommandRegistry;
-pub use search::{isearch_key, query_key, start_query_replace};
+pub use prompt::prompt_key;
+pub use search::{isearch_key, query_key};
 pub use shell_output::{init_loaded, lua_done, record_init_error, shell_done};
-pub use table::{BUILTINS, Builtin, find};
+pub use table::find;
+pub use wal::{idle, wal_flushed};
+
+/// Whether `name` is a built-in command.
+#[must_use]
+pub fn is_builtin(name: &str) -> bool {
+    find(name).is_some()
+}

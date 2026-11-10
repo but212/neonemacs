@@ -1,9 +1,9 @@
 //! Lua `command`, `message`, and `run`: registers Lua commands and runs built-in or Lua commands by name.
 
 use super::{COMMANDS, mutate_editor};
-use crate::core::commands;
-use crate::core::editor::Editor;
+use crate::core::Editor;
 use crate::core::effect::Event;
+use crate::core::is_builtin;
 use crate::shell::{perform_in, step_in};
 use mlua::{Function, Lua, Scope, Table};
 use std::cell::{Cell, RefCell};
@@ -20,7 +20,7 @@ pub(super) fn install_command_api<'lua, 'scope>(
     g.set(
         "command",
         scope.create_function(|lua, (name, f): (String, Function)| {
-            if commands::find(&name).is_some() {
+            if is_builtin(&name) {
                 return Err(mlua::Error::RuntimeError(format!(
                     "{name} is a built-in command"
                 )));
@@ -46,7 +46,7 @@ pub(super) fn install_command_api<'lua, 'scope>(
                 )));
             }
             depth.set(depth.get() + 1);
-            let result = if commands::find(&name).is_some() {
+            let result = if is_builtin(&name) {
                 let effects = step_in(cell, Event::Run(name));
                 perform_in(cell, Some(lua), effects);
                 Ok(())

@@ -2,7 +2,6 @@
 //! Enforces I-19: selected < `layout.leaf_count()` at all times.
 
 use crate::buffer::BufferId;
-use crate::text::Text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
@@ -117,17 +116,6 @@ impl Layout {
                 second: Box::new((*second).map_windows(f)),
             },
         }
-    }
-}
-
-/// Moves an anchor that landed inside a unit back to that unit's start.
-#[must_use]
-pub fn snap_point(text: &Text, a: usize) -> usize {
-    let a = a.min(text.len());
-    if text.is_boundary(a) {
-        a
-    } else {
-        text.prev_boundary((a + 1).min(text.len()))
     }
 }
 

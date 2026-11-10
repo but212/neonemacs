@@ -1,8 +1,8 @@
 //! Lua `get` and `set`: reads and changes editor settings.
 
 use super::{editor_ref, mutate_editor};
-use crate::core::config::{Setting, Value};
-use crate::core::editor::Editor;
+use crate::core::Editor;
+use crate::core::{Setting, Value};
 use mlua::{Lua, Scope, Table, Value as LuaValue};
 use std::cell::RefCell;
 

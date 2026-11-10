@@ -6,8 +6,8 @@ use std::path::Path;
 use crate::eol::Eol;
 use crate::file::{Backing, DiskState};
 use crate::text::Text;
+use crate::text::snap_point as snap;
 use crate::undo::{Edit, UndoLog};
-use crate::window::snap_point as snap;
 
 /// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
 pub const SCRATCH_NAME: &str = "*scratch*";

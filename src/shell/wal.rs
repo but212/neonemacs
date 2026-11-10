@@ -1,9 +1,9 @@
 //! Lightweight crash recovery WAL (Write-Ahead Log) for unsaved edits (§7, §14, I-23, I-25).
 //! Operates strictly in the imperative shell layer: persists snapshots/deltas during idle time.
 
+use crate::core::DiskState;
+use crate::core::Eol;
 use crate::core::effect::WalProbe;
-use crate::core::eol::Eol;
-use crate::core::file::DiskState;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;

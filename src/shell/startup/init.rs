@@ -4,11 +4,11 @@
 //! all (I-54): a Lua state cannot be rolled back, so a failed run is thrown away and the bundled
 //! state is built again.
 
-use crate::core::buffer::Buffer;
-use crate::core::commands::record_init_error;
-use crate::core::config::Config;
-use crate::core::editor::Editor;
+use crate::core::Buffer;
+use crate::core::Config;
+use crate::core::Editor;
 use crate::core::effect::InitLoad;
+use crate::core::record_init_error;
 use crate::shell::{lua, run_source};
 use mlua::Lua;
 use std::env;
@@ -143,8 +143,8 @@ pub fn start(cwd: PathBuf, source: InitSource) -> mlua::Result<(Editor, Lua)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::eol::Eol;
-    use crate::core::keymap::parse_key_seq;
+    use crate::core::Eol;
+    use crate::core::parse_key_seq;
 
     fn loaded(src: &str) -> (Editor, Lua, InitLoad) {
         configure(PathBuf::new(), InitSource::Loaded(src.to_owned())).unwrap()

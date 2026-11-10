@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn the_query_replace_match_is_reversed() {
-        use crate::commands::start_query_replace;
+        use crate::commands::search::start_query_replace;
         use crate::editor::MatchKind;
         let ed = keys(typ(Editor::new(Config::default()), "abc def"), "C-a");
         let (ed, res) = start_query_replace(ed, "def", "x", MatchKind::Literal);

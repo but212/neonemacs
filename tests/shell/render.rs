@@ -2,12 +2,12 @@
 
 use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::{Editor, Window};
-use neonemacs::core::file::Backing;
+use neonemacs::core::Backing;
+use neonemacs::core::Config;
+use neonemacs::core::Text;
 use neonemacs::core::render;
-use neonemacs::core::syntax::{TokenKind, highlight_line};
-use neonemacs::core::text::Text;
+use neonemacs::core::{Editor, Window};
+use neonemacs::core::{TokenKind, highlight_line};
 use neonemacs::shell::lua;
 use neonemacs::shell::session::ShellSession;
 

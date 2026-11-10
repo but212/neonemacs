@@ -1,10 +1,10 @@
 //! Adversarial stress and invariant tests for core commands (§3, §4, §6, §8, §9).
 //! Tests edge cases, hostile key sequences, mode transitions, and boundary conditions.
 
-use neonemacs::core::commands::find;
-use neonemacs::core::commands::table::BUILTINS;
-use neonemacs::core::editor::{Mode, Prefix, Window};
-use neonemacs::test_support::{editor, keys, point, set_mark, text, typ};
+use crate::commands::find;
+use crate::commands::table::BUILTINS;
+use crate::editor::{Mode, Prefix, Window};
+use crate::test_support::{editor, keys, point, set_mark, text, typ};
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {
@@ -686,16 +686,16 @@ fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
 
 #[test]
 fn find_forward_out_of_bounds_from_does_not_panic() {
-    let t = neonemacs::core::text::Text::from_bytes(b"hello");
-    let pat = neonemacs::core::search::Pattern::regex("^h").unwrap();
+    let t = crate::text::Text::from_bytes(b"hello");
+    let pat = crate::search::Pattern::regex("^h").unwrap();
     // from is far beyond text length and initial gap buffer capacity
-    let res = neonemacs::core::search::find_forward(&t, &pat, 100_000, false);
+    let res = crate::search::find_forward(&t, &pat, 100_000, false);
     assert_eq!(res, None);
 
-    let pat_lit = neonemacs::core::search::Pattern::literal("h");
-    let res_lit = neonemacs::core::search::find_forward(&t, &pat_lit, 100_000, false);
+    let pat_lit = crate::search::Pattern::literal("h");
+    let res_lit = crate::search::find_forward(&t, &pat_lit, 100_000, false);
     assert_eq!(res_lit, None);
 
-    let res_bkwd = neonemacs::core::search::find_backward(&t, &pat, 100_000, false);
+    let res_bkwd = crate::search::find_backward(&t, &pat, 100_000, false);
     assert_eq!(res_bkwd, Some((0, 1)));
 }

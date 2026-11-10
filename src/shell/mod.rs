@@ -14,15 +14,21 @@ pub mod terminal;
 pub mod terminal_guard;
 pub mod wal;
 
-use crate::core::config::ShellSpec;
-use crate::core::editor::Editor;
-use crate::core::effect::{Effect, Effects, Event};
+use crate::core::Editor;
+use crate::core::ShellSpec;
+use crate::core::effect::{Effect, Effects, Event, WalTarget, WalWrite};
 use crate::core::step;
 use mlua::Lua;
 use std::cell::RefCell;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
+
+/// The echo-area message while a background shell command runs, before the spinner's first frame.
+pub const RUNNING: &str = "[Running...]";
+
+/// What a refused second command adds to the running message.
+pub const BUSY_NOTICE: &str = "A shell command is already running";
 
 /// A running background shell command.
 #[derive(Debug)]
@@ -78,10 +84,8 @@ pub fn handle_interactive(
     }
     let ed = perform_all(ed, lua, sync_effects);
     let ed = match &outcome {
-        ShellOutcome::Spawned(_) => ed.set_message("[Running...]"),
-        ShellOutcome::BusyRejected => {
-            ed.set_message("[Running...] A shell command is already running")
-        }
+        ShellOutcome::Spawned(_) => ed.set_message(RUNNING),
+        ShellOutcome::BusyRejected => ed.set_message(format!("{RUNNING} {BUSY_NOTICE}")),
         ShellOutcome::None | ShellOutcome::ReloadInit => ed,
     };
     (ed, outcome)
@@ -163,9 +167,6 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
         },
         Effect::WriteFile { id, path, bytes } => {
             let result = file::save(&path, &bytes).map_err(|e| e.to_string());
-            if result.is_ok() {
-                wal::remove_wal(&path);
-            }
             Event::Written { id, path, result }
         }
         Effect::ReadFile {
@@ -180,10 +181,29 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
                 result,
             }
         }
-        Effect::RemoveWal { path } => {
-            wal::remove_wal(&path);
+        Effect::RemoveWal { target } => {
+            match target {
+                WalTarget::Sibling(path) => wal::remove_wal(&path),
+                WalTarget::Slot(slot) => wal::remove_file(&slot),
+            }
             Event::WalRemoved
         }
+        Effect::FlushWal { entries } => Event::WalFlushed(
+            entries
+                .into_iter()
+                .map(|e| {
+                    let result = match &e.target {
+                        WalTarget::Sibling(path) => wal::write_wal(path, e.disk, e.eol, &e.bytes),
+                        WalTarget::Slot(slot) => wal::write_scratch(slot, e.eol, &e.bytes),
+                    };
+                    WalWrite {
+                        id: e.id,
+                        target: e.target,
+                        result: result.map_err(|err| err.to_string()),
+                    }
+                })
+                .collect(),
+        ),
         Effect::ProbeWal { path, disk, line } => Event::WalProbed {
             probe: wal::probe(&path, disk),
             path,
@@ -217,9 +237,9 @@ fn run_lua(lua: Option<&Lua>, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::editor::BufferId;
-    use crate::core::effect::{Read, ReadTarget, StatTarget};
-    use crate::core::file::DiskState;
+    use crate::core::BufferId;
+    use crate::core::effect::{ReadTarget, StatTarget};
+    use crate::core::{DiskState, Read};
 
     #[test]
     fn effect_round_trip_yields_one_event_each() {
@@ -294,7 +314,7 @@ mod tests {
 
     #[test]
     fn reload_init_is_handed_to_the_session_and_refused_elsewhere() {
-        use crate::core::config::Config;
+        use crate::core::Config;
         let ed = Editor::new(Config::default());
         let (ed, outcome) =
             handle_interactive(ed, None, Event::Run("reload-init".to_owned()), false);

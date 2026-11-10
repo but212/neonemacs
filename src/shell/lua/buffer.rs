@@ -1,7 +1,7 @@
 //! Lua `buffer` table: reads and edits the selected buffer from Lua.
 
 use super::{editor_ref, mutate_editor};
-use crate::core::editor::Editor;
+use crate::core::Editor;
 use mlua::{Lua, Scope, Table};
 use std::cell::RefCell;
 
@@ -66,7 +66,7 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
             let m = ed.config().metrics();
             let bytes = s.as_bytes();
             let lossy = String::from_utf8_lossy(&bytes);
-            Ok(crate::core::width::str_width(&lossy, m))
+            Ok(crate::core::str_width(&lossy, m))
         })?,
     )?;
     buffer_table.set(

@@ -1,14 +1,15 @@
 use super::screen::print_styled_row;
 use super::*;
-use crate::core::commands::request_open;
-use crate::core::config::Config;
-use crate::core::editor::Confirm;
-use crate::core::editor::Editor;
-use crate::core::syntax::TokenKind;
-use crate::core::text::Text;
+use crate::core::Config;
+use crate::core::Confirm;
+use crate::core::Editor;
+use crate::core::Text;
+use crate::core::TokenKind;
+use crate::core::request_open;
 use crate::shell::ShellTask;
 use crate::shell::lua;
 use crate::shell::startup::InitSource;
+use crate::shell::wal;
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent,
     MouseEventKind,
@@ -39,7 +40,7 @@ fn press(code: KeyCode, modifiers: KeyModifiers) -> TermEvent {
 #[test]
 fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys() {
     let mut session = make_session();
-    let t0 = session.last_edit_time;
+    let t0 = Instant::now();
 
     let ignored_events = [
         key_event(
@@ -68,8 +69,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
 
     assert_eq!(session.ed.buffer().text().to_bytes(), b"");
     assert!(!session.ed.buffer().modified());
-    assert!(!session.needs_wal_flush);
-    assert_eq!(session.last_edit_time, t0);
+    assert!(session.wal_deadline.is_none());
     assert!(!session.is_quit());
 
     // Only KeyEventKind::Press with a mapped key takes effect
@@ -107,6 +107,30 @@ fn spinner_tick_wrapping_and_prompt_mode_echo_preservation() {
     // 3. Cancel prompt with C-g -> back to Mode::Normal -> next tick resumes spinner
     session.handle_event_at(&press(KeyCode::Char('g'), KeyModifiers::CONTROL), t0);
     assert!(matches!(session.ed.mode(), Mode::Normal { .. }));
+    session.tick_at(t0 + Duration::from_millis(150));
+    assert!(session.ed.message().starts_with("[Running... "));
+
+    drop(tx);
+}
+
+#[test]
+fn spinner_never_overwrites_a_message_it_did_not_write() {
+    let mut session = make_session();
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    session.active_shell = Some(ActiveShell::new(ShellTask { receiver: rx }));
+    let t0 = Instant::now();
+
+    session.tick_at(t0);
+    assert_eq!(session.ed.message(), "[Running... /]");
+
+    // A message from anything else, here the echo of a Lua `message` call, stays until replaced.
+    session.ed = session.ed.set_message("Wrote notes.txt");
+    session.tick_at(t0 + Duration::from_millis(50));
+    session.tick_at(t0 + Duration::from_millis(100));
+    assert_eq!(session.ed.message(), "Wrote notes.txt");
+
+    // An empty echo area gets the spinner back.
+    session.ed = session.ed.clear_message();
     session.tick_at(t0 + Duration::from_millis(150));
     assert!(session.ed.message().starts_with("[Running... "));
 
@@ -190,11 +214,11 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
 
     // 1. Non-modifying cursor key in clean file buffer does NOT arm WAL
     session.handle_event_at(&press(KeyCode::Right, KeyModifiers::NONE), t0);
-    assert!(!session.needs_wal_flush);
+    assert!(session.wal_deadline.is_none());
 
     // 2. Edit file_a at t0, then again at t0 + 600ms (debounce)
     session.handle_event_at(&press(KeyCode::Char('!'), KeyModifiers::NONE), t0);
-    assert!(session.needs_wal_flush);
+    assert!(session.wal_deadline.is_some());
 
     let t_edit2 = t0 + Duration::from_millis(600);
     session.handle_event_at(&press(KeyCode::Char('?'), KeyModifiers::NONE), t_edit2);
@@ -202,13 +226,13 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
     // At t_edit2 + 999ms (1599ms after t0): still 1ms short of 1s idle threshold
     session.tick_at(t_edit2 + Duration::from_millis(999));
     assert!(!wal::has_wal(&file_a));
-    assert!(session.needs_wal_flush);
+    assert!(session.wal_deadline.is_some());
 
     // At exact t_edit2 + 1000ms: flushes only modified file_a, not clean file_b
     session.tick_at(t_edit2 + Duration::from_millis(1000));
     assert!(wal::has_wal(&file_a));
     assert!(!wal::has_wal(&file_b));
-    assert!(!session.needs_wal_flush);
+    assert!(session.wal_deadline.is_none());
     assert_eq!(
         wal::read_wal(&file_a, crate::shell::file::disk_state(&file_a))
             .unwrap()
@@ -219,7 +243,7 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
     // 3. Edit again, then save (C-x C-s) before 1s elapses -> disarms WAL flush & removes .wal
     let t_edit3 = t0 + Duration::from_secs(3);
     session.handle_event_at(&press(KeyCode::Char('#'), KeyModifiers::NONE), t_edit3);
-    assert!(session.needs_wal_flush);
+    assert!(session.wal_deadline.is_some());
 
     session.handle_event_at(
         &press(KeyCode::Char('x'), KeyModifiers::CONTROL),
@@ -230,7 +254,7 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
         t_edit3 + Duration::from_millis(150),
     );
     assert!(!wal::has_wal(&file_a));
-    assert!(!session.needs_wal_flush);
+    assert!(session.wal_deadline.is_none());
 
     // Even after 2 seconds pass, tick_at must NOT recreate .wal for saved buffer
     session.tick_at(t_edit3 + Duration::from_secs(5));
@@ -250,27 +274,27 @@ fn cursor_motion_does_not_retrigger_or_delay_wal_flush() {
     let t0 = Instant::now();
     // 1. Edit buffer at t0
     session.handle_event_at(&press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
-    assert!(session.needs_wal_flush);
+    assert!(session.wal_deadline.is_some());
 
     // 2. Move cursor at t0 + 500ms: must NOT postpone the 1s flush timeout!
     session.handle_event_at(
         &press(KeyCode::Right, KeyModifiers::NONE),
         t0 + Duration::from_millis(500),
     );
-    assert!(session.needs_wal_flush);
+    assert!(session.wal_deadline.is_some());
 
     // At t0 + 1000ms: flush must happen (not delayed by Right arrow!)
     session.tick_at(t0 + Duration::from_millis(1000));
     assert!(wal::has_wal(&file_a));
-    assert!(!session.needs_wal_flush);
+    assert!(session.wal_deadline.is_none());
 
-    // 3. Move cursor at t0 + 2000ms: must NOT re-arm needs_wal_flush or re-write WAL!
+    // 3. Move cursor at t0 + 2000ms: must NOT re-arm the WAL deadline or re-write WAL!
     session.handle_event_at(
         &press(KeyCode::Right, KeyModifiers::NONE),
         t0 + Duration::from_millis(2000),
     );
     assert!(
-        !session.needs_wal_flush,
+        session.wal_deadline.is_none(),
         "cursor movement on already-flushed buffer re-armed WAL flush!"
     );
 }
@@ -296,7 +320,7 @@ fn wal_write_failure_is_reported_and_retried() {
     session.tick_at(t1);
     assert!(session.ed.message().starts_with("WAL write failed: "));
     assert!(session.ed.message().contains("retry.txt"));
-    assert!(session.needs_wal_flush);
+    assert!(session.wal_deadline.is_some());
     assert!(session.has_wal_dirty_file_buffer());
 
     // No retry before another second has passed.
@@ -306,7 +330,7 @@ fn wal_write_failure_is_reported_and_retried() {
 
     session.tick_at(t1 + Duration::from_millis(1000));
     assert!(wal::has_wal(&file));
-    assert!(!session.needs_wal_flush);
+    assert!(session.wal_deadline.is_none());
     assert!(!session.has_wal_dirty_file_buffer());
 }
 
@@ -334,7 +358,7 @@ fn wal_write_failure_keeps_a_pending_confirmation_question() {
         "Modified buffers exist; quit? (y or n)"
     );
     // The failure is still retried.
-    assert!(session.needs_wal_flush);
+    assert!(session.wal_deadline.is_some());
 }
 
 #[test]
@@ -537,7 +561,7 @@ fn bound(session: &ShellSession, keys: &str) -> Option<String> {
     session
         .ed
         .keymap()
-        .lookup(&crate::core::keymap::parse_key_seq(keys).unwrap())
+        .lookup(&crate::core::parse_key_seq(keys).unwrap())
         .map(str::to_owned)
 }
 

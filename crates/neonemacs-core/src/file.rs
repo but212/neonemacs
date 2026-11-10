@@ -1,6 +1,5 @@
 //! Buffer backing, and the buffer that a file read produces. Pure: the bytes come from the shell.
 
-use crate::effect::Read;
 use crate::eol::Eol;
 use crate::text::Text;
 use std::path::{Component, Path, PathBuf};
@@ -44,6 +43,22 @@ impl FilePath {
     pub fn as_path(&self) -> &Path {
         &self.0
     }
+}
+
+/// What a file read found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Read {
+    Missing,
+    Found(RawFile),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawFile {
+    /// Length on disk, which can exceed `bytes.len()`.
+    pub len: u64,
+    pub disk: DiskState,
+    /// The whole file, or empty when `len` exceeds `max_size`.
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,7 +212,6 @@ mod tests {
     use memchr::memchr_iter;
 
     use super::*;
-    use crate::effect::RawFile;
 
     fn found(len: u64, bytes: &[u8]) -> Read {
         Read::Found(RawFile {

@@ -7,7 +7,7 @@ use crate::commands::load::find_file;
 use crate::commands::search::start_query_replace;
 use crate::commands::shell_output::run_shell;
 use crate::commands::table::BUILTINS;
-use crate::editor::{Buffer, Editor, Mode, Prompt, Purpose};
+use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prompt, Purpose};
 use crate::effect::Effects;
 use crate::file::Backing;
 use crate::keymap::{Code, Key};
@@ -130,7 +130,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
         return (ed, fx);
     };
     if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
-        let ed = ed.set_mode(Mode::normal()).set_message("Quit");
+        let ed = ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE);
         return (ed, fx);
     }
     if key == Key::plain(Code::Enter) {

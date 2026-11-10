@@ -14,7 +14,7 @@ mod syntax;
 #[cfg(test)]
 mod tests;
 
-use crate::core::editor::Editor;
+use crate::core::Editor;
 use alias::install_alias_api;
 use buffer::install_buffer_api;
 use command::install_command_api;

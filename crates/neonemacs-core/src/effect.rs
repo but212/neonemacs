@@ -1,13 +1,12 @@
 //! What the core asks the shell to do (`Effect`) and what the shell reports back (`Event`).
 //! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15).
 
-use crate::buffer::Buffer;
+use crate::buffer::BufferId;
 use crate::config::ShellSpec;
-use crate::editor::BufferId;
 use crate::eol::Eol;
-use crate::file::DiskState;
+use crate::file::{DiskState, Read};
 use crate::keymap::Key;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub type Effects = Vec<Effect>;
 
@@ -30,8 +29,14 @@ pub enum Effect {
         path: PathBuf,
         max_size: u64,
     },
+    /// Removes a WAL. A missing one is not an error.
     RemoveWal {
-        path: PathBuf,
+        target: WalTarget,
+    },
+    /// Writes the unsaved text of every entry to its WAL, in order. Answered by one `WalFlushed`
+    /// with one result per entry. Never empty.
+    FlushWal {
+        entries: Vec<WalEntry>,
     },
     /// Looks for the WAL of the file at `path` just opened with `disk` (I-44, I-45). An unusable
     /// WAL is moved aside, never overwritten. `line` is the `+n` of a start-up file.
@@ -51,14 +56,41 @@ pub enum Effect {
     ReloadInit,
 }
 
-impl Effect {
-    /// Returns a `RemoveWal` effect if `buf` is backed by a disk file.
+/// Where a WAL lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WalTarget {
+    /// The WAL beside the file at this path (`.<name>.wal`).
+    Sibling(PathBuf),
+    /// This path is the WAL itself: the scratch slot (I-43).
+    Slot(PathBuf),
+}
+
+impl WalTarget {
+    /// The file path or the slot path: what a message names.
     #[must_use]
-    pub fn remove_wal_if_file(buf: &Buffer) -> Option<Self> {
-        buf.file_path().map(|path| Self::RemoveWal {
-            path: path.to_path_buf(),
-        })
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Sibling(path) | Self::Slot(path) => path,
+        }
     }
+}
+
+/// The unsaved text of buffer `id` and what its WAL header records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalEntry {
+    pub id: BufferId,
+    pub target: WalTarget,
+    pub disk: DiskState,
+    pub eol: Eol,
+    pub bytes: Vec<u8>,
+}
+
+/// The outcome of one `WalEntry`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalWrite {
+    pub id: BufferId,
+    pub target: WalTarget,
+    pub result: Result<(), String>,
 }
 
 /// Why a disk state was read (I-04).
@@ -86,22 +118,6 @@ pub enum ReadTarget {
     Open { line: Option<usize>, show: bool },
     /// Reload the buffer `id` from its file.
     Revert(BufferId),
-}
-
-/// What a file read found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Read {
-    Missing,
-    Found(RawFile),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawFile {
-    /// Length on disk, which can exceed `bytes.len()`.
-    pub len: u64,
-    pub disk: DiskState,
-    /// The whole file, or empty when `len` exceeds `max_size`.
-    pub bytes: Vec<u8>,
 }
 
 /// Unsaved text found in a WAL whose disk state matched: LF-normalized bytes and the line-ending mode.
@@ -152,6 +168,9 @@ pub enum Event {
         result: Result<Read, String>,
     },
     WalRemoved,
+    /// The shell saw no input for one second after an edit (I-23).
+    Idle,
+    WalFlushed(Vec<WalWrite>),
     WalProbed {
         path: PathBuf,
         line: Option<usize>,

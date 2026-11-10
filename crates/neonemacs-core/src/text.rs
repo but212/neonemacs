@@ -13,6 +13,17 @@ pub struct Text {
     gap_end: usize,
 }
 
+/// Moves an anchor that landed inside a unit back to that unit's start.
+#[must_use]
+pub fn snap_point(text: &Text, a: usize) -> usize {
+    let a = a.min(text.len());
+    if text.is_boundary(a) {
+        a
+    } else {
+        text.prev_boundary((a + 1).min(text.len()))
+    }
+}
+
 impl Text {
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Self {

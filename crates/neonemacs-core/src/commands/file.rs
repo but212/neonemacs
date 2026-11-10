@@ -3,7 +3,7 @@
 
 use crate::commands::load::{name_of, revert_now};
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::effect::{Effect, Effects, StatTarget};
+use crate::effect::{Effect, Effects, StatTarget, WalTarget};
 use crate::file::{Backing, DiskState};
 use crate::undo::Edit;
 use std::fmt::Write;
@@ -115,17 +115,13 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
         Confirm::QuitUnsaved => {
             let mut fx = fx;
             for buf in ed.buffers() {
-                if let Some(eff) = Effect::remove_wal_if_file(buf) {
-                    fx.push(eff);
-                }
+                fx.extend(ed.remove_wal_effect(buf.id()));
             }
             (ed.set_quit(true), fx)
         }
         Confirm::KillModified(id) => {
             let mut fx = fx;
-            if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
-                fx.push(eff);
-            }
+            fx.extend(ed.remove_wal_effect(id));
             (ed.kill_buffer_id(id), fx)
         }
         Confirm::RevertModified(id) => revert_now(ed, id, fx),
@@ -165,15 +161,16 @@ pub fn written(
         Ok(new_disk) => {
             let file = ed.resolve_path(path);
             if ed.buffer_by_id(id).file_path() != Some(file.as_path()) {
-                if let Some(eff) = Effect::remove_wal_if_file(ed.buffer_by_id(id)) {
-                    fx.push(eff);
-                }
+                fx.extend(ed.remove_wal_effect(id));
                 let name = name_of(file.as_path());
                 ed = ed.with_buffer(id, |b| {
                     b.set_name(name).set_backing(Backing::file(file, new_disk))
                 });
             }
             ed = ed.with_buffer(id, |b| b.record_saved(new_disk));
+            fx.push(Effect::RemoveWal {
+                target: WalTarget::Sibling(path.to_path_buf()),
+            });
             format!("Wrote {}", path.display())
         }
         Err(e) => format!("Save failed: {e}"),
@@ -400,9 +397,14 @@ mod tests {
         let (ed, fx) = written(ed, id, &PathBuf::from("b.txt"), Ok(disk), Vec::new());
         assert_eq!(
             fx,
-            vec![Effect::RemoveWal {
-                path: PathBuf::from("f.txt")
-            }]
+            vec![
+                Effect::RemoveWal {
+                    target: WalTarget::Sibling(PathBuf::from("f.txt"))
+                },
+                Effect::RemoveWal {
+                    target: WalTarget::Sibling(PathBuf::from("b.txt"))
+                },
+            ]
         );
         assert_eq!(
             *ed.buffer().backing(),

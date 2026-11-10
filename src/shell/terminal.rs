@@ -1,6 +1,6 @@
 //! Terminal input: converts a crossterm key event into the editor's `Key` (I-12).
 
-use crate::core::keymap::{Code, Key, ctrl_key};
+use crate::core::{Code, Key, ctrl_key};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// Canonical key for a terminal event (I-12). Several terminal encodings
@@ -29,7 +29,7 @@ pub const fn from_terminal(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::keymap::parse_keys;
+    use crate::core::parse_keys;
     use crossterm::event::{KeyModifiers as M, MediaKeyCode, ModifierKeyCode};
 
     fn norm(c: KeyCode, m: M) -> Key {

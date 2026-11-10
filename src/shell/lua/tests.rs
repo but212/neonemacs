@@ -1,11 +1,11 @@
 use super::*;
-use crate::core::commands;
-use crate::core::commands::request_open;
-use crate::core::config::{Config, Toggles};
+use crate::core::Eol;
+use crate::core::SyntaxRegistry;
 use crate::core::effect::Event;
-use crate::core::eol::Eol;
-use crate::core::keymap::{Code, Key, parse_keys};
-use crate::core::syntax::SyntaxRegistry;
+use crate::core::is_builtin;
+use crate::core::request_open;
+use crate::core::{Code, Key, parse_keys};
+use crate::core::{Config, Toggles};
 use crate::shell::{handle, perform_all, run_source};
 use mlua::{Function, Table};
 use std::fs;
@@ -39,13 +39,11 @@ fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let ed = ed.with_current_buffer(|b| {
         b.set_name("test.rs")
-            .with_text(crate::core::text::Text::from_bytes(
-                b"hello\nworld \xff tail\n",
-            ))
+            .with_text(crate::core::Text::from_bytes(b"hello\nworld \xff tail\n"))
     });
 
     // M-f from pos 0
-    let ed = ed.with_window(|w| crate::core::editor::Window { point: 0, ..w });
+    let ed = ed.with_window(|w| crate::core::Window { point: 0, ..w });
     let ed = handle(ed, Some(&lua), Event::Run("forward-word".to_owned()));
     assert!(ed.message().is_empty(), "M-f failed: {}", ed.message());
     assert_eq!(ed.window().point, 5);
@@ -60,7 +58,7 @@ fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
     assert!(ed.message().is_empty(), "M-f 3 failed: {}", ed.message());
 
     // comment-dwim on the line containing \xff
-    let ed = ed.with_window(|w| crate::core::editor::Window { point: 13, ..w });
+    let ed = ed.with_window(|w| crate::core::Window { point: 13, ..w });
     let ed = handle(ed, Some(&lua), Event::Run("comment-dwim".to_owned()));
     assert!(
         ed.message().is_empty(),
@@ -77,7 +75,7 @@ fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
 fn set_mark_from_lua_makes_an_active_region() {
     let lua = new_state().unwrap();
     let ed = Editor::new(Config::default())
-        .with_current_buffer(|b| b.with_text(crate::core::text::Text::from_bytes(b"abc")));
+        .with_current_buffer(|b| b.with_text(crate::core::Text::from_bytes(b"abc")));
     let (ed, res) = script(&lua, ed, "buffer.set_mark(2)");
     res.unwrap();
     assert!(ed.buffer().mark_active());
@@ -91,7 +89,7 @@ fn set_mark_from_lua_makes_an_active_region() {
 fn set_mark_snaps_to_unit_boundary() {
     let lua = new_state().unwrap();
     let ed = Editor::new(Config::default())
-        .with_current_buffer(|b| b.with_text(crate::core::text::Text::from_bytes("가".as_bytes())));
+        .with_current_buffer(|b| b.with_text(crate::core::Text::from_bytes("가".as_bytes())));
     let (ed, res) = script(&lua, ed, "buffer.set_mark(1)");
     res.unwrap();
     assert_eq!(ed.buffer().mark(), Some(0));
@@ -334,7 +332,7 @@ fn api_unbind_removes_binding_and_rejects_invalid_keys() {
     let ed = Editor::new(Config::default());
     let (ed, result) = script(&lua, ed, r#"bind("C-x 2", "split-window-below")"#);
     result.unwrap();
-    let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
+    let key = crate::core::parse_key_seq("C-x 2").unwrap();
     assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
 
     let (ed, result) = script(&lua, ed, r#"unbind("C-x 2")"#);
@@ -352,10 +350,10 @@ fn api_buffer_inspection_and_mutation() {
     let ed = Editor::new(Config::default());
     let (ed, id) = ed.add_buffer(
         "test",
-        crate::core::text::Text::from_bytes(b"hello world\nline two"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"hello world\nline two"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 0,
         ..w
@@ -401,25 +399,25 @@ fn bundled_keymap_loaded_by_bootstrap() {
     let keymap = ed.keymap();
 
     // Check extended bindings defined in keymap.lua
-    let k_c_k = crate::core::keymap::parse_key_seq("C-k").unwrap();
+    let k_c_k = crate::core::parse_key_seq("C-k").unwrap();
     assert_eq!(keymap.lookup(&k_c_k), Some("kill-line"));
 
-    let k_split = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
+    let k_split = crate::core::parse_key_seq("C-x 2").unwrap();
     assert_eq!(keymap.lookup(&k_split), Some("split-window-below"));
 
-    let k_other = crate::core::keymap::parse_key_seq("C-x o").unwrap();
+    let k_other = crate::core::parse_key_seq("C-x o").unwrap();
     assert_eq!(keymap.lookup(&k_other), Some("other-window"));
 
-    let k_switch = crate::core::keymap::parse_key_seq("C-x b").unwrap();
+    let k_switch = crate::core::parse_key_seq("C-x b").unwrap();
     assert_eq!(keymap.lookup(&k_switch), Some("switch-to-buffer"));
 
-    let k_kill = crate::core::keymap::parse_key_seq("C-x k").unwrap();
+    let k_kill = crate::core::parse_key_seq("C-x k").unwrap();
     assert_eq!(keymap.lookup(&k_kill), Some("kill-buffer"));
 
-    let k_fill_para = crate::core::keymap::parse_key_seq("M-q").unwrap();
+    let k_fill_para = crate::core::parse_key_seq("M-q").unwrap();
     assert_eq!(keymap.lookup(&k_fill_para), Some("fill-paragraph"));
 
-    let k_goto = crate::core::keymap::parse_key_seq("M-g").unwrap();
+    let k_goto = crate::core::parse_key_seq("M-g").unwrap();
     assert_eq!(keymap.lookup(&k_goto), Some("goto-line"));
 }
 
@@ -447,7 +445,7 @@ fn bundled_keymap_aliases_the_whole_two_set_layout() {
 
 #[test]
 fn bootstrapped_editor_runs_ctl_x_and_meta_commands_with_jamo() {
-    use crate::core::editor::Mode;
+    use crate::core::Mode;
     use crate::test_support::press;
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
@@ -468,7 +466,7 @@ fn answer_alias_is_gone() {
 
 #[test]
 fn bootstrapped_editor_answers_a_question_with_jamo() {
-    use crate::core::editor::{Confirm, Mode};
+    use crate::core::{Confirm, Mode};
     use crate::test_support::{press, text, typ};
     let lua = new_state().unwrap();
     let ed = typ(bootstrap(Editor::new(Config::default()), &lua), "x");
@@ -529,7 +527,7 @@ fn bundled_keymap_commands_all_exist() {
             let parts: Vec<&str> = trimmed.split('"').collect();
             if parts.len() >= 4 {
                 let cmd_name = parts[3];
-                let in_builtins = commands::find(cmd_name).is_some();
+                let in_builtins = is_builtin(cmd_name);
                 let in_lua = commands_table
                     .get::<Option<Function>>(cmd_name)
                     .unwrap()
@@ -549,10 +547,10 @@ fn text_fill_paragraph_in_lua() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test",
-        crate::core::text::Text::from_bytes(b"  hello world foo bar"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"  hello world foo bar"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 0,
         ..w
@@ -575,10 +573,10 @@ fn text_word_and_buffer_motion() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test",
-        crate::core::text::Text::from_bytes(b"hello world neon"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"hello world neon"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 0,
         ..w
@@ -612,7 +610,7 @@ fn text_word_and_buffer_motion() {
 fn buffer_mark_api() {
     let lua = new_state().unwrap();
     let ed = Editor::new(Config::default())
-        .with_current_buffer(|b| b.with_text(crate::core::text::Text::from_bytes(b"hello world")));
+        .with_current_buffer(|b| b.with_text(crate::core::Text::from_bytes(b"hello world")));
     assert_eq!(ed.buffer().mark(), None);
 
     // set mark to 5
@@ -641,10 +639,10 @@ fn text_kill_word_and_backward() {
 
     let (ed, id) = ed.add_buffer(
         "test_kill",
-        crate::core::text::Text::from_bytes(b"hello world and neon"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"hello world and neon"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 0,
         ..w
@@ -671,10 +669,10 @@ fn text_word_backward_stops_at_line_start() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test_multiline",
-        crate::core::text::Text::from_bytes(b"hello\nworld"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"hello\nworld"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 11, // at end of "world"
         ..w
@@ -692,10 +690,10 @@ fn text_kill_word_backward_at_line_start() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test_kill_multiline",
-        crate::core::text::Text::from_bytes(b"hello\nworld"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"hello\nworld"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 11, // at end of "world"
         ..w
@@ -714,10 +712,10 @@ fn text_word_forward_across_empty_lines() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test_empty_lines",
-        crate::core::text::Text::from_bytes(b"hello\n\n\nworld"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"hello\n\n\nworld"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 5, // at end of "hello"
         ..w
@@ -737,10 +735,10 @@ fn text_word_multibyte_backward_at_line_start() {
     let len = text_bytes.len();
     let (ed, id) = ed.add_buffer(
         "test_multibyte",
-        crate::core::text::Text::from_bytes(text_bytes),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(text_bytes),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: len, // at end of "세상"
         ..w
@@ -759,10 +757,10 @@ fn comment_prefix_message_and_command_sync() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "main.rs",
-        crate::core::text::Text::default(),
-        crate::core::file::Backing::None,
+        crate::core::Text::default(),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window { buffer: id, ..w });
+    let ed = ed.with_window(|w| crate::core::Window { buffer: id, ..w });
 
     // comment_prefix for rust buffer
     let (ed, res) = script(&lua, ed, r#"assert(buffer.comment_prefix() == "//")"#);
@@ -785,10 +783,10 @@ fn test_comment_dwim_integration() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test.rs",
-        crate::core::text::Text::from_bytes(b"    let x = 1;\n    let y = 2;"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"    let x = 1;\n    let y = 2;"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 4,
         ..w
@@ -832,10 +830,10 @@ fn test_comment_dwim_integration() {
     // Missing syntax error message
     let (ed, id2) = ed.add_buffer(
         "notes.md",
-        crate::core::text::Text::from_bytes(b"plain markdown text"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"plain markdown text"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id2,
         point: 0,
         ..w
@@ -852,10 +850,10 @@ fn comment_dwim_preserves_remapped_mark_across_lines() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test.rs",
-        crate::core::text::Text::from_bytes(b"aaa\nbbb\nccc\n"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"aaa\nbbb\nccc\n"),
+        crate::core::Backing::None,
     );
-    let ed = crate::core::commands::buffer_window::switch_to(ed, id);
+    let ed = crate::core::switch_to(ed, id);
     // Point at 0, mark at 8 (start of "ccc\n")
     let ed = ed
         .move_point(0)
@@ -876,10 +874,10 @@ fn test_mark_whole_buffer() {
     // Multi-line non-empty buffer
     let (ed, id) = ed.add_buffer(
         "test.txt",
-        crate::core::text::Text::from_bytes(b"hello world\nline 2"),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b"hello world\nline 2"),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: id,
         point: 5,
         ..w
@@ -894,10 +892,10 @@ fn test_mark_whole_buffer() {
     // Empty buffer
     let (ed, empty_id) = ed.add_buffer(
         "empty.txt",
-        crate::core::text::Text::from_bytes(b""),
-        crate::core::file::Backing::None,
+        crate::core::Text::from_bytes(b""),
+        crate::core::Backing::None,
     );
-    let ed = ed.with_window(|w| crate::core::editor::Window {
+    let ed = ed.with_window(|w| crate::core::Window {
         buffer: empty_id,
         point: 0,
         ..w
@@ -964,7 +962,7 @@ fn test_count_lines_ffi_removed() {
 
 #[test]
 fn undo_limit_applies_to_existing_buffers() {
-    use crate::core::undo::Edit;
+    use crate::core::Edit;
 
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);

@@ -3,7 +3,7 @@
 
 use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
 use crate::config::Toggles;
-use crate::effect::{Effect, Effects};
+use crate::effect::Effects;
 use crate::undo::Edit;
 use crate::width::column;
 
@@ -183,7 +183,7 @@ impl Editor {
         let mut ed = ed.boundary();
         // The group opened on text equal to the saved one, so undoing all of it restores that text (I-41).
         if complete && group.clean_epoch() == Some(ed.buffer_by_id(id).epoch()) {
-            fx.extend(Effect::remove_wal_if_file(ed.buffer_by_id(id)));
+            fx.extend(ed.remove_wal_effect(id));
             ed = ed.with_buffer(id, Buffer::restore_clean);
         }
         ed.interaction.last = LastCommand::Undo {
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(
             fx,
             vec![crate::effect::Effect::RemoveWal {
-                path: std::path::PathBuf::from("f.txt")
+                target: crate::effect::WalTarget::Sibling(std::path::PathBuf::from("f.txt"))
             }]
         );
     }
@@ -389,7 +389,7 @@ mod tests {
     fn undoing_an_undo_returns_to_clean_through_the_original_group() {
         // Undoing to clean text drops the WAL of the file-backed buffer (I-41).
         let wal = crate::effect::Effect::RemoveWal {
-            path: std::path::PathBuf::from("f.txt"),
+            target: crate::effect::WalTarget::Sibling(std::path::PathBuf::from("f.txt")),
         };
         let (ed, fx) = undo_fx(type_char(saved(""), 'a'));
         assert_eq!(fx, std::slice::from_ref(&wal));

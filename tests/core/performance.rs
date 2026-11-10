@@ -1,10 +1,10 @@
 //! Performance regression tests for Core transitions (§2, §5, §14).
 
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::Editor;
-use neonemacs::core::file::Backing;
-use neonemacs::core::text::Text;
-use neonemacs::core::undo::Edit;
+use neonemacs::core::Backing;
+use neonemacs::core::Config;
+use neonemacs::core::Edit;
+use neonemacs::core::Editor;
+use neonemacs::core::Text;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -14,7 +14,7 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
     let size = 32 * 1024 * 1024;
     let large_bytes = vec![b'a'; size];
     let (ed, id) = ed.add_buffer("large", Text::from_bytes(&large_bytes), Backing::None);
-    let ed = neonemacs::core::commands::buffer_window::switch_to(ed, id);
+    let ed = neonemacs::core::switch_to(ed, id);
 
     let edit = Edit::insert(0, b"x".as_slice());
 
@@ -96,11 +96,11 @@ fn lua_comment_dwim_100_lines_on_32mb_buffer_is_fast() {
     data.resize(data.len() + pad, b' ');
 
     let (ed, id) = ed.add_buffer("test.rs", Text::from_bytes(&data), Backing::None);
-    let ed = neonemacs::core::commands::buffer_window::switch_to(ed, id);
+    let ed = neonemacs::core::switch_to(ed, id);
 
     // Mark region covering first 100 lines (from 0 to 1200)
     let ed = ed.with_current_buffer(|b| b.set_mark(Some(1200)));
-    let ed = ed.with_window(|w| neonemacs::core::editor::Window { point: 0, ..w });
+    let ed = ed.with_window(|w| neonemacs::core::Window { point: 0, ..w });
 
     let start = Instant::now();
     let ed = neonemacs::shell::handle(

@@ -3,7 +3,9 @@
 use crate::commands::prompt::prompt;
 use crate::config::Toggles;
 use crate::dispatch::answer_char;
-use crate::editor::{Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace};
+use crate::editor::{
+    CANCEL_MESSAGE, Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
+};
 use crate::effect::Effects;
 use crate::keymap::{Code, Key};
 use crate::search::{self, Pattern};
@@ -55,7 +57,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
         let ed = ed
             .set_mode(Mode::normal())
             .move_point(s.origin)
-            .set_message("Quit");
+            .set_message(CANCEL_MESSAGE);
         return (ed, fx);
     }
     if key == Key::plain(Code::Enter) {

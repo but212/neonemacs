@@ -2,7 +2,7 @@
 //! Decouples routing and command execution lifecycle from Editor state management.
 
 use crate::commands;
-use crate::editor::{Buffer, Editor, Mode, Prefix, Question};
+use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prefix, Question};
 use crate::effect::{Effect, Effects};
 use crate::keymap::{Code, Key, KeyAliases};
 
@@ -52,7 +52,7 @@ pub fn answer(mut ed: Editor, question: Question, key: Key, fx: Effects) -> (Edi
         return commands::confirmed(ed, question.kind, fx);
     }
     ed = if choice == Some('n') || key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
-        ed.set_mode(Mode::normal()).set_message("Quit")
+        ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE)
     } else {
         ed.set_message(format!("Please answer y or n. {}", question.text))
     };
@@ -70,7 +70,7 @@ pub fn handle_normal_key(
     if key == Key::ctrl('g') {
         ed = ed
             .with_current_buffer(Buffer::deactivate_mark)
-            .set_message("Quit");
+            .set_message(CANCEL_MESSAGE);
         return (ed, fx);
     }
     let keys = match prefix {

@@ -1,8 +1,8 @@
 //! Lua `key_alias` and `key_unalias`: which characters stand for an ASCII key (I-46, I-48).
 
 use super::mutate_editor;
-use crate::core::editor::Editor;
-use crate::core::keymap::AliasTarget;
+use crate::core::AliasTarget;
+use crate::core::Editor;
 use mlua::{Scope, Table};
 use std::cell::RefCell;
 

@@ -1,8 +1,8 @@
 //! Lua `syntax.register`: declares syntax definitions from Lua.
 
 use super::mutate_editor;
-use crate::core::editor::Editor;
-use crate::core::syntax::SyntaxDef;
+use crate::core::Editor;
+use crate::core::SyntaxDef;
 use mlua::{Lua, Scope, Table};
 use std::cell::RefCell;
 

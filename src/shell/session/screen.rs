@@ -1,28 +1,25 @@
 //! Terminal screen drawing: redraws only the rows that changed, and prints styled cells.
 
 use super::ShellSession;
-use crate::core::render;
-use crate::core::syntax::TokenKind;
+use crate::core::TokenKind;
+use crate::core::render::{self, Cell, Frame};
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::{cursor, queue, terminal};
 use std::io::{self, Write};
 
-impl ShellSession {
-    /// Draws changed rows to the terminal.
-    ///
-    /// # Errors
-    /// Returns `io::Error` if querying terminal size or drawing fails.
-    pub fn render(&mut self, out: &mut impl Write) -> io::Result<()> {
-        let (cols, rows) = terminal::size()?;
-        self.render_sized(out, usize::from(cols), usize::from(rows))
-    }
+/// What the terminal shows now: the rows last drawn, and the size they were drawn for.
+#[derive(Default)]
+pub(super) struct Screen {
+    prev_rows: Vec<Vec<Cell>>,
+    size: (usize, usize),
+}
 
-    /// Draws changed rows for explicit terminal dimensions `(cols, rows)`.
-    ///
-    /// # Errors
-    /// Returns `io::Error` if queueing commands or flushing `out` fails.
-    pub fn render_sized(
+impl Screen {
+    /// Draws the rows of `frame` that differ from the last frame, then the cursor. A new size
+    /// redraws everything.
+    fn paint(
         &mut self,
+        frame: Frame,
         out: &mut impl Write,
         cols: usize,
         rows: usize,
@@ -31,15 +28,8 @@ impl ShellSession {
             self.prev_rows.clear();
             self.size = (cols, rows);
         }
-
-        let ed = std::mem::take(&mut self.ed);
-        let ed = render::scroll(ed, cols, rows);
-        let frame = render::frame(&ed, cols, rows);
-        self.ed = ed;
-
         for (row, cells) in frame.rows.iter().enumerate() {
-            let row_changed = self.prev_rows.get(row) != Some(cells);
-            if row_changed {
+            if self.prev_rows.get(row) != Some(cells) {
                 queue!(
                     out,
                     cursor::MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX))
@@ -61,10 +51,35 @@ impl ShellSession {
     }
 }
 
-pub(super) fn print_styled_row(
-    out: &mut impl Write,
-    cells: &[crate::core::render::Cell],
-) -> io::Result<()> {
+impl ShellSession {
+    /// Draws changed rows to the terminal.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if querying terminal size or drawing fails.
+    pub fn render(&mut self, out: &mut impl Write) -> io::Result<()> {
+        let (cols, rows) = terminal::size()?;
+        self.render_sized(out, usize::from(cols), usize::from(rows))
+    }
+
+    /// Draws changed rows for explicit terminal dimensions `(cols, rows)`.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if queueing commands or flushing `out` fails.
+    pub fn render_sized(
+        &mut self,
+        out: &mut impl Write,
+        cols: usize,
+        rows: usize,
+    ) -> io::Result<()> {
+        let ed = std::mem::take(&mut self.ed);
+        let ed = render::scroll(ed, cols, rows);
+        let frame = render::frame(&ed, cols, rows);
+        self.ed = ed;
+        self.screen.paint(frame, out, cols, rows)
+    }
+}
+
+pub(super) fn print_styled_row(out: &mut impl Write, cells: &[Cell]) -> io::Result<()> {
     let mut current = TokenKind::Normal;
     let mut reversed = false;
     let mut span = String::new();

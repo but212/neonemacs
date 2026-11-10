@@ -3,8 +3,8 @@
 
 use crate::commands::buffer_window::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::effect::{self, Effect, Effects, ReadTarget, WalProbe};
-use crate::file::loaded_from;
+use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
+use crate::file::{Read, loaded_from};
 use std::path::{Path, PathBuf};
 
 /// Asks the shell to read `path` for a new buffer. The result comes back as `FileRead`.
@@ -81,7 +81,7 @@ pub fn file_read(
     ed: Editor,
     target: ReadTarget,
     path: PathBuf,
-    result: Result<effect::Read, String>,
+    result: Result<Read, String>,
     mut fx: Effects,
 ) -> (Editor, Effects) {
     let max_size = ed.config().max_file_size;
@@ -121,7 +121,7 @@ pub fn file_read(
             (ed, fx)
         }
         // A deleted file is not an empty one: keep the buffer and its WAL.
-        (ReadTarget::Revert(_), Ok(effect::Read::Missing)) => {
+        (ReadTarget::Revert(_), Ok(Read::Missing)) => {
             let ed = ed.set_message(format!("Revert failed: {} does not exist", path.display()));
             (ed, fx)
         }
@@ -136,7 +136,9 @@ pub fn file_read(
                     .set_message("Reverted");
                 // The WAL goes only after the reload succeeds, so a refused revert keeps
                 // the unsaved edits recoverable.
-                fx.push(Effect::RemoveWal { path });
+                fx.push(Effect::RemoveWal {
+                    target: WalTarget::Sibling(path),
+                });
                 (ed, fx)
             }
             Err(e) => (ed.set_message(e.message()), fx),
@@ -175,9 +177,10 @@ pub fn wal_probed(
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::effect::{RawFile, Read, Recovered};
+    use crate::effect::Recovered;
     use crate::eol::Eol;
     use crate::file::{Backing, DiskState, FilePath};
+    use crate::file::{RawFile, Read};
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
     use crate::text::Text;
 
@@ -415,7 +418,7 @@ mod tests {
         );
         assert_eq!(ed.buffer().text().to_bytes(), b"x\n");
         assert!(
-            matches!(fx.as_slice(), [Effect::RemoveWal { path }] if path == Path::new("f.txt"))
+            matches!(fx.as_slice(), [Effect::RemoveWal { target }] if target.path() == Path::new("f.txt"))
         );
     }
 

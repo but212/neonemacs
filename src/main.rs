@@ -12,13 +12,10 @@ use std::io::{self, Write};
 fn run(files: &[FileArg]) -> io::Result<()> {
     let (ed, lua) =
         start(env::current_dir()?, init_source()).map_err(|e| io::Error::other(e.to_string()))?;
-    let slot = wal::scratch_path();
-    let ed = restore_scratch(ed, slot.as_deref());
+    let ed = restore_scratch(ed.with_scratch_slot(wal::scratch_path()));
     let ed = open_files(ed, Some(&lua), files);
     let _guard = TerminalGuard::enter()?;
-    ShellSession::new(ed, lua)
-        .with_scratch_wal(slot)
-        .run(&mut io::stdout())
+    ShellSession::new(ed, lua).run(&mut io::stdout())
 }
 
 fn main() {

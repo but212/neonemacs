@@ -1,7 +1,6 @@
 //! File I/O for the shell: reads, the atomic save, and disk state (§8, A2, A12).
 
-use crate::core::effect::{self, RawFile};
-use crate::core::file::DiskState;
+use crate::core::{DiskState, RawFile, Read as FileRead};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
@@ -24,10 +23,10 @@ pub fn disk_state(path: &Path) -> DiskState {
 ///
 /// # Errors
 /// Returns `io::Error` if reading file metadata or bytes fails.
-pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
+pub fn read_raw(path: &Path, max_size: u64) -> io::Result<FileRead> {
     let mut file = match File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(effect::Read::Missing),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(FileRead::Missing),
         Err(e) => return Err(e),
     };
     let meta = file.metadata()?;
@@ -36,7 +35,7 @@ pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
     } else {
         read_capped(&mut file, meta.len())?
     };
-    Ok(effect::Read::Found(RawFile {
+    Ok(FileRead::Found(RawFile {
         len: meta.len(),
         disk: state_of(&meta),
         bytes,
@@ -72,8 +71,8 @@ pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::eol::Eol;
-    use crate::core::file::{FilePath, loaded_from};
+    use crate::core::Eol;
+    use crate::core::{FilePath, loaded_from};
 
     #[test]
     fn roundtrip_exact() {
@@ -102,7 +101,7 @@ mod tests {
         fs::write(&path, b"0123456789").unwrap();
 
         let read = read_raw(&path, 4).unwrap();
-        let effect::Read::Found(raw) = read else {
+        let FileRead::Found(raw) = read else {
             panic!("expected Found");
         };
         assert_eq!(raw.len, 10);

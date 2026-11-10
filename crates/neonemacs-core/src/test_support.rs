@@ -48,6 +48,23 @@ pub fn keys(mut ed: Editor, s: &str) -> Editor {
     ed
 }
 
+/// Presses each key of `s` like `keys`, and returns the effects the keys caused instead of
+/// refusing them.
+///
+/// # Panics
+///
+/// Panics if `s` contains an invalid key notation.
+#[must_use]
+pub fn keys_with_effects(mut ed: Editor, s: &str) -> (Editor, Effects) {
+    let mut all = Vec::new();
+    for k in parse_keys(s).unwrap() {
+        let (next, fx) = step(ed, Event::Key(k));
+        ed = next;
+        all.extend(fx);
+    }
+    (ed, all)
+}
+
 /// Types `s` as plain characters. A newline is RET.
 ///
 /// # Panics

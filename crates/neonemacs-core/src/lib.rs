@@ -1,27 +1,42 @@
 //! Pure editor transitions. Nothing here touches the file system, a process, Lua, or the terminal (I-14).
 
-pub mod buffer;
-pub mod commands;
-pub mod config;
-pub mod dispatch;
-pub mod editor;
+mod buffer;
+mod commands;
+mod config;
+mod dispatch;
+mod editor;
 pub mod effect;
-pub mod eol;
-pub mod file;
-pub mod keymap;
-pub mod kill_ring;
-pub mod mode;
+mod eol;
+mod file;
+mod keymap;
+mod kill_ring;
+mod mode;
+mod registry;
 pub mod render;
-pub mod search;
-pub mod syntax;
+#[cfg(test)]
+mod scenarios;
+mod search;
+mod syntax;
 #[cfg(test)]
 mod test_support;
-pub mod text;
-pub mod undo;
-pub mod width;
-pub mod window;
+mod text;
+mod undo;
+mod width;
+mod window;
 
-use crate::editor::Editor;
+pub use buffer::{Buffer, BufferId};
+pub use commands::{confirmed, is_builtin, record_init_error, request_open, switch_to};
+pub use config::{Config, Setting, ShellSpec, Toggles, Value};
+pub use dispatch::command;
+pub use editor::{CANCEL_MESSAGE, Confirm, Editor, LastCommand, Mode, Prefix, Window};
+pub use eol::Eol;
+pub use file::{Backing, DiskState, FilePath, RawFile, Read, loaded_from};
+pub use keymap::{AliasTarget, Code, Key, KeyError, ctrl_key, parse_key_seq, parse_keys};
+pub use syntax::{SyntaxDef, SyntaxRegistry, TokenKind, highlight_line};
+pub use text::{Text, snap_point};
+pub use undo::Edit;
+pub use width::str_width;
+
 use crate::effect::{Effects, Event};
 
 /// Applies `event` to the editor. Returns the new editor and the effects the shell must perform.
@@ -43,6 +58,8 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
             result,
         } => commands::file_read(ed, target, path, result, fx),
         Event::WalRemoved => (ed, fx),
+        Event::Idle => commands::idle(ed, fx),
+        Event::WalFlushed(writes) => (commands::wal_flushed(ed, writes), fx),
         Event::WalProbed { path, line, probe } => commands::wal_probed(ed, &path, line, probe, fx),
         Event::ShellDone(result) => (commands::shell_done(ed, result), fx),
         Event::LuaDone(result) => (commands::lua_done(ed, result), fx),

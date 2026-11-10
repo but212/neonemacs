@@ -10,12 +10,13 @@ mod interaction;
 mod settings;
 
 use crate::buffer::BufferPool;
-use crate::commands::CommandRegistry;
 use crate::config::Config;
+use crate::effect::{Effect, WalTarget};
 use crate::eol::Eol;
 use crate::file::{Backing, FilePath};
 use crate::keymap::{KeyAliases, Keymap};
 pub use crate::kill_ring::KillRing;
+use crate::registry::CommandRegistry;
 use crate::syntax::SyntaxRegistry;
 use crate::text::Text;
 use crate::window::WindowManager;
@@ -29,7 +30,12 @@ pub use crate::mode::{
     Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
     QueryReplace, Question,
 };
-pub use crate::window::{Dir, Layout, Window, snap_point as snap};
+pub use crate::text::snap_point as snap;
+pub use crate::window::{Dir, Layout, Window};
+
+/// The echo-area message that cancelling (`C-g`, `Esc`) leaves. The shell reads it to tell that nothing
+/// else has replaced the spinner.
+pub const CANCEL_MESSAGE: &str = "Quit";
 
 /// Snaps an end-of-range offset to a unit boundary (moves to end of unit if mid-unit).
 #[must_use]
@@ -80,6 +86,37 @@ impl Editor {
     #[must_use]
     pub fn clear_wal_dirty(self, id: BufferId) -> Self {
         self.with_buffer(id, Buffer::clear_wal_dirty)
+    }
+
+    /// Keeps the unsaved text of the scratch buffer in `slot`. `None` keeps it in memory only (I-43).
+    #[must_use]
+    pub fn with_scratch_slot(mut self, slot: Option<PathBuf>) -> Self {
+        self.documents.scratch_slot = slot;
+        self
+    }
+
+    #[must_use]
+    pub fn scratch_slot(&self) -> Option<&Path> {
+        self.documents.scratch_slot.as_deref()
+    }
+
+    /// Where the WAL of buffer `id` lives, if it can have one: beside its file, or the scratch slot.
+    #[must_use]
+    pub fn wal_target(&self, id: BufferId) -> Option<WalTarget> {
+        match self.buffer_by_id(id).backing() {
+            Backing::File { path, .. } => Some(WalTarget::Sibling(path.as_path().to_path_buf())),
+            Backing::Scratch { .. } => self
+                .scratch_slot()
+                .map(|s| WalTarget::Slot(s.to_path_buf())),
+            Backing::None => None,
+        }
+    }
+
+    /// The effect that removes the WAL of buffer `id`, if it can have one.
+    #[must_use]
+    pub fn remove_wal_effect(&self, id: BufferId) -> Option<Effect> {
+        self.wal_target(id)
+            .map(|target| Effect::RemoveWal { target })
     }
 
     #[must_use]
