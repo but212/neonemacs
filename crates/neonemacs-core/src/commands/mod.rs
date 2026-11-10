@@ -4,6 +4,7 @@
 pub mod buffer_window;
 pub mod edit;
 pub mod file;
+pub mod load;
 pub mod motion;
 pub mod prompt;
 pub mod registry;
@@ -12,9 +13,8 @@ pub mod shell_output;
 pub mod table;
 
 pub use buffer_window::{kill_buffer, switch_to};
-pub use file::{
-    confirmed, disk_checked, file_read, request_open, save_buffer, wal_probed, written,
-};
+pub use file::{confirmed, disk_checked, save_buffer, written};
+pub use load::{file_read, request_open, wal_probed};
 pub use prompt::{completions, prompt_key};
 pub use registry::CommandRegistry;
 pub use search::{isearch_key, query_key, start_query_replace};

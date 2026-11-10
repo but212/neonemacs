@@ -2,9 +2,9 @@
 //! `edit_seq` belongs here, so `Editor::apply` changes it in the same group it changes buffers
 //! and windows (I-31). Fields are visible only to `editor`.
 
-use crate::core::buffer::BufferPool;
-use crate::core::kill_ring::KillRing;
-use crate::core::window::{Window, WindowManager};
+use crate::buffer::BufferPool;
+use crate::kill_ring::KillRing;
+use crate::window::{Window, WindowManager};
 
 #[derive(Debug, Clone)]
 pub struct Documents {

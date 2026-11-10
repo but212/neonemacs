@@ -1,16 +1,23 @@
-[package]
-name = "neonemacs"
-version = "0.1.0"
+[workspace]
+members = ["crates/neonemacs-core"]
+default-members = [".", "crates/neonemacs-core"]
+
+[workspace.package]
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 
+[package]
+name = "neonemacs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
 [dependencies]
 crossterm = "0.29"
-memchr = "2"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
-neobit = "1.1.0"
-unicode-width = "0.2"
+neonemacs-core = { path = "crates/neonemacs-core" }
 
 [features]
 # Exposes `test_support` to integration tests. Off by default, so release builds do not carry it.

@@ -13,7 +13,7 @@
 
 - **언어**: Rust.
 - **아키텍처**: 함수형 코어 / 명령형 쉘 (Functional Core, Imperative Shell).
-  - **코어 (`src/core`)**: I/O 부수효과를 포함하지 않는 순수 상태 전이 기계다. 모든 시그니처에서 가변 참조(`&mut`)를 배제하고 값 소유권 전이(`Editor -> Editor`, `Buffer -> Buffer`, `WindowManager -> WindowManager`)로만 상태를 갱신하여 대규모 버퍼에서도 딥클론과 입력 지연을 원천 배제한다.
+  - **코어 (`crates/neonemacs-core`)**: I/O 부수효과를 포함하지 않는 순수 상태 전이 기계다. 모든 시그니처에서 가변 참조(`&mut`)를 배제하고 값 소유권 전이(`Editor -> Editor`, `Buffer -> Buffer`, `WindowManager -> WindowManager`)로만 상태를 갱신하여 대규모 버퍼에서도 딥클론과 입력 지연을 원천 배제한다.
   - **쉘 (`src/shell`)**: 터미널, 파일 시스템, 백그라운드 프로세스, Lua 런타임(`RefCell::take` 소유권 이동 브리지), 시작 오케스트레이션(`shell::startup`) 등 외부 부수효과를 전담한다. 코어가 발행한 효과 요청(`Effect`)을 실행하고 단일 이벤트(`Event`)로 응답한다.
 - **확장**: Lua 임베딩. Emacs 매크로 문법은 지원하지 않는다.
 - **플랫폼**: Linux, macOS, Windows.
@@ -157,7 +157,7 @@
 
 - 읽기: UTF-8(비정상 바이트는 `Unit::Raw` 보존). 저장: 원본 바이트와 입력된 UTF-8 문자를 손실 없이 기록한다.
 - 커서는 문자 경계를 따라 움직이며 멀티바이트 문자 중간에 멈추지 않는다.
-- 표시 폭 (`src/core/width.rs`):
+- 표시 폭 (`crates/neonemacs-core/src/width.rs`):
   - 탭: 다음 탭 스톱까지(`tab_width - col % tab_width`)
   - 제어 문자(0x00~0x1F, 0x7F): 2칸, C1 제어 문자(0x80~0x9F): 3칸
   - 한글, CJK 등 전각(East Asian Wide/Fullwidth) 문자: 2칸

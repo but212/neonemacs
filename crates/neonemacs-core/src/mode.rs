@@ -1,8 +1,8 @@
 //! Editor modes, prompts, and modal state machines (§4, §8, §9).
 
-use crate::core::buffer::BufferId;
-use crate::core::search::Pattern;
-use crate::core::width::Metrics;
+use crate::buffer::BufferId;
+use crate::search::Pattern;
+use crate::width::Metrics;
 use std::path::PathBuf;
 
 /// Kind of a command, for commands that chain (§6, §7, I-09).

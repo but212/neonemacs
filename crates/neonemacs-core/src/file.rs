@@ -1,8 +1,8 @@
 //! Buffer backing, and the buffer that a file read produces. Pure: the bytes come from the shell.
 
-use crate::core::effect::Read;
-use crate::core::eol::Eol;
-use crate::core::text::Text;
+use crate::effect::Read;
+use crate::eol::Eol;
+use crate::text::Text;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
@@ -197,7 +197,7 @@ mod tests {
     use memchr::memchr_iter;
 
     use super::*;
-    use crate::core::effect::RawFile;
+    use crate::effect::RawFile;
 
     fn found(len: u64, bytes: &[u8]) -> Read {
         Read::Found(RawFile {

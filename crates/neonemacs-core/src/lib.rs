@@ -14,13 +14,15 @@ pub mod mode;
 pub mod render;
 pub mod search;
 pub mod syntax;
+#[cfg(test)]
+mod test_support;
 pub mod text;
 pub mod undo;
 pub mod width;
 pub mod window;
 
-use crate::core::editor::Editor;
-use crate::core::effect::{Effects, Event};
+use crate::editor::Editor;
+use crate::effect::{Effects, Event};
 
 /// Applies `event` to the editor. Returns the new editor and the effects the shell must perform.
 #[must_use]
@@ -51,9 +53,9 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::Config;
-    use crate::core::effect::{Effect, Event};
-    use crate::core::keymap::{Code, Key};
+    use crate::config::Config;
+    use crate::effect::{Effect, Event};
+    use crate::keymap::{Code, Key};
 
     #[test]
     fn step_returns_editor_and_effects() {

@@ -1,16 +1,17 @@
-//! I-18: no `&mut` in a `src/core` signature (parameters, return types, `&mut self`, type aliases,
-//! fields). `let mut` and `&mut` arguments inside bodies are allowed. Rust has no type-level ban on
-//! `&mut` in a signature, so this text scan is the enforcement (docs/context.md §4.1).
+//! I-18: no `&mut` in a `neonemacs-core` signature (parameters, return types, `&mut self`, type
+//! aliases, fields). `let mut` and `&mut` arguments inside bodies are allowed. Rust has no
+//! type-level ban on `&mut` in a signature, so this text scan is the enforcement
+//! (docs/context.md §4.1).
 //!
-//! I-14: no I/O crate in `src/core` (`std::fs`, `std::process`, `mlua`, `crossterm`). The scan reads
-//! source text, so it does not see a path reached through a macro or a re-export.
+//! I-14: no I/O crate in `neonemacs-core` (`std::fs`, `std::process`, `mlua`, `crossterm`). The
+//! scan reads source text, so it does not see a path reached through a macro or a re-export.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    for entry in fs::read_dir(dir).expect("src/core exists") {
+    for entry in fs::read_dir(dir).expect("crates/neonemacs-core/src exists") {
         let path = entry.expect("readable directory entry").path();
         if path.is_dir() {
             files.extend(rust_files(&path));
@@ -41,7 +42,7 @@ fn has_signature_mut(line: &str) -> bool {
 
 #[test]
 fn core_has_no_mut_signatures() {
-    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
+    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/neonemacs-core/src");
     let mut hits = Vec::new();
     for file in rust_files(&core) {
         let source = fs::read_to_string(&file).expect("readable source file");
@@ -70,7 +71,7 @@ fn scanner_tells_signatures_from_bodies() {
     assert!(!has_signature_mut("    let mut t = Text::default();"));
 }
 
-/// True when the line names an I/O crate or module that `src/core` must not use.
+/// True when the line names an I/O crate or module that `crates/neonemacs-core/src` must not use.
 fn has_io_import(line: &str) -> bool {
     let code = line.split("//").next().unwrap_or("");
     if ["std::fs", "std::process", "mlua", "crossterm"]
@@ -96,7 +97,7 @@ fn has_word(text: &str, word: &str) -> bool {
 
 #[test]
 fn core_imports_no_io_crate() {
-    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
+    let core = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/neonemacs-core/src");
     let mut hits = Vec::new();
     for file in rust_files(&core) {
         let source = fs::read_to_string(&file).expect("readable source file");

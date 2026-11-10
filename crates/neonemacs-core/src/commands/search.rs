@@ -1,15 +1,13 @@
 //! Incremental search and interactive query-replace commands (§9).
 
-use crate::core::commands::prompt::prompt;
-use crate::core::config::Toggles;
-use crate::core::dispatch::answer_char;
-use crate::core::editor::{
-    Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
-};
-use crate::core::effect::Effects;
-use crate::core::keymap::{Code, Key};
-use crate::core::search::{self, Pattern};
-use crate::core::undo::Edit;
+use crate::commands::prompt::prompt;
+use crate::config::Toggles;
+use crate::dispatch::answer_char;
+use crate::editor::{Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace};
+use crate::effect::Effects;
+use crate::keymap::{Code, Key};
+use crate::search::{self, Pattern};
+use crate::undo::Edit;
 
 pub(crate) fn isearch_forward(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (
@@ -83,7 +81,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
         isearch_step(ed, s, anchor, false)
     } else {
         let ed = ed.set_mode(Mode::normal());
-        return crate::core::dispatch::handle_normal_key(ed, Prefix::None, key, fx);
+        return crate::dispatch::handle_normal_key(ed, Prefix::None, key, fx);
     };
     (ed.set_mode(Mode::Isearch(s)), fx)
 }
@@ -363,7 +361,7 @@ mod tests {
     }
 
     fn with_jamo() -> Editor {
-        use crate::core::keymap::AliasTarget;
+        use crate::keymap::AliasTarget;
         let to = |s| AliasTarget::parse(s).unwrap();
         editor().with_key_aliases(|a| a.alias('ㅜ', to("n")).alias('ㅂ', to("q")))
     }
@@ -473,9 +471,9 @@ mod tests {
 
     #[test]
     fn isearch_wrap_off_fails_at_the_end_instead_of_wrapping() {
-        let ed = Editor::new(crate::core::config::Config {
+        let ed = Editor::new(crate::config::Config {
             toggles: Toggles::DEFAULT.difference(Toggles::ISEARCH_WRAP),
-            ..crate::core::config::Config::default()
+            ..crate::config::Config::default()
         });
         let ed = typ(ed, "abc abd");
         let ed = keys(ed, "C-a C-s");

@@ -14,11 +14,11 @@ If this file and the spec disagree on behavior, the spec governs. If they disagr
 
 Two layers, with effects flowing from the core down to the shell and events flowing back up, one `Event` per `Effect` (I-15).
 
-- **Core** (`src/core`): editor state and its pure transitions, `step(Editor, Event) -> (Editor, Effects)`. It does no I/O (I-14) and has no `&mut` in any signature (I-18). A built-in command is `Builtin = fn(Editor, Effects) -> (Editor, Effects)`. `Editor` is `Documents`, `Interaction`, and `Settings` (I-32).
+- **Core** (`crates/neonemacs-core`, the crate `neonemacs-core`, exposed as `neonemacs::core`): editor state and its pure transitions, `step(Editor, Event) -> (Editor, Effects)`. It does no I/O (I-14) and has no `&mut` in any signature (I-18). A built-in command is `Builtin = fn(Editor, Effects) -> (Editor, Effects)`. `Editor` is `Documents`, `Interaction`, and `Settings` (I-32).
 - **Shell** (`src/shell`): owns the `Editor`, performs each `Effect`, and answers it with one `Event`. It holds everything that touches the outside: terminal and ANSI output (`session/screen.rs`), atomic writes (`atomic.rs`), the WAL (`wal.rs`), the background shell thread, Lua 5.4 (`lua/` and the bundled `syntax.lua`, `text.lua`, `keymap.lua`), and start-up.
 - **`Effect`**: `StatDisk`, `WriteFile`, `ReadFile`, `RemoveWal`, `ProbeWal`, `RunShell`, `RunLua`, `ReloadInit`.
 - **`Event`**: `Key`, `Run`, `Disk`, `Written`, `FileRead`, `WalRemoved`, `WalProbed`, `ShellDone`, `LuaDone`, `InitLoaded`.
-- **`Editor` groups** (`src/core/editor/`), each private to `editor`:
+- **`Editor` groups** (`crates/neonemacs-core/src/editor/`), each private to `editor`:
   - `Documents`: `BufferPool`, `WindowManager`, `KillRing`, `edit_seq`.
   - `Interaction`: `Mode`, `last`/`prev` `LastCommand`, the echo-area message, and the quit flag.
   - `Settings`: `Config`, `Keymap`, `KeyAliases`, `SyntaxRegistry`, `CommandRegistry`, `cwd`.
@@ -97,6 +97,8 @@ Each topic gives what is in force and why, then what was rejected or accepted as
 - The core is pure and takes no `&mut` in any signature. State moves by value through `step`. The shell owns the `Editor` in a `RefCell<Option<Editor>>`; `step` takes it out and puts it back, so no borrow lives across a Lua call. A Lua `run` of a built-in calls `step` synchronously and performs its effects in the same Lua call. Nested `run` stops at depth 50 (`MAX_RUN_DEPTH`) with a Lua error. (I-01, I-04, I-05, I-08, I-14, I-15, I-18 to I-21, I-32)
 - Why: commands that did I/O directly needed real files in tests and spread the save checks across functions. Effects make every save step testable without files, and the exhaustive `match` in `perform` makes a new effect fail to compile until the shell handles it.
 - Rejected: persistent undo (`.<name>.undo`), removed with its effects; undo is in memory only.
+- Boundary: the core is its own crate, so `mlua`, `crossterm`, and the shell are unreachable from it at build time. `neonemacs` re-exports it as `core` (`pub use neonemacs_core as core`), so paths such as `neonemacs::core::editor` do not change. The core's unit tests use `neonemacs-core`'s own `test_support`, which runs `step` and panics on any effect; a test that needs effects performed lives in `tests/` and uses the root `test_support`. Why: a module boundary inside one crate is enforced only by convention and a text scan. Rejected: narrowing `core`'s public surface inside one crate (no enforcement); adding `Event` variants for `shell::startup` calls to `request_open`, `switch_to`, and `record_init_error` (they are pure calls whose effects the shell performs, so I-14 and I-15 already hold). Limit: `std::fs` and `std::process` cannot be cut by crate, so the text scan stays.
+- Command files: `commands/file.rs` holds the save check flow and `commands/load.rs` holds reading, opening, reverting, and WAL recovery; both are re-exported from `commands`.
 - Limit: Rust cannot ban `&mut` in a signature by type, so `tests/core/purity.rs` scans the text. It does not see `&mut` inside a body or behind a macro.
 - `Frame` holds glyph and `TokenKind` per `Cell`. Color escapes are produced only when the shell queues terminal output (`src/shell/session/screen.rs`), so widths, columns, cursor coordinates, and `render::diff` never see escape bytes and wide characters stay aligned. (I-22, spec §5)
 - `shell-command` runs on a `std::thread` and reports through `std::sync::mpsc`. The event loop polls every 50 ms and turns a spinner. A second command while one runs is refused. Why: non-blocking without an async runtime, which would cost binary size (spec §2). Rejected: Tokio or another async runtime; a queue of commands, which could leak threads and lose results silently. (I-24, spec §4)
@@ -140,18 +142,18 @@ Invariants about structure and types, which no user sees directly. The invariant
 
 | ID | Invariant | Enforcement |
 | :--- | :--- | :--- |
-| **I-02** | Gap buffer byte boundaries are strictly local and continuous | Data structure (`src/core/text.rs`) |
+| **I-02** | Gap buffer byte boundaries are strictly local and continuous | Data structure (`crates/neonemacs-core/src/text.rs`) |
 | **I-05** | A successful disk write records fresh metadata (`DiskState`) | Type (`Event::Written`) |
-| **I-14** | `src/core` never imports I/O crates (`fs`, `process`, `mlua`, `crossterm`) | Text scan (`tests/core/purity.rs`) |
+| **I-14** | `neonemacs-core` never imports I/O crates: `mlua`, `crossterm` are not in its dependencies; `fs`, `process` are rejected by a text scan | Crate graph (`crates/neonemacs-core/Cargo.toml`); text scan for `std` (`tests/core/purity.rs`) |
 | **I-15** | Every `Effect` is answered by exactly one `Event` | Type (`shell::perform`) |
-| **I-18** | Zero `&mut` in any `src/core` signature (parameters, returns, fields) | Text scan (`tests/core/purity.rs`) |
+| **I-18** | Zero `&mut` in any `neonemacs-core` signature (parameters, returns, fields) | Text scan (`tests/core/purity.rs`) |
 | **I-19** | The selected window index is strictly bounded: `selected < layout.leaf_count()` | Runtime (`WindowTree`) |
 | **I-20** | Any buffer id passed to `with_buffer` exists in the buffer pool | Runtime |
 | **I-21** | The shell's `RefCell<Option<Editor>>` is `None` only during `step`, and no borrow of it is held across a Lua call or while an effect runs | Runtime (`shell::step_in` take/put, `perform_in`, Lua `run`) |
 | **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. The header records the EOL (`NEONWAL2`) | Runtime (`wal.rs`) |
 | **I-27** | Syntax definitions are purely declarative in `SyntaxRegistry` | Data structure |
 | **I-31** | Text and EOL change only through `Editor::apply(Edit)`, which updates undo, `modified`, and `wal_dirty`, or through a whole-text replacement that resets undo (I-34); `edit_seq` is owned by Documents and changed only there | Runtime (`Editor::apply`, `Buffer::with_text`, `Buffer::mark_clean`) |
-| **I-32** | `Editor` groups (Documents, Interaction, Settings) are private to `editor`; a group never writes another group's fields, and cross-group operations are composed in `Editor` methods | Module privacy (`src/core/editor/`) |
+| **I-32** | `Editor` groups (Documents, Interaction, Settings) are private to `editor`; a group never writes another group's fields, and cross-group operations are composed in `Editor` methods | Module privacy (`crates/neonemacs-core/src/editor/`) |
 | **I-35** | The undo limit is `Config.undo_limit` only; `UndoLog` stores no limit | Type (`UndoLog::record(edit, limit)`) |
 | **I-50** | A `SyntaxDef` keeps its keyword and type lists sorted and deduplicated (ASCII-lowercased when case-insensitive), so lookups use binary search | Runtime (`SyntaxDef::new`) |
 | **I-51** | The line lexer is stateless and works on one line at a time | Runtime (`LineLexer`) |

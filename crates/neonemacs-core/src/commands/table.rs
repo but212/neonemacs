@@ -1,30 +1,29 @@
 //! Built-in command lookup table and dispatcher (§4).
 
-use crate::core::commands::buffer_window::{
+use crate::commands::buffer_window::{
     delete_other_windows, other_window, split_window_below, split_window_right,
 };
-use crate::core::commands::edit::{
+use crate::commands::edit::{
     delete_backward_char, delete_char, kill_line, kill_region, kill_ring_save, view_mode, yank,
     yank_pop,
 };
-use crate::core::commands::file::{
-    revert_buffer, save_buffer_cmd, save_buffers_kill_emacs, toggle_eol,
-};
-use crate::core::commands::motion::{
+use crate::commands::file::{save_buffer_cmd, save_buffers_kill_emacs, toggle_eol};
+use crate::commands::load::revert_buffer;
+use crate::commands::motion::{
     backward_char, exchange_point_and_mark, forward_char, move_beginning_of_line, move_end_of_line,
     next_line, previous_line, recenter, set_mark_command,
 };
-use crate::core::commands::prompt::{
+use crate::commands::prompt::{
     execute_extended_command, find_file_cmd, goto_line_cmd, kill_buffer_cmd, switch_to_buffer_cmd,
     write_file_cmd,
 };
-use crate::core::commands::search::{
+use crate::commands::search::{
     isearch_backward, isearch_backward_regexp, isearch_forward, isearch_forward_regexp,
     query_replace_cmd, query_replace_regexp_cmd,
 };
-use crate::core::commands::shell_output::{reload_init_cmd, shell_command_cmd};
-use crate::core::editor::Editor;
-use crate::core::effect::Effects;
+use crate::commands::shell_output::{reload_init_cmd, shell_command_cmd};
+use crate::editor::Editor;
+use crate::effect::Effects;
 
 pub type Builtin = fn(Editor, Effects) -> (Editor, Effects);
 

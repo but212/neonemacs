@@ -1,7 +1,7 @@
 //! Literal and mini-regex search over a `Text` (§9). A match never crosses a
 //! newline (A11). Literal search is a pattern made only of literal atoms.
 
-use crate::core::text::{Text, Unit};
+use crate::text::{Text, Unit};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Class {

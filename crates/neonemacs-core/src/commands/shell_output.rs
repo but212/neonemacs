@@ -3,12 +3,12 @@
 //!
 //! Also the outcome of loading `init.lua`, whose errors go to `*init-log*` (§12).
 
-use crate::core::commands::buffer_window::{split, switch_to};
-use crate::core::commands::prompt::prompt;
-use crate::core::editor::{Buffer, BufferId, Dir, Editor, Purpose};
-use crate::core::effect::{Effect, Effects, InitLoad};
-use crate::core::file::Backing;
-use crate::core::text::Text;
+use crate::commands::buffer_window::{split, switch_to};
+use crate::commands::prompt::prompt;
+use crate::editor::{Buffer, BufferId, Dir, Editor, Purpose};
+use crate::effect::{Effect, Effects, InitLoad};
+use crate::file::Backing;
+use crate::text::Text;
 
 pub(crate) fn shell_command_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx)
@@ -131,13 +131,13 @@ pub fn init_loaded(ed: Editor, load: Option<InitLoad>) -> Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::window::Window;
-    use crate::test_support::{editor, run_command, typ};
+    use crate::test_support::{editor, typ};
+    use crate::window::Window;
 
     #[test]
     fn the_effect_carries_the_configured_shell() {
-        use crate::core::config::{Config, ShellSpec};
-        let ed = crate::core::editor::Editor::new(Config {
+        use crate::config::{Config, ShellSpec};
+        let ed = crate::editor::Editor::new(Config {
             shell_file_name: "pwsh".to_owned(),
             shell_command_switch: "-Command".to_owned(),
             ..Config::default()
@@ -157,13 +157,21 @@ mod tests {
 
     #[test]
     fn shell_command_one_line_echoes_many_lines_open_buffer() {
-        let ed = editor();
-        let ed = run_command(ed, |e, fx| (e.clone(), run_shell(&e, "echo hi", fx)));
+        let ed = shell_done(
+            editor(),
+            Ok("hi
+"
+            .to_owned()),
+        );
         assert_eq!(ed.message(), "hi");
 
-        let ed = run_command(ed, |e, fx| {
-            (e.clone(), run_shell(&e, "echo a&& echo b", fx))
-        });
+        let ed = shell_done(
+            ed,
+            Ok("a
+b
+"
+            .to_owned()),
+        );
         let out = ed
             .buffers()
             .iter()
@@ -173,7 +181,7 @@ mod tests {
         assert_eq!(ed.leaf_count(), 2);
     }
 
-    fn output_id(ed: &Editor) -> crate::core::editor::BufferId {
+    fn output_id(ed: &Editor) -> crate::editor::BufferId {
         ed.buffers()
             .iter()
             .find(|b| b.name() == "*Shell Command Output*")
@@ -183,16 +191,24 @@ mod tests {
 
     #[test]
     fn shell_output_replacement_resets_undo() {
-        let ed = run_command(editor(), |e, fx| {
-            (e.clone(), run_shell(&e, "echo a&& echo b", fx))
-        });
+        let ed = shell_done(
+            editor(),
+            Ok("a
+b
+"
+            .to_owned()),
+        );
         let out = output_id(&ed);
         let ed = switch_to(ed, out);
         let ed = typ(ed, "X");
 
-        let ed = run_command(ed, |e, fx| {
-            (e.clone(), run_shell(&e, "echo c&& echo d", fx))
-        });
+        let ed = shell_done(
+            ed,
+            Ok("c
+d
+"
+            .to_owned()),
+        );
         let (ed, _) = ed.undo(Vec::new());
         assert_eq!(ed.message(), "No further undo information");
         assert_eq!(
@@ -203,9 +219,13 @@ mod tests {
 
     #[test]
     fn shell_output_replacement_snaps_windows() {
-        let ed = run_command(editor(), |e, fx| {
-            (e.clone(), run_shell(&e, "echo aaaaaaaaaaaa&& echo b", fx))
-        });
+        let ed = shell_done(
+            editor(),
+            Ok("aaaaaaaaaaaa
+b
+"
+            .to_owned()),
+        );
         let out = output_id(&ed);
         let ed = switch_to(ed, out);
         let ed = ed.with_window(|w| Window {
@@ -214,9 +234,13 @@ mod tests {
             ..w
         });
 
-        let ed = run_command(ed, |e, fx| {
-            (e.clone(), run_shell(&e, "echo c&& echo d", fx))
-        });
+        let ed = shell_done(
+            ed,
+            Ok("c
+d
+"
+            .to_owned()),
+        );
         let len = ed.buffers().get_by_id(output_id(&ed)).text().len();
         assert!(ed.window().point <= len);
         assert_eq!(ed.window().top, 0);
@@ -287,7 +311,7 @@ more"
 
     #[test]
     fn a_file_buffer_named_like_the_log_is_never_overwritten() {
-        use crate::core::file::{DiskState, FilePath};
+        use crate::file::{DiskState, FilePath};
         use std::path::Path;
         let path = FilePath::resolve(Path::new(""), Path::new("*init-log*"));
         let (ed, file) = editor().add_buffer(

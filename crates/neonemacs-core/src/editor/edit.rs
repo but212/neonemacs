@@ -2,10 +2,10 @@
 //! to a buffer goes through it, so the read-only check, undo, and anchor moves stay in one place.
 
 use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
-use crate::core::config::Toggles;
-use crate::core::effect::{Effect, Effects};
-use crate::core::undo::Edit;
-use crate::core::width::column;
+use crate::config::Toggles;
+use crate::effect::{Effect, Effects};
+use crate::undo::Edit;
+use crate::width::column;
 
 impl Editor {
     /// Applies `edit` to the buffer of the selected window. Returns the new editor and
@@ -216,10 +216,10 @@ fn remap(edit: &Edit, a: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::Config;
-    use crate::core::keymap::{Code, Key};
-    use crate::core::text::Text;
+    use crate::config::Config;
+    use crate::keymap::{Code, Key};
     use crate::test_support::{press, run_command, text};
+    use crate::text::Text;
 
     fn editor_with(s: &str) -> Editor {
         Editor::new(Config::default())
@@ -339,7 +339,7 @@ mod tests {
 
     /// A file-backed buffer that was just saved with `saved` as its text.
     fn saved(saved: &str) -> Editor {
-        use crate::core::file::{Backing, DiskState, FilePath};
+        use crate::file::{Backing, DiskState, FilePath};
         use std::path::Path;
         Editor::new(Config::default()).with_current_buffer(|b| {
             b.with_text(Text::from_bytes(saved.as_bytes()))
@@ -352,7 +352,7 @@ mod tests {
     }
 
     fn undo_fx(ed: Editor) -> (Editor, Effects) {
-        crate::core::dispatch::command(ed, Vec::new(), Editor::undo)
+        crate::dispatch::command(ed, Vec::new(), Editor::undo)
     }
 
     #[test]
@@ -366,7 +366,7 @@ mod tests {
         assert!(!ed.buffer().is_wal_dirty());
         assert_eq!(
             fx,
-            vec![crate::core::effect::Effect::RemoveWal {
+            vec![crate::effect::Effect::RemoveWal {
                 path: std::path::PathBuf::from("f.txt")
             }]
         );
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn undo_past_the_saved_text_is_modified() {
         let ed = type_char(editor_with(""), 'x');
-        let ed = ed.with_current_buffer(|b| b.record_saved(crate::core::file::DiskState::Unknown));
+        let ed = ed.with_current_buffer(|b| b.record_saved(crate::file::DiskState::Unknown));
         let ed = type_char(ed, 'a');
         let ed = undo(ed);
         assert!(!ed.buffer().modified());
@@ -387,15 +387,22 @@ mod tests {
 
     #[test]
     fn undoing_an_undo_returns_to_clean_through_the_original_group() {
-        let ed = undo(type_char(saved(""), 'a'));
+        // Undoing to clean text drops the WAL of the file-backed buffer (I-41).
+        let wal = crate::effect::Effect::RemoveWal {
+            path: std::path::PathBuf::from("f.txt"),
+        };
+        let (ed, fx) = undo_fx(type_char(saved(""), 'a'));
+        assert_eq!(fx, std::slice::from_ref(&wal));
         assert!(!ed.buffer().modified());
         // A command in between breaks the undo chain, so this undo redoes "a".
         let ed = run_command(ed, |e, fx| (e.move_point(0), fx));
-        let ed = undo(ed);
+        let (ed, fx) = undo_fx(ed);
+        assert!(fx.is_empty());
         assert_eq!(text(&ed), "a");
         assert!(ed.buffer().modified());
         // The chained undo removes "a" through the group opened on the clean text.
-        let ed = undo(ed);
+        let (ed, fx) = undo_fx(ed);
+        assert_eq!(fx, [wal]);
         assert_eq!(text(&ed), "");
         assert!(!ed.buffer().modified());
     }
@@ -403,7 +410,7 @@ mod tests {
     #[test]
     fn a_save_after_the_edit_makes_undo_modified() {
         let ed = type_char(saved(""), 'a');
-        let ed = ed.with_current_buffer(|b| b.record_saved(crate::core::file::DiskState::Unknown));
+        let ed = ed.with_current_buffer(|b| b.record_saved(crate::file::DiskState::Unknown));
         let ed = undo(ed);
         assert_eq!(text(&ed), "");
         assert!(ed.buffer().modified());
@@ -501,8 +508,8 @@ mod tests {
         let ed = Editor::new(Config::default());
         let (ed, id) = ed.add_buffer(
             "test",
-            crate::core::text::Text::from_bytes(b"hello wonderful world"),
-            crate::core::editor::Backing::None,
+            crate::text::Text::from_bytes(b"hello wonderful world"),
+            crate::editor::Backing::None,
         );
         let ed = ed.with_window(|w| Window {
             buffer: id,
@@ -542,8 +549,8 @@ mod tests {
         });
         let (ed, id) = ed.add_buffer(
             "test",
-            crate::core::text::Text::from_bytes(b"ab"),
-            crate::core::editor::Backing::None,
+            crate::text::Text::from_bytes(b"ab"),
+            crate::editor::Backing::None,
         );
         let ed = ed.with_window(|w| Window {
             buffer: id,

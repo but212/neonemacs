@@ -1,6 +1,6 @@
 //! Undo log in groups, kept in memory.
 
-use crate::core::eol::Eol;
+use crate::eol::Eol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {

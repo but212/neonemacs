@@ -4,7 +4,7 @@
 //! `core` holds the editor state and its pure transitions. `shell` performs the
 //! effects that `core` asks for: files, processes, Lua, and the terminal.
 
-pub mod core;
+pub use neonemacs_core as core;
 pub mod shell;
 
 #[cfg(any(test, feature = "test-support"))]

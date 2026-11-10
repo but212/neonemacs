@@ -1,8 +1,8 @@
 //! Text modification, kill ring, and formatting commands (§6).
 
-use crate::core::commands::motion::region;
-use crate::core::editor::{Buffer, Editor, LastCommand};
-use crate::core::effect::Effects;
+use crate::commands::motion::region;
+use crate::editor::{Buffer, Editor, LastCommand};
+use crate::effect::Effects;
 
 pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
@@ -106,7 +106,7 @@ pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::editor::KillRing;
+    use crate::editor::KillRing;
     use crate::test_support::{editor, keys, point, run_command, set_mark, text, typ};
 
     #[test]

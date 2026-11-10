@@ -1,8 +1,8 @@
 //! Typed editor settings (§12). Lua reads and writes them by name through
 //! `get` and `set`, and every value is checked on the way in (I-11).
 
-use crate::core::eol::Eol;
-use crate::core::width::Metrics;
+use crate::eol::Eol;
+use crate::width::Metrics;
 use neobit::neobit;
 
 neobit! {

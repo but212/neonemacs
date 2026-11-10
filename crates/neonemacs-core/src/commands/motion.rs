@@ -1,9 +1,9 @@
 //! Cursor motion and mark setting commands (§3, §6).
 
-use crate::core::editor::{Editor, LastCommand, Window};
-use crate::core::effect::Effects;
-use crate::core::text::Text;
-use crate::core::width::{column, pos_at_column};
+use crate::editor::{Editor, LastCommand, Window};
+use crate::effect::Effects;
+use crate::text::Text;
+use crate::width::{column, pos_at_column};
 
 /// Helper for region lookup on `Editor`.
 pub(crate) fn region(ed: &Editor) -> Option<(usize, usize)> {

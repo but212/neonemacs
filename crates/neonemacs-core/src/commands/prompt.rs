@@ -1,16 +1,17 @@
 //! Minibuffer prompts, M-x completions, and command submission (§4, §12).
 
-use crate::core::buffer::SCRATCH_NAME;
-use crate::core::commands::buffer_window::{kill_buffer, switch_to};
-use crate::core::commands::file::{find_file, write_file};
-use crate::core::commands::search::start_query_replace;
-use crate::core::commands::shell_output::run_shell;
-use crate::core::commands::table::BUILTINS;
-use crate::core::editor::{Buffer, Editor, Mode, Prompt, Purpose};
-use crate::core::effect::Effects;
-use crate::core::file::Backing;
-use crate::core::keymap::{Code, Key};
-use crate::core::text::Text;
+use crate::buffer::SCRATCH_NAME;
+use crate::commands::buffer_window::{kill_buffer, switch_to};
+use crate::commands::file::write_file;
+use crate::commands::load::find_file;
+use crate::commands::search::start_query_replace;
+use crate::commands::shell_output::run_shell;
+use crate::commands::table::BUILTINS;
+use crate::editor::{Buffer, Editor, Mode, Prompt, Purpose};
+use crate::effect::Effects;
+use crate::file::Backing;
+use crate::keymap::{Code, Key};
+use crate::text::Text;
 
 pub(crate) fn execute_extended_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx)
@@ -171,7 +172,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
     let input = p.input();
     match p.purpose {
-        Purpose::ExecuteCommand => crate::core::dispatch::run_named(ed, &input, fx),
+        Purpose::ExecuteCommand => crate::dispatch::run_named(ed, &input, fx),
         Purpose::FindFile => find_file(ed, &input, fx),
         Purpose::WriteFile => write_file(ed, &input, fx),
         Purpose::SwitchBuffer => (switch_to_named(ed, &input), fx),
@@ -192,7 +193,7 @@ fn submit(ed: Editor, p: Prompt, fx: Effects) -> (Editor, Effects) {
                 )
             }
         }
-        Purpose::QueryTo { kind, from } => crate::core::dispatch::command(ed, fx, |e, fx| {
+        Purpose::QueryTo { kind, from } => crate::dispatch::command(ed, fx, |e, fx| {
             let (e, result) = start_query_replace(e, &from, &input, kind);
             let e = match result {
                 Ok(()) => e,
@@ -244,8 +245,8 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::effect::Effect;
-    use crate::core::mode::Prefix;
+    use crate::effect::Effect;
+    use crate::mode::Prefix;
     use crate::test_support::{editor, keys, typ};
 
     #[test]
@@ -396,7 +397,7 @@ mod tests {
         let ed = keys(ed, "right right C-d");
         assert_eq!(prompt_of(&ed).input(), "가나");
         assert_eq!(
-            prompt_of(&ed).cursor_width(crate::core::width::Metrics { tab: 8, cjk: false }),
+            prompt_of(&ed).cursor_width(crate::width::Metrics { tab: 8, cjk: false }),
             8
         );
     }
@@ -416,7 +417,7 @@ mod tests {
     #[test]
     fn switching_prefers_the_buffer_without_a_file_among_equal_names() {
         // A file named like `*init-log*` must not hide the log, whichever was made first.
-        use crate::core::file::{DiskState, FilePath};
+        use crate::file::{DiskState, FilePath};
         use std::path::Path;
         let path = FilePath::resolve(Path::new(""), Path::new("*init-log*"));
         let (ed, file) = editor().add_buffer(

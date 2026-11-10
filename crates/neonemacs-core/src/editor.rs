@@ -9,27 +9,27 @@ mod edit;
 mod interaction;
 mod settings;
 
-use crate::core::buffer::BufferPool;
-use crate::core::commands::CommandRegistry;
-use crate::core::config::Config;
-use crate::core::eol::Eol;
-use crate::core::file::{Backing, FilePath};
-use crate::core::keymap::{KeyAliases, Keymap};
-pub use crate::core::kill_ring::KillRing;
-use crate::core::syntax::SyntaxRegistry;
-use crate::core::text::Text;
-use crate::core::window::WindowManager;
+use crate::buffer::BufferPool;
+use crate::commands::CommandRegistry;
+use crate::config::Config;
+use crate::eol::Eol;
+use crate::file::{Backing, FilePath};
+use crate::keymap::{KeyAliases, Keymap};
+pub use crate::kill_ring::KillRing;
+use crate::syntax::SyntaxRegistry;
+use crate::text::Text;
+use crate::window::WindowManager;
 use documents::Documents;
 use interaction::Interaction;
 use settings::Settings;
 use std::path::{Path, PathBuf};
 
-pub use crate::core::buffer::{Buffer, BufferId};
-pub use crate::core::mode::{
+pub use crate::buffer::{Buffer, BufferId};
+pub use crate::mode::{
     Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
     QueryReplace, Question,
 };
-pub use crate::core::window::{Dir, Layout, Window, snap_point as snap};
+pub use crate::window::{Dir, Layout, Window, snap_point as snap};
 
 /// Snaps an end-of-range offset to a unit boundary (moves to end of unit if mid-unit).
 #[must_use]
@@ -428,7 +428,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::keymap::{Code, Key};
+    use crate::keymap::{Code, Key};
     use crate::test_support::{press, text};
 
     fn editor_with(s: &str) -> Editor {
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(ed.kill_ring().last(), Some(&b"sample"[..]));
 
         let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());
-        let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
+        let key = crate::keymap::parse_key_seq("C-x 2").unwrap();
         assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
     }
 
@@ -551,7 +551,7 @@ mod tests {
         let ed = ed.adopt_settings(from);
         assert_eq!(ed.config().fill_column, 85);
         assert_eq!(ed.cwd(), Path::new("elsewhere"));
-        let key = crate::core::keymap::parse_key_seq("C-x 9").unwrap();
+        let key = crate::keymap::parse_key_seq("C-x 9").unwrap();
         assert_eq!(ed.keymap().lookup(&key), Some("forward-char"));
         assert_eq!(text(&ed), "kept");
         assert_eq!(ed.message(), "kept message");

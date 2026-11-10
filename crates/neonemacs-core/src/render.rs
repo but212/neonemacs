@@ -1,11 +1,11 @@
 //! Screen model: window rectangles, per-cell grid, and line diffs (§5, §11, A5).
 //! `scroll` adjusts the view so point stays visible; `frame` is pure.
 
-use crate::core::config::Toggles;
-use crate::core::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
-use crate::core::syntax::{SyntaxDef, TokenKind, highlight_line};
-use crate::core::text::{Text, Unit};
-use crate::core::width::{Metrics, column, unit_width};
+use crate::config::Toggles;
+use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
+use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
+use crate::text::{Text, Unit};
+use crate::width::{Metrics, column, unit_width};
 
 /// A single terminal cell containing display glyph and syntax style (I-22).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,8 +444,8 @@ fn fit(s: &str, width: usize, fill: char, m: Metrics) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::Config;
-    use crate::core::eol::Eol;
+    use crate::config::Config;
+    use crate::eol::Eol;
 
     fn screen(text: &str, point: usize, cols: usize, rows: usize) -> Frame {
         let ed = Editor::new(Config::default())
@@ -556,8 +556,8 @@ mod tests {
 
     #[test]
     fn the_query_replace_match_is_reversed() {
-        use crate::core::commands::start_query_replace;
-        use crate::core::editor::MatchKind;
+        use crate::commands::start_query_replace;
+        use crate::editor::MatchKind;
         let ed = keys(typ(Editor::new(Config::default()), "abc def"), "C-a");
         let (ed, res) = start_query_replace(ed, "def", "x", MatchKind::Literal);
         res.unwrap();
@@ -602,7 +602,7 @@ mod tests {
             let (ed, id) = ed.add_buffer(
                 "a.t",
                 Text::from_bytes(b"let x"),
-                crate::core::file::Backing::None,
+                crate::file::Backing::None,
             );
             let ed = ed.with_window(|w| Window {
                 buffer: id,
@@ -723,10 +723,10 @@ mod tests {
                 .as_bytes(),
         );
         let buf = Buffer::new(
-            crate::core::buffer::BufferId(1),
+            crate::buffer::BufferId(1),
             "t",
             text,
-            crate::core::file::Backing::None,
+            crate::file::Backing::None,
         );
         let end = buf.text().len();
         assert!(status_text(&buf, end, 60, Metrics { tab: 8, cjk: false }).contains("  2:10  "));
@@ -750,10 +750,10 @@ mod tests {
     fn status_line_large_point_percentage_calculation() {
         let text = Text::from_bytes(b"hello world");
         let buf = Buffer::new(
-            crate::core::buffer::BufferId(1),
+            crate::buffer::BufferId(1),
             "test.txt",
             text,
-            crate::core::file::Backing::None,
+            crate::file::Backing::None,
         );
         let s = status_text(&buf, 5, 40, Metrics { tab: 8, cjk: false });
         // 5 * 100 / 11 = 45%
@@ -761,7 +761,7 @@ mod tests {
     }
 
     fn prompt_editor(before: &str, after: &str) -> Editor {
-        use crate::core::editor::{Prompt, Purpose};
+        use crate::editor::{Prompt, Purpose};
         let p = Prompt {
             label: "Find file: ".into(),
             before: before.into(),

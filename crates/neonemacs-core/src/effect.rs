@@ -1,12 +1,12 @@
 //! What the core asks the shell to do (`Effect`) and what the shell reports back (`Event`).
 //! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15).
 
-use crate::core::buffer::Buffer;
-use crate::core::config::ShellSpec;
-use crate::core::editor::BufferId;
-use crate::core::eol::Eol;
-use crate::core::file::DiskState;
-use crate::core::keymap::Key;
+use crate::buffer::Buffer;
+use crate::config::ShellSpec;
+use crate::editor::BufferId;
+use crate::eol::Eol;
+use crate::file::DiskState;
+use crate::keymap::Key;
 use std::path::PathBuf;
 
 pub type Effects = Vec<Effect>;

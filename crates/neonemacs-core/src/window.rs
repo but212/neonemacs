@@ -1,8 +1,8 @@
 //! Window layout and `WindowManager` state (§5).
 //! Enforces I-19: selected < `layout.leaf_count()` at all times.
 
-use crate::core::buffer::BufferId;
-use crate::core::text::Text;
+use crate::buffer::BufferId;
+use crate::text::Text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {

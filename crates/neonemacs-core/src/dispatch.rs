@@ -1,10 +1,10 @@
 //! Key interpretation and command dispatching (§3, §4).
 //! Decouples routing and command execution lifecycle from Editor state management.
 
-use crate::core::commands;
-use crate::core::editor::{Buffer, Editor, Mode, Prefix, Question};
-use crate::core::effect::{Effect, Effects};
-use crate::core::keymap::{Code, Key, KeyAliases};
+use crate::commands;
+use crate::editor::{Buffer, Editor, Mode, Prefix, Question};
+use crate::effect::{Effect, Effects};
+use crate::keymap::{Code, Key, KeyAliases};
 
 /// Handles one key press: resolves prefixes, then runs a bound command or inserts text.
 #[must_use]
@@ -126,7 +126,7 @@ fn lookup_binding(ed: &Editor, prefix: Prefix, key: Key, keys: &[Key]) -> Option
 /// its result comes back as `LuaDone`.
 #[must_use]
 pub fn run_named(ed: Editor, name: &str, mut fx: Effects) -> (Editor, Effects) {
-    let ed = if matches!(ed.last(), crate::core::editor::LastCommand::Insert { .. }) {
+    let ed = if matches!(ed.last(), crate::editor::LastCommand::Insert { .. }) {
         ed.boundary()
     } else {
         ed
@@ -155,8 +155,8 @@ pub fn command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::editor::Confirm;
-    use crate::core::keymap::AliasTarget;
+    use crate::editor::Confirm;
+    use crate::keymap::AliasTarget;
     use crate::test_support::{editor, press, text, typ};
 
     fn asking() -> Editor {

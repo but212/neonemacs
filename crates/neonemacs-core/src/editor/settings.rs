@@ -1,10 +1,10 @@
 //! Settings group: user-set values and the registries they feed (I-11, I-27).
 //! Fields are visible only to `editor`, so no other group can write them (I-32).
 
-use crate::core::commands::CommandRegistry;
-use crate::core::config::Config;
-use crate::core::keymap::{KeyAliases, Keymap};
-use crate::core::syntax::SyntaxRegistry;
+use crate::commands::CommandRegistry;
+use crate::config::Config;
+use crate::keymap::{KeyAliases, Keymap};
+use crate::syntax::SyntaxRegistry;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]

@@ -3,11 +3,11 @@
 
 use std::path::Path;
 
-use crate::core::eol::Eol;
-use crate::core::file::{Backing, DiskState};
-use crate::core::text::Text;
-use crate::core::undo::{Edit, UndoLog};
-use crate::core::window::snap_point as snap;
+use crate::eol::Eol;
+use crate::file::{Backing, DiskState};
+use crate::text::Text;
+use crate::undo::{Edit, UndoLog};
+use crate::window::snap_point as snap;
 
 /// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
 pub const SCRATCH_NAME: &str = "*scratch*";
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn mark_clean_clears_wal_dirty() {
-        use crate::core::file::{DiskState, FilePath};
+        use crate::file::{DiskState, FilePath};
         let backing = Backing::file(
             FilePath::resolve(Path::new("/w"), Path::new("a.txt")),
             DiskState::Unknown,

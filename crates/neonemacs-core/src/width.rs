@@ -1,7 +1,7 @@
 //! Display width of a unit (§11, R2). Overrides `unicode-width` only for
 //! tabs, control characters, C1 controls and zero-width joiners and fillers.
 
-use crate::core::text::{Text, Unit};
+use crate::text::{Text, Unit};
 use unicode_width::UnicodeWidthChar;
 
 /// How wide the terminal draws things: the tab stop distance and whether East Asian ambiguous
@@ -123,7 +123,7 @@ mod tests {
             assert_eq!(unit_width(Unit::Char('\u{301}'), 0, m), 0);
         }
         assert_eq!(str_width("a\u{203B}", wide), 3);
-        let t = crate::core::text::Text::from_bytes("\u{203B}x".as_bytes());
+        let t = crate::text::Text::from_bytes("\u{203B}x".as_bytes());
         assert_eq!(column(&t, 3, wide), 2);
         assert_eq!(column(&t, 3, narrow), 1);
         assert_eq!(pos_at_column(&t, 0, 2, wide), 3);
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn column_and_pos_at_column() {
-        let t = crate::core::text::Text::from_bytes("a\t가b\nnext".as_bytes());
+        let t = crate::text::Text::from_bytes("a\t가b\nnext".as_bytes());
         assert_eq!(column(&t, 0, M8), 0);
         assert_eq!(column(&t, 1, M8), 1);
         assert_eq!(column(&t, 2, M8), 8);

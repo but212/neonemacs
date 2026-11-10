@@ -4,9 +4,9 @@
 //! - Layer 1: Pure domain logic on buffer IDs, layout transitions, and confirmation predicates.
 //! - Layer 2: Built-in command adapters operating on `Editor`.
 
-use crate::core::editor::{BufferId, Confirm, Dir, Editor, Window};
-use crate::core::effect::{Effect, Effects};
-use crate::core::window::WindowManager;
+use crate::editor::{BufferId, Confirm, Dir, Editor, Window};
+use crate::effect::{Effect, Effects};
+use crate::window::WindowManager;
 
 pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (split(ed, Dir::Below), fx)
@@ -69,10 +69,10 @@ pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::editor::Mode;
-    use crate::core::file::Backing;
-    use crate::core::text::Text;
+    use crate::editor::Mode;
+    use crate::file::Backing;
     use crate::test_support::{editor, keys, point, run_command, typ};
+    use crate::text::Text;
 
     #[test]
     fn windows_keep_independent_points() {
