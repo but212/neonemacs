@@ -2,22 +2,22 @@
 //! (I-44, I-45).
 
 use super::args::FileArg;
-use crate::core::buffer::Buffer;
-use crate::core::commands::{request_open, switch_to};
-use crate::core::editor::Editor;
+use crate::core::Buffer;
+use crate::core::DiskState;
+use crate::core::Editor;
 use crate::core::effect::WalProbe;
-use crate::core::file::DiskState;
+use crate::core::{request_open, switch_to};
 use crate::shell::{perform_all, wal};
 use std::path::Path;
 
-/// Puts the unsaved text left in the scratch `slot` by an earlier run into the scratch buffer.
+/// Puts the unsaved text left in the scratch slot of `ed` by an earlier run into the scratch buffer.
 /// An unusable slot is moved aside and reported (I-44). The notice follows an earlier message.
 #[must_use]
-pub fn restore_scratch(ed: Editor, slot: Option<&Path>) -> Editor {
-    let Some(slot) = slot else {
+pub fn restore_scratch(ed: Editor) -> Editor {
+    let Some(slot) = ed.scratch_slot().map(Path::to_path_buf) else {
         return ed;
     };
-    let (ed, note) = match wal::probe_file(slot, DiskState::Unknown) {
+    let (ed, note) = match wal::probe_file(&slot, DiskState::Unknown) {
         WalProbe::Absent => return ed,
         WalProbe::Valid(r) => (
             ed.restore_scratch(&r.bytes, r.eol),
@@ -70,8 +70,8 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::Config;
-    use crate::core::eol::Eol;
+    use crate::core::Config;
+    use crate::core::Eol;
     use crate::shell::startup::files_of;
     use crate::shell::wal;
     use std::fs;
@@ -276,7 +276,8 @@ mod tests {
         let slot = dir.path().join("scratch.wal");
         wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
 
-        let ed = restore_scratch(Editor::new(Config::default()), Some(&slot));
+        let ed =
+            restore_scratch(Editor::new(Config::default()).with_scratch_slot(Some(slot.clone())));
         assert_eq!(ed.buffer().name(), "*scratch*");
         assert_eq!(ed.buffer().text().to_bytes(), b"draft");
         assert!(ed.buffer().modified());
@@ -290,7 +291,7 @@ mod tests {
         let slot = dir.path().join("scratch.wal");
         wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
         let ed = Editor::new(Config::default()).set_message("init.lua: boom");
-        let ed = restore_scratch(ed, Some(&slot));
+        let ed = restore_scratch(ed.with_scratch_slot(Some(slot.clone())));
         assert_eq!(
             ed.message(),
             "init.lua: boom; [Recovered *scratch* from WAL]"
@@ -299,10 +300,10 @@ mod tests {
 
     #[test]
     fn no_slot_or_an_empty_one_restores_nothing() {
-        let ed = restore_scratch(Editor::new(Config::default()), None);
+        let ed = restore_scratch(Editor::new(Config::default()));
         assert!(!ed.buffer().modified());
         let dir = tempfile::tempdir().unwrap();
-        let ed = restore_scratch(ed, Some(&dir.path().join("missing.wal")));
+        let ed = restore_scratch(ed.with_scratch_slot(Some(dir.path().join("missing.wal"))));
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "");
     }
@@ -312,7 +313,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slot = dir.path().join("scratch.wal");
         fs::write(&slot, b"GARBAGE").unwrap();
-        let ed = restore_scratch(Editor::new(Config::default()), Some(&slot));
+        let ed =
+            restore_scratch(Editor::new(Config::default()).with_scratch_slot(Some(slot.clone())));
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "Stale WAL kept as scratch.wal.stale");
         assert!(dir.path().join("scratch.wal.stale").is_file());

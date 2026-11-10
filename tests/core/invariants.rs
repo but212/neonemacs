@@ -1,10 +1,10 @@
 //! Core invariants and anchor preservation tests (I-01, I-23, I-25).
 
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::{Editor, Window, snap};
-use neonemacs::core::eol::Eol;
-use neonemacs::core::file::{Backing, DiskState, FilePath};
-use neonemacs::core::text::Text;
+use neonemacs::core::Config;
+use neonemacs::core::Eol;
+use neonemacs::core::Text;
+use neonemacs::core::{Backing, DiskState, FilePath};
+use neonemacs::core::{Editor, Window, snap_point};
 use neonemacs::shell::file;
 use neonemacs::shell::startup::{FileArg, open_files};
 use neonemacs::shell::wal;
@@ -38,7 +38,7 @@ fn restore_content_must_snap_saved_point_and_mark() {
     );
     assert_eq!(
         buf.saved_point(),
-        snap(buf.text(), buf.saved_point()),
+        snap_point(buf.text(), buf.saved_point()),
         "saved_point must be snapped to valid unit boundary"
     );
     assert!(
@@ -57,7 +57,7 @@ fn restore_content_snaps_active_window_and_applies_line() {
         initial_text,
         Backing::file(FilePath::resolve(Path::new(""), &path), DiskState::Unknown),
     );
-    let ed = neonemacs::core::commands::buffer_window::switch_to(ed, id).with_window(|w| Window {
+    let ed = neonemacs::core::switch_to(ed, id).with_window(|w| Window {
         point: 35,
         top: 14,
         ..w
@@ -119,7 +119,7 @@ fn open_files_with_line_arg_and_shrunk_wal_preserves_i01() {
 
 #[test]
 fn wal_recovery_clears_stale_undo_and_applies_line_offset() {
-    use neonemacs::core::undo::Edit;
+    use neonemacs::core::Edit;
 
     let ed = Editor::new(Config::default());
     let path = PathBuf::from("f_wal_test.txt");

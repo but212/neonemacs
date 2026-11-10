@@ -2,10 +2,10 @@
 //!
 //! Unit tests always see them; integration tests need the `test-support` feature.
 
-use crate::core::config::Config;
-use crate::core::editor::Editor;
+use crate::core::Config;
+use crate::core::Editor;
 use crate::core::effect::{Effects, Event};
-use crate::core::keymap::{Code, Key, parse_keys};
+use crate::core::{Code, Key, parse_keys};
 use crate::shell::{handle, perform_all};
 
 /// A fresh editor with the default configuration.
@@ -55,7 +55,7 @@ pub fn typ(mut ed: Editor, s: &str) -> Editor {
 
 /// Runs a command and performs its effects.
 pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Effects)) -> Editor {
-    let (ed, fx) = crate::core::dispatch::command(ed, Vec::new(), run);
+    let (ed, fx) = crate::core::command(ed, Vec::new(), run);
     perform_all(ed, None, fx)
 }
 

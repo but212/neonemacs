@@ -14,7 +14,7 @@ mod syntax;
 #[cfg(test)]
 mod tests;
 
-use crate::core::editor::Editor;
+use crate::core::Editor;
 use alias::install_alias_api;
 use buffer::install_buffer_api;
 use command::install_command_api;
@@ -127,4 +127,9 @@ pub fn with_api<R>(
         install_buffer_api(lua, scope, &g, cell)?;
         body(lua)
     })
+}
+
+#[cfg(test)]
+pub(crate) fn test_script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
+    crate::shell::run_source(ed, lua, "=test", src)
 }

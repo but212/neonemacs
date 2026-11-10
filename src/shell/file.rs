@@ -1,10 +1,50 @@
-//! File I/O for the shell: reads, the atomic save, and disk state (§8, A2, A12).
+//! File I/O for the shell: reads, atomic saves, and disk state (§8, A2, A12).
 
-use crate::core::effect::{self, RawFile};
-use crate::core::file::DiskState;
-use std::fs::{self, File};
-use std::io::{self, Read};
+use crate::core::{DiskState, RawFile, Read as FileRead};
+use std::fs::{self, File, OpenOptions, Permissions};
+use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Atomically writes `bytes` to `target` using a PID- and sequence-isolated temporary file.
+/// Calls `sync_all` before renaming over `target`, and cleans up the temporary file on error.
+///
+/// # Errors
+/// Returns `io::Error` if creating, writing, flushing, or renaming the temporary file fails.
+pub fn atomic_write(
+    target: &Path,
+    prefix: &str,
+    suffix: &str,
+    bytes: &[u8],
+    permissions: Option<Permissions>,
+) -> io::Result<()> {
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let pid = std::process::id();
+    let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!("{prefix}{name}.{pid}_{seq}{suffix}"));
+
+    let result = write_and_sync(&tmp, bytes, permissions).and_then(|()| fs::rename(&tmp, target));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn write_and_sync(tmp: &Path, bytes: &[u8], permissions: Option<Permissions>) -> io::Result<()> {
+    let mut f = OpenOptions::new().write(true).create_new(true).open(tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    if let Some(perms) = permissions {
+        let _ = fs::set_permissions(tmp, perms);
+    }
+    Ok(())
+}
 
 fn state_of(meta: &fs::Metadata) -> DiskState {
     meta.modified()
@@ -24,10 +64,10 @@ pub fn disk_state(path: &Path) -> DiskState {
 ///
 /// # Errors
 /// Returns `io::Error` if reading file metadata or bytes fails.
-pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
+pub fn read_raw(path: &Path, max_size: u64) -> io::Result<FileRead> {
     let mut file = match File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(effect::Read::Missing),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(FileRead::Missing),
         Err(e) => return Err(e),
     };
     let meta = file.metadata()?;
@@ -36,7 +76,7 @@ pub fn read_raw(path: &Path, max_size: u64) -> io::Result<effect::Read> {
     } else {
         read_capped(&mut file, meta.len())?
     };
-    Ok(effect::Read::Found(RawFile {
+    Ok(FileRead::Found(RawFile {
         len: meta.len(),
         disk: state_of(&meta),
         bytes,
@@ -65,15 +105,15 @@ pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
         path.to_path_buf()
     };
     let permissions = fs::metadata(&target).ok().map(|m| m.permissions());
-    crate::shell::atomic::atomic_write(&target, ".", ".tmp", bytes, permissions)?;
+    atomic_write(&target, ".", ".tmp", bytes, permissions)?;
     Ok(disk_state(&target))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::eol::Eol;
-    use crate::core::file::{FilePath, loaded_from};
+    use crate::core::Eol;
+    use crate::core::{FilePath, loaded_from};
 
     #[test]
     fn roundtrip_exact() {
@@ -102,7 +142,7 @@ mod tests {
         fs::write(&path, b"0123456789").unwrap();
 
         let read = read_raw(&path, 4).unwrap();
-        let effect::Read::Found(raw) = read else {
+        let FileRead::Found(raw) = read else {
             panic!("expected Found");
         };
         assert_eq!(raw.len, 10);

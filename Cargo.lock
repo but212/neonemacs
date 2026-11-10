@@ -297,12 +297,19 @@ name = "neonemacs"
 version = "0.1.0"
 dependencies = [
  "crossterm",
- "memchr",
  "mlua",
- "neobit",
  "neonemacs",
+ "neonemacs-core",
  "portable-pty",
  "tempfile",
+]
+
+[[package]]
+name = "neonemacs-core"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "neobit",
  "unicode-width",
 ]
 

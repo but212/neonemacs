@@ -1,7 +1,51 @@
-//! Terminal input: converts a crossterm key event into the editor's `Key` (I-12).
+//! Terminal input and mode management: converts a crossterm key event into the editor's `Key` (I-12)
+//! and restores raw mode/alternate screen on drop or panic (§13).
 
-use crate::core::keymap::{Code, Key, ctrl_key};
+use crate::core::{Code, Key, ctrl_key};
 use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::{cursor, execute};
+use std::io;
+use std::sync::Once;
+
+/// Puts the terminal back as it was. Safe to call more than once.
+fn restore_terminal() {
+    let _ = execute!(io::stdout(), cursor::Show, LeaveAlternateScreen);
+    let _ = terminal::disable_raw_mode();
+}
+
+/// Restores the terminal when dropped, including on early return or panic (§13).
+pub struct TerminalGuard;
+
+impl TerminalGuard {
+    /// Enters raw mode and the alternate screen.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if enabling raw mode or entering alternate screen fails.
+    pub fn enter() -> io::Result<Self> {
+        Self::install_panic_hook();
+        terminal::enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        Ok(Self)
+    }
+
+    fn install_panic_hook() {
+        static PANIC_HOOK: Once = Once::new();
+        PANIC_HOOK.call_once(|| {
+            let default = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                restore_terminal();
+                default(info);
+            }));
+        });
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
 
 /// Canonical key for a terminal event (I-12). Several terminal encodings
 /// map to one key: `C-_`, `C-/`, and `C-7` all mean undo.
@@ -29,7 +73,7 @@ pub const fn from_terminal(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::keymap::parse_keys;
+    use crate::core::parse_keys;
     use crossterm::event::{KeyModifiers as M, MediaKeyCode, ModifierKeyCode};
 
     fn norm(c: KeyCode, m: M) -> Key {

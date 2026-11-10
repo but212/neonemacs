@@ -1,17 +1,17 @@
 //! C-04, C-05, C-06, I-23, I-25: Lightweight WAL (Write-Ahead Log) crash recovery.
 
-use neonemacs::core::file::DiskState;
+use neonemacs::core::DiskState;
 use std::time::UNIX_EPOCH;
 
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
-use neonemacs::core::commands::request_open;
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::Editor;
+use neonemacs::core::Config;
+use neonemacs::core::Editor;
+use neonemacs::core::Eol;
 use neonemacs::core::effect::Event;
-use neonemacs::core::eol::Eol;
-use neonemacs::core::keymap::parse_keys;
+use neonemacs::core::parse_keys;
+use neonemacs::core::request_open;
 use neonemacs::shell::file;
 use neonemacs::shell::lua;
 use neonemacs::shell::session::ShellSession;
@@ -63,7 +63,7 @@ fn recovery_from_wal_restores_unsaved_content() {
     if wal::has_wal(&file_path) {
         let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
         ed = ed.with_current_buffer(|buf| {
-            buf.with_text(neonemacs::core::text::Text::from_bytes(&wal_bytes))
+            buf.with_text(neonemacs::core::Text::from_bytes(&wal_bytes))
                 .mark_modified()
         });
     }
@@ -129,9 +129,7 @@ fn revert_buffer_cleans_up_wal() {
     let ed = perform_all(ed, None, fx);
 
     // Revert buffer (M-x revert-buffer RET)
-    let (ed, fx_revert) =
-        neonemacs::core::commands::table::find("revert-buffer").unwrap()(ed, Vec::new());
-    let ed = perform_all(ed, None, fx_revert);
+    let ed = handle(ed, None, Event::Run("revert-buffer".to_owned()));
 
     // Opening recovered the draft (I-45), so it is unsaved text and revert asks first.
     assert!(ed.buffer().modified());
@@ -200,8 +198,8 @@ fn press(session: &mut ShellSession, code: KeyCode, modifiers: KeyModifiers, at:
 
 fn scratch_session(slot: Option<std::path::PathBuf>) -> ShellSession {
     let lua = lua::new_state().unwrap();
-    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
-    ShellSession::new(ed, lua).with_scratch_wal(slot)
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua).with_scratch_slot(slot);
+    ShellSession::new(ed, lua)
 }
 
 fn type_x(session: &mut ShellSession, at: Instant) {
@@ -302,9 +300,10 @@ fn an_existing_slot_survives_until_the_scratch_is_clean() {
     let slot = dir.path().join("scratch.wal");
     wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
     let lua = lua::new_state().unwrap();
-    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
-    let ed = neonemacs::shell::startup::restore_scratch(ed, Some(&slot));
-    let mut session = ShellSession::new(ed, lua).with_scratch_wal(Some(slot.clone()));
+    let ed =
+        lua::bootstrap(Editor::new(Config::default()), &lua).with_scratch_slot(Some(slot.clone()));
+    let ed = neonemacs::shell::startup::restore_scratch(ed);
+    let mut session = ShellSession::new(ed, lua);
     let t0 = Instant::now();
     type_x(&mut session, t0);
     assert!(slot.exists());
@@ -573,7 +572,7 @@ fn failed_write_file_keeps_old_wal() {
     let fx = request_open(&ed, &old_path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     let ed = ed.with_current_buffer(|buf| {
-        buf.with_text(neonemacs::core::text::Text::from_bytes(b"unsaved edits"))
+        buf.with_text(neonemacs::core::Text::from_bytes(b"unsaved edits"))
             .mark_modified()
     });
 
@@ -612,7 +611,7 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
 
     // Buffer has edits matching WAL
     ed = ed.with_current_buffer(|buf| {
-        buf.with_text(neonemacs::core::text::Text::from_bytes(b"modified content"))
+        buf.with_text(neonemacs::core::Text::from_bytes(b"modified content"))
             .mark_modified()
     });
 
@@ -631,9 +630,9 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
         ed = handle(
             ed,
             None,
-            Event::Key(neonemacs::core::keymap::Key::plain(match code {
-                KeyCode::Enter => neonemacs::core::keymap::Code::Enter,
-                KeyCode::Char(ch) => neonemacs::core::keymap::Code::Char(ch),
+            Event::Key(neonemacs::core::Key::plain(match code {
+                KeyCode::Enter => neonemacs::core::Code::Enter,
+                KeyCode::Char(ch) => neonemacs::core::Code::Char(ch),
                 _ => unreachable!(),
             })),
         );
@@ -647,9 +646,9 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
         ed = handle(
             ed,
             None,
-            Event::Key(neonemacs::core::keymap::Key::plain(match code {
-                KeyCode::Enter => neonemacs::core::keymap::Code::Enter,
-                KeyCode::Char(ch) => neonemacs::core::keymap::Code::Char(ch),
+            Event::Key(neonemacs::core::Key::plain(match code {
+                KeyCode::Enter => neonemacs::core::Code::Enter,
+                KeyCode::Char(ch) => neonemacs::core::Code::Char(ch),
                 _ => unreachable!(),
             })),
         );

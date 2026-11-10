@@ -3,11 +3,11 @@
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
-use neonemacs::core::config::Config;
-use neonemacs::core::config::ShellSpec;
-use neonemacs::core::editor::Editor;
+use neonemacs::core::Config;
+use neonemacs::core::Editor;
+use neonemacs::core::ShellSpec;
 use neonemacs::core::effect::Event;
-use neonemacs::core::keymap::parse_keys;
+use neonemacs::core::parse_keys;
 use neonemacs::shell::lua;
 use neonemacs::shell::session::{ActiveShell, ShellSession};
 use neonemacs::shell::{ShellOutcome, handle_interactive, spawn_shell};
@@ -49,14 +49,14 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
 
     for c in "shell-command\n".chars() {
         let code = if c == '\n' {
-            neonemacs::core::keymap::Code::Enter
+            neonemacs::core::Code::Enter
         } else {
-            neonemacs::core::keymap::Code::Char(c)
+            neonemacs::core::Code::Char(c)
         };
         let (e, _) = handle_interactive(
             ed,
             None,
-            Event::Key(neonemacs::core::keymap::Key::plain(code)),
+            Event::Key(neonemacs::core::Key::plain(code)),
             false,
         );
         ed = e;
@@ -66,9 +66,7 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
         let (e, _) = handle_interactive(
             ed,
             None,
-            Event::Key(neonemacs::core::keymap::Key::plain(
-                neonemacs::core::keymap::Code::Char(c),
-            )),
+            Event::Key(neonemacs::core::Key::plain(neonemacs::core::Code::Char(c))),
             false,
         );
         ed = e;
@@ -78,9 +76,7 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
     let (final_ed, outcome) = handle_interactive(
         ed,
         None,
-        Event::Key(neonemacs::core::keymap::Key::plain(
-            neonemacs::core::keymap::Code::Enter,
-        )),
+        Event::Key(neonemacs::core::Key::plain(neonemacs::core::Code::Enter)),
         false,
     );
 
@@ -104,14 +100,14 @@ fn handle_interactive_rejects_concurrent_shell_command_when_busy() {
 
     for c in "shell-command\n".chars() {
         let code = if c == '\n' {
-            neonemacs::core::keymap::Code::Enter
+            neonemacs::core::Code::Enter
         } else {
-            neonemacs::core::keymap::Code::Char(c)
+            neonemacs::core::Code::Char(c)
         };
         let (e, _) = handle_interactive(
             ed,
             None,
-            Event::Key(neonemacs::core::keymap::Key::plain(code)),
+            Event::Key(neonemacs::core::Key::plain(code)),
             false,
         );
         ed = e;
@@ -121,9 +117,7 @@ fn handle_interactive_rejects_concurrent_shell_command_when_busy() {
         let (e, _) = handle_interactive(
             ed,
             None,
-            Event::Key(neonemacs::core::keymap::Key::plain(
-                neonemacs::core::keymap::Code::Char(c),
-            )),
+            Event::Key(neonemacs::core::Key::plain(neonemacs::core::Code::Char(c))),
             false,
         );
         ed = e;
@@ -133,9 +127,7 @@ fn handle_interactive_rejects_concurrent_shell_command_when_busy() {
     let (rejected_ed, outcome) = handle_interactive(
         ed,
         None,
-        Event::Key(neonemacs::core::keymap::Key::plain(
-            neonemacs::core::keymap::Code::Enter,
-        )),
+        Event::Key(neonemacs::core::Key::plain(neonemacs::core::Code::Enter)),
         true,
     );
 

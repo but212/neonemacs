@@ -1,4 +1,4 @@
--- text.lua: Pareto-core text transformation, movement, and editing commands (§6, docs/context.md §4.3)
+-- text.lua: Pareto-core text transformation, movement, and editing commands (docs/context.md §2.2, §4.3)
 
 --------------------------------------------------------------------------------
 -- 1. Core Primitives (Line, Char, Byte Predicates)
@@ -151,6 +151,16 @@ command("backward-kill-word", function()
     if p > w_start then
         buffer.kill(w_start, p)
         buffer.set_point(w_start)
+    end
+end)
+
+-- kill-line: kill to end of line, or the newline when already at the end (C-k)
+command("kill-line", function()
+    local p = buffer.point()
+    local le = buffer.line_end(p)
+    local e = (le == p and p < buffer.len()) and (p + 1) or le
+    if p < e then
+        buffer.kill(p, e)
     end
 end)
 
@@ -347,3 +357,15 @@ local function mark_whole_buffer()
 end
 
 command("mark-whole-buffer", mark_whole_buffer)
+
+-- exchange-point-and-mark: swap point and mark, reactivating mark
+command("exchange-point-and-mark", function()
+    local m = buffer.mark()
+    if not m then
+        message("No mark set in this buffer")
+        return
+    end
+    local p = buffer.point()
+    buffer.set_mark(p)
+    buffer.set_point(m)
+end)

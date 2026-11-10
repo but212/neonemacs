@@ -1,13 +1,13 @@
 //! Characterization of `Editor` state through public accessors (plan editor-state-boundary, C-01..C-07).
 //! The assertions read only the facade, so they keep holding while the fields are regrouped.
 
-use neonemacs::core::buffer::BufferId;
-use neonemacs::core::config::Config;
-use neonemacs::core::editor::{Confirm, Editor, LastCommand, Mode, Prefix, Window};
-use neonemacs::core::file::Backing;
-use neonemacs::core::keymap::{Code, Key};
-use neonemacs::core::text::Text;
-use neonemacs::core::undo::Edit;
+use neonemacs::core::Backing;
+use neonemacs::core::BufferId;
+use neonemacs::core::Config;
+use neonemacs::core::Edit;
+use neonemacs::core::Text;
+use neonemacs::core::{Code, Key};
+use neonemacs::core::{Confirm, Editor, LastCommand, Mode, Prefix, Window};
 use neonemacs::test_support::{editor, keys, press, run_command, text, typ};
 
 #[derive(Debug, PartialEq)]

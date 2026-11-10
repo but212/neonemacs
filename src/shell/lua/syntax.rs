@@ -1,8 +1,8 @@
 //! Lua `syntax.register`: declares syntax definitions from Lua.
 
 use super::mutate_editor;
-use crate::core::editor::Editor;
-use crate::core::syntax::SyntaxDef;
+use crate::core::Editor;
+use crate::core::SyntaxDef;
 use mlua::{Lua, Scope, Table};
 use std::cell::RefCell;
 
@@ -76,4 +76,126 @@ fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
         case_insensitive,
     )
     .with_heading_prefix(heading_prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{bootstrap, new_state, test_script as script};
+    use crate::core::Config;
+    use crate::core::Editor;
+    use crate::core::SyntaxRegistry;
+
+    fn lang_of<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
+        reg.find_by_filename(file).map(|d| d.name.as_str())
+    }
+
+    fn keyword_in(reg: &SyntaxRegistry, file: &str, word: &str) -> bool {
+        reg.find_by_filename(file)
+            .is_some_and(|d| d.is_keyword(word))
+    }
+
+    fn type_in(reg: &SyntaxRegistry, file: &str, word: &str) -> bool {
+        reg.find_by_filename(file).is_some_and(|d| d.is_type(word))
+    }
+
+    fn comment_in<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
+        reg.line_comment_for_filename(file)
+    }
+
+    #[test]
+    fn api_syntax_register_and_validation() {
+        let lua = new_state().unwrap();
+        let ed = Editor::new(Config::default());
+        let (ed, result) = script(
+            &lua,
+            ed,
+            r##"syntax.register("mylang", {
+                extensions = { "xyz" },
+                line_comment = "#",
+                keywords = { "fn", "var" }
+            })"##,
+        );
+        result.unwrap();
+        assert_eq!(lang_of(ed.syntax_registry(), "file.xyz"), Some("mylang"));
+        assert!(keyword_in(ed.syntax_registry(), "file.xyz", "fn"));
+        assert_eq!(comment_in(ed.syntax_registry(), "file.xyz"), Some("#"));
+
+        // Validation failures
+        let (_, result) = script(&lua, ed.clone(), r#"syntax.register("", {})"#);
+        assert!(result.is_err());
+        let (_, result) = script(
+            &lua,
+            ed.clone(),
+            r#"syntax.register("bad", { extensions = 123 })"#,
+        );
+        assert!(result.is_err());
+        // Missing both extensions and filenames
+        let (_, result) = script(
+            &lua,
+            ed.clone(),
+            r#"syntax.register("bad", { keywords = { "foo" } })"#,
+        );
+        assert!(result.is_err());
+
+        // Extended fields: filenames, types, case_insensitive
+        let (ed, result) = script(
+            &lua,
+            ed,
+            r#"syntax.register("sql", {
+                extensions = { "sql" },
+                filenames = { "query.sql.txt" },
+                case_insensitive = true,
+                keywords = { "select" },
+                types = { "varchar" }
+            })"#,
+        );
+        result.unwrap();
+        assert_eq!(lang_of(ed.syntax_registry(), "query.sql.txt"), Some("sql"));
+        assert!(keyword_in(ed.syntax_registry(), "query.sql.txt", "SELECT"));
+        assert!(type_in(ed.syntax_registry(), "query.sql.txt", "VARCHAR"));
+    }
+
+    #[test]
+    fn heading_is_a_syntax_field_and_bundled_markdown_uses_it() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let md = ed.syntax_registry().find_by_filename("README.md").unwrap();
+        assert_eq!(md.heading_prefix.as_deref(), Some("#"));
+        let (ed, result) = script(
+            &lua,
+            ed,
+            r#"syntax.register("markdown", { extensions = { "md" } })"#,
+        );
+        result.unwrap();
+        let md = ed.syntax_registry().find_by_filename("README.md").unwrap();
+        assert_eq!(md.heading_prefix, None);
+        let (_, result) = script(
+            &lua,
+            ed,
+            r#"syntax.register("x", { extensions = { "x" }, heading = "" })"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bundled_syntax_loaded_by_default() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let reg = ed.syntax_registry();
+        assert_eq!(lang_of(reg, "main.rs"), Some("rust"));
+        assert_eq!(lang_of(reg, "script.py"), Some("python"));
+        assert_eq!(lang_of(reg, "index.js"), Some("javascript"));
+        assert_eq!(lang_of(reg, "config.lua"), Some("lua"));
+        assert_eq!(lang_of(reg, "app.go"), Some("go"));
+        assert_eq!(lang_of(reg, "build.sh"), Some("shell"));
+        assert_eq!(lang_of(reg, "README.md"), Some("markdown"));
+        assert_eq!(lang_of(reg, "main.c"), Some("c"));
+        assert_eq!(lang_of(reg, "Makefile"), Some("makefile"));
+        assert_eq!(lang_of(reg, "Cargo.toml"), Some("toml"));
+        assert_eq!(lang_of(reg, "query.sql"), Some("sql"));
+        assert!(type_in(reg, "main.rs", "i32"));
+        assert!(keyword_in(reg, "query.sql", "SELECT"));
+        assert!(type_in(reg, "query.sql", "VARCHAR"));
+        assert!(keyword_in(reg, "build.sh", "if"));
+    }
 }

@@ -1,9 +1,9 @@
 //! Lightweight crash recovery WAL (Write-Ahead Log) for unsaved edits (§7, §14, I-23, I-25).
 //! Operates strictly in the imperative shell layer: persists snapshots/deltas during idle time.
 
+use crate::core::DiskState;
+use crate::core::Eol;
 use crate::core::effect::WalProbe;
-use crate::core::eol::Eol;
-use crate::core::file::DiskState;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -19,8 +19,10 @@ pub use crate::core::effect::Recovered;
 /// Returns the WAL sibling file path: `.filename.wal`
 #[must_use]
 pub fn wal_path(path: &Path) -> PathBuf {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!(".{name}.wal"))
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(".wal");
+    path.with_file_name(name)
 }
 
 const fn eol_byte(eol: Eol) -> u8 {
@@ -109,6 +111,7 @@ pub fn decode_wal(raw: &[u8], disk: DiskState) -> Option<Recovered> {
 }
 
 /// Checks if a valid WAL file exists for `path`.
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn has_wal(path: &Path) -> bool {
     let wp = wal_path(path);
@@ -124,7 +127,7 @@ pub fn has_wal(path: &Path) -> bool {
 /// Writes buffer contents with its EOL and base `DiskState` to the WAL file `wp` atomically.
 fn write_at(wp: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
     let encoded = encode_wal(disk, eol, bytes);
-    crate::shell::atomic::atomic_write(wp, ".", ".wal.tmp", &encoded, None)
+    crate::shell::file::atomic_write(wp, ".", ".wal.tmp", &encoded, None)
 }
 
 /// Writes buffer contents with its EOL and base `DiskState` to WAL atomically via temp file.
@@ -176,6 +179,7 @@ pub fn scratch_path() -> Option<PathBuf> {
 ///
 /// # Errors
 /// Returns `io::Error` if reading file bytes fails or if WAL is corrupt or disk state mismatches.
+#[cfg(any(test, feature = "test-support"))]
 pub fn read_wal(path: &Path, disk: DiskState) -> io::Result<Recovered> {
     let wp = wal_path(path);
     let raw = fs::read(wp)?;
@@ -191,6 +195,7 @@ fn stale_of(wp: &Path) -> PathBuf {
 }
 
 /// Where an unusable WAL of `path` is kept: `.filename.wal.stale`.
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn stale_path(path: &Path) -> PathBuf {
     stale_of(&wal_path(path))
@@ -252,6 +257,16 @@ mod tests {
 
         remove_wal(&target);
         assert!(!has_wal(&target));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_names_get_distinct_wal_paths() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = Path::new("d");
+        let a = dir.join(OsStr::from_bytes(b"a\xFF"));
+        let b = dir.join(OsStr::from_bytes(b"a\xFE"));
+        assert_ne!(wal_path(&a), wal_path(&b));
     }
 
     fn probe_dir() -> (tempfile::TempDir, PathBuf) {
