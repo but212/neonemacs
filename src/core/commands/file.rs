@@ -1,4 +1,4 @@
-//! File operations: save check flow, reading, reverting, and confirmation (§8, ADR 0002).
+//! File operations: save check flow, reading, reverting, and confirmation (§8, docs/context.md §4.2).
 
 use crate::core::commands::buffer_window::switch_to;
 use crate::core::editor::{Buffer, BufferId, Confirm, Editor};

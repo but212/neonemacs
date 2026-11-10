@@ -1,6 +1,6 @@
 //! I-18: no `&mut` in a `src/core` signature (parameters, return types, `&mut self`, type aliases,
 //! fields). `let mut` and `&mut` arguments inside bodies are allowed. Rust has no type-level ban on
-//! `&mut` in a signature, so this text scan is the enforcement (ADR 0002).
+//! `&mut` in a signature, so this text scan is the enforcement (docs/context.md §4.1).
 //!
 //! I-14: no I/O crate in `src/core` (`std::fs`, `std::process`, `mlua`, `crossterm`). The scan reads
 //! source text, so it does not see a path reached through a macro or a re-export.

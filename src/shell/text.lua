@@ -1,4 +1,4 @@
--- text.lua: Pareto-core text transformation, movement, and editing commands (§6, ADR 0006)
+-- text.lua: Pareto-core text transformation, movement, and editing commands (§6, docs/context.md §4.3)
 
 --------------------------------------------------------------------------------
 -- 1. Core Primitives (Line, Char, Byte Predicates)

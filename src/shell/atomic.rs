@@ -1,4 +1,4 @@
-//! Atomic file write utilities ensuring crash safety and concurrent isolation (§2, §7, ADR 0002).
+//! Atomic file write utilities ensuring crash safety and concurrent isolation (§2, §7, docs/context.md §4.1, §4.2).
 
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::{self, Write};
