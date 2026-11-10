@@ -1,3 +1,3 @@
-//! Imperative Shell integration test runner (§2, docs/context.md §4.1).
+//! Imperative Shell integration test runner (docs/context.md §1.1, §4.1).
 
 mod shell;

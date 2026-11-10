@@ -1,5 +1,5 @@
 //! Opening and reading files: asking the shell to read, applying what it read (new buffer or
-//! revert), and applying what it found in a WAL (§8, docs/context.md §4.2).
+//! revert), and applying what it found in a WAL (docs/context.md §3.2, §4.2).
 
 use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};

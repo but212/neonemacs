@@ -1,4 +1,4 @@
-//! Typed editor settings (§12). Lua reads and writes them by name through
+//! Typed editor settings (docs/context.md §2.6, §4.4). Lua reads and writes them by name through
 //! `get` and `set`, and every value is checked on the way in (I-11).
 
 use crate::eol::Eol;

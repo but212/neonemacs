@@ -1,4 +1,4 @@
-//! File operations: the save check flow, writing, and confirmation (§8, docs/context.md §4.2).
+//! File operations: the save check flow, writing, and confirmation (docs/context.md §3.1, §4.2).
 //! Reading and opening files is in `load`.
 
 use crate::commands::load::{name_of, revert_now};
@@ -178,7 +178,7 @@ pub fn written(
     (ed.set_message(message), fx)
 }
 
-/// Writes the current buffer to a new file name. `written` makes that its file on success (§8).
+/// Writes the current buffer to a new file name. `written` makes that its file on success (docs/context.md §3.1).
 pub(crate) fn write_file(ed: Editor, input: &str, mut fx: Effects) -> (Editor, Effects) {
     if input.is_empty() {
         return (ed, fx);

@@ -1,3 +1,3 @@
-//! Functional Core integration test runner (§2, docs/context.md §4.1).
+//! Functional Core integration test runner (docs/context.md §1.1, §4.1).
 
 mod core;
