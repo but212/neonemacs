@@ -34,9 +34,7 @@ pub(super) fn install_keymap_api<'lua, 'scope>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{
-        BUNDLED_KEYMAP, COMMANDS, bootstrap, new_state, test_script as script,
-    };
+    use super::super::{BUNDLED_KEYMAP, COMMANDS, bootstrap, new_state, test_script as script};
     use crate::core::Config;
     use crate::core::Editor;
     use crate::core::is_builtin;

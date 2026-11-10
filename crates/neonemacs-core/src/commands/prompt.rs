@@ -1,12 +1,12 @@
 //! Minibuffer prompts, M-x completions, and command submission (§4, §12).
 
 use crate::buffer::SCRATCH_NAME;
+use crate::commands::BUILTINS;
 use crate::commands::basic::{kill_buffer, switch_to};
 use crate::commands::file::write_file;
 use crate::commands::load::find_file;
 use crate::commands::search::start_query_replace;
 use crate::commands::shell_output::run_shell;
-use crate::commands::BUILTINS;
 use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prompt, Purpose};
 use crate::effect::Effects;
 use crate::file::Backing;
@@ -245,8 +245,8 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effect::Effect;
     use crate::editor::Prefix;
+    use crate::effect::Effect;
     use crate::test_support::{editor, keys, typ};
 
     #[test]

@@ -1,6 +1,6 @@
 use super::*;
-use crate::core::effect::Event;
 use crate::core::Config;
+use crate::core::effect::Event;
 use crate::shell::{handle, run_source};
 use mlua::Table;
 
@@ -491,10 +491,7 @@ fn test_kill_line_lua_command() {
 
     // 3. Boundary & empty buffer
     let ed = ed.with_current_buffer(|b| b.set_view_only(false));
-    let ed = ed.with_window(|w| crate::core::Window {
-        point: 9999,
-        ..w
-    });
+    let ed = ed.with_window(|w| crate::core::Window { point: 9999, ..w });
     let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
     res.unwrap();
     assert_eq!(ed.buffer().text().to_bytes(), b"two");

@@ -12,7 +12,9 @@ use crate::core::step;
 use crate::core::{Editor, Mode};
 use crate::shell::startup::{InitSource, configure, init_source};
 use crate::shell::terminal::from_terminal;
-use crate::shell::{BUSY_NOTICE, RUNNING, ShellOutcome, ShellTask, handle, handle_interactive, perform_all};
+use crate::shell::{
+    BUSY_NOTICE, RUNNING, ShellOutcome, ShellTask, handle, handle_interactive, perform_all,
+};
 use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use mlua::Lua;
 use std::io::{self, Write};

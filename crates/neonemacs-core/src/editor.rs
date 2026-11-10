@@ -19,8 +19,8 @@ use crate::syntax::SyntaxRegistry;
 use crate::text::Text;
 use crate::window::WindowManager;
 use documents::Documents;
-use interaction::Interaction;
 pub use documents::KillRing;
+use interaction::Interaction;
 pub use interaction::{
     Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
     QueryReplace, Question,

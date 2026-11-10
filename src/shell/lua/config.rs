@@ -58,8 +58,8 @@ fn from_lua(value: &LuaValue) -> Result<Value, String> {
 mod tests {
     use super::super::{bootstrap, new_state, test_script as script};
     use crate::core::Config;
-    use crate::core::Editor;
     use crate::core::Edit;
+    use crate::core::Editor;
     use crate::core::Eol;
     use crate::core::Toggles;
 

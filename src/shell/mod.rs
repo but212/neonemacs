@@ -272,7 +272,9 @@ fn run_shell_capped(command: &str, shell: &ShellSpec, cap: usize) -> Result<Stri
     }
     let _ = child.wait();
     if too_long {
-        return Err(format!("Command output exceeds {cap} bytes; command killed"));
+        return Err(format!(
+            "Command output exceeds {cap} bytes; command killed"
+        ));
     }
     let mut s = String::from_utf8_lossy(&parts[0]).into_owned();
     s.push_str(&String::from_utf8_lossy(&parts[1]));

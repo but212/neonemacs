@@ -19,9 +19,9 @@ pub use wal::{idle, wal_flushed};
 
 use crate::commands::basic::{
     backward_char, delete_backward_char, delete_char, delete_other_windows, forward_char,
-    kill_region, kill_ring_save, move_beginning_of_line, move_end_of_line, next_line,
-    other_window, previous_line, recenter, set_mark_command, split_window_below,
-    split_window_right, view_mode, yank, yank_pop,
+    kill_region, kill_ring_save, move_beginning_of_line, move_end_of_line, next_line, other_window,
+    previous_line, recenter, set_mark_command, split_window_below, split_window_right, view_mode,
+    yank, yank_pop,
 };
 use crate::commands::file::{save_buffer_cmd, save_buffers_kill_emacs, toggle_eol};
 use crate::commands::load::revert_buffer;
