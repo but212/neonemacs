@@ -207,7 +207,7 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
     if name.is_empty() {
         return ed;
     }
-    let found = ed.buffers().find_by_name(name).map(Buffer::id);
+    let found = ed.buffers().find_named(name).map(Buffer::id);
     if let Some(id) = found {
         switch_to(ed, id)
     } else {
@@ -225,7 +225,7 @@ fn kill_named(ed: Editor, name: &str, fx: Effects) -> (Editor, Effects) {
     let id = if name.is_empty() {
         Some(ed.window().buffer)
     } else {
-        ed.buffers().find_by_name(name).map(Buffer::id)
+        ed.buffers().find_named(name).map(Buffer::id)
     };
     match id {
         Some(id) => kill_buffer(ed, id, fx),
@@ -411,6 +411,30 @@ mod tests {
         let found = ed.buffers().find_by_name("*scratch*").unwrap();
         assert!(found.backing().is_scratch());
         assert_ne!(found.id(), id);
+    }
+
+    #[test]
+    fn switching_prefers_the_buffer_without_a_file_among_equal_names() {
+        // A file named like `*init-log*` must not hide the log, whichever was made first.
+        use crate::core::file::{DiskState, FilePath};
+        use std::path::Path;
+        let path = FilePath::resolve(Path::new(""), Path::new("*init-log*"));
+        let (ed, file) = editor().add_buffer(
+            "*init-log*",
+            Text::default(),
+            Backing::file(path, DiskState::Unknown),
+        );
+        let ed = switch_to_named(ed, "*init-log*");
+        assert_eq!(ed.window().buffer, file);
+
+        let (ed, log) = ed.add_buffer("*init-log*", Text::default(), Backing::None);
+        let ed = switch_to_named(ed, "*init-log*");
+        assert_eq!(ed.window().buffer, log);
+
+        // `kill-buffer` resolves the name the same way.
+        let (ed, _) = kill_named(ed, "*init-log*", Vec::new());
+        assert!(ed.buffers().iter().all(|b| b.id() != log));
+        assert!(ed.buffers().iter().any(|b| b.id() == file));
     }
 
     #[test]

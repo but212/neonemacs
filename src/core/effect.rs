@@ -47,6 +47,8 @@ pub enum Effect {
     RunLua {
         name: String,
     },
+    /// Reads `init.lua` again and replaces the settings and the Lua state with the result (I-58).
+    ReloadInit,
 }
 
 impl Effect {
@@ -118,6 +120,17 @@ pub enum WalProbe {
     Stale(Result<PathBuf, String>),
 }
 
+/// How `init.lua` was applied. The settings never hold part of it (I-54).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InitLoad {
+    /// There is no `init.lua`. The settings are the bundled ones.
+    Absent,
+    /// The settings are the bundled ones plus all of `init.lua`.
+    Applied,
+    /// `init.lua` was not applied. The text says why: the read error or the whole Lua error.
+    Rejected(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Key(Key),
@@ -148,4 +161,7 @@ pub enum Event {
     ShellDone(Result<String, String>),
     /// Error text when the Lua command failed. The core shows its first line.
     LuaDone(Result<(), String>),
+    /// Answers `ReloadInit`. `None` when the reload was asked for where the Lua state cannot be
+    /// replaced: from a Lua command.
+    InitLoaded(Option<InitLoad>),
 }

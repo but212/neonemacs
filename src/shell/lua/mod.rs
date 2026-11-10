@@ -20,7 +20,7 @@ use buffer::install_buffer_api;
 use command::install_command_api;
 use config::install_config_api;
 use keymap::install_keymap_api;
-use mlua::Lua;
+use mlua::{Lua, LuaOptions, StdLib};
 use std::cell::{Cell, Ref, RefCell};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -54,7 +54,7 @@ pub const BUNDLED_SCRIPTS: &[(&str, &str)] = &[
 #[must_use]
 pub fn bootstrap(mut ed: Editor, lua: &Lua) -> Editor {
     for (name, source) in BUNDLED_SCRIPTS {
-        let (next_ed, result) = crate::shell::run_source(ed, lua, source);
+        let (next_ed, result) = crate::shell::run_source(ed, lua, &format!("={name}"), source);
         if let Err(e) = result {
             panic!("fatal: bundled {name} failed to load: {e}");
         }
@@ -65,11 +65,20 @@ pub fn bootstrap(mut ed: Editor, lua: &Lua) -> Editor {
 
 /// A Lua state with the command table in place.
 ///
+/// Only `string`, `table`, `math`, and `utf8` are loaded next to the base functions, and the base
+/// functions that read files are removed, so Lua code reaches the file system and processes only
+/// through the editor API (I-57).
+///
 /// # Errors
-/// Returns `mlua::Error` if initializing global tables fails.
+/// Returns `mlua::Error` if creating the state or its global tables fails.
 pub fn new_state() -> mlua::Result<Lua> {
-    let lua = Lua::new();
-    lua.globals().set(COMMANDS, lua.create_table()?)?;
+    let libs = StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8;
+    let lua = Lua::new_with(libs, LuaOptions::default())?;
+    let g = lua.globals();
+    for name in ["dofile", "loadfile"] {
+        g.set(name, mlua::Value::Nil)?;
+    }
+    g.set(COMMANDS, lua.create_table()?)?;
     Ok(lua)
 }
 

@@ -12,7 +12,7 @@ use std::fs;
 
 /// Runs `src` against `ed`. Returns the editor back with the result.
 fn script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
-    run_source(ed, lua, src)
+    run_source(ed, lua, "=test", src)
 }
 
 /// Syntax lookups by file name, as the editor resolves a buffer's language (I-49).
@@ -1011,4 +1011,49 @@ fn config_path_follows_xdg_then_home() {
         Some(Path::new("/h/.config/neonemacs/init.lua").to_path_buf())
     );
     assert_eq!(config_path(None, None), None);
+}
+
+#[test]
+fn only_the_allowed_libraries_are_reachable() {
+    // I-57
+    let lua = new_state().unwrap();
+    let g = lua.globals();
+    for name in [
+        "io",
+        "os",
+        "package",
+        "coroutine",
+        "debug",
+        "dofile",
+        "loadfile",
+        "require",
+    ] {
+        assert!(
+            g.get::<mlua::Value>(name).unwrap().is_nil(),
+            "{name} must not be reachable"
+        );
+    }
+    for name in ["string", "table", "math", "utf8"] {
+        assert!(g.get::<Table>(name).is_ok(), "{name} must be available");
+    }
+    let (_, res) = run_source(
+        Editor::new(Config::default()),
+        &lua,
+        "=t",
+        r#"assert(("x"):upper() == "X")"#,
+    );
+    assert!(res.is_ok());
+}
+
+#[test]
+fn an_error_names_its_chunk_and_line() {
+    // I-55
+    let lua = new_state().unwrap();
+    let ed = Editor::new(Config::default());
+    let (_, res) = run_source(ed, &lua, "=init.lua", "local x = 1\nerror('boom')");
+    let text = res.unwrap_err().to_string();
+    assert!(text.contains("init.lua:2:"), "{text}");
+    let (_, res) = run_source(Editor::new(Config::default()), &lua, "=init.lua", "x = = 1");
+    let text = res.unwrap_err().to_string();
+    assert!(text.contains("init.lua:1:"), "{text}");
 }

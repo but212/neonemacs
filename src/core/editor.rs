@@ -93,6 +93,20 @@ impl Editor {
         self
     }
 
+    /// Adds `note` after the message already shown, joined by `; `. The only place that joins
+    /// notices, so none replaces an earlier one (I-56).
+    #[must_use]
+    pub fn append_message(mut self, note: impl Into<String>) -> Self {
+        let note = note.into();
+        if self.interaction.message.is_empty() {
+            self.interaction.message = note;
+        } else {
+            self.interaction.message.push_str("; ");
+            self.interaction.message.push_str(&note);
+        }
+        self
+    }
+
     #[must_use]
     pub fn clear_message(mut self) -> Self {
         self.interaction.message.clear();
@@ -151,6 +165,19 @@ impl Editor {
     #[must_use]
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.settings.cwd = cwd;
+        self
+    }
+
+    #[must_use]
+    pub fn cwd(&self) -> &Path {
+        &self.settings.cwd
+    }
+
+    /// Takes the settings of `from` and keeps everything else: buffers, windows, kill ring, and
+    /// the interaction state (I-58).
+    #[must_use]
+    pub fn adopt_settings(mut self, from: Self) -> Self {
+        self.settings = from.settings;
         self
     }
 
@@ -499,6 +526,35 @@ mod tests {
         let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());
         let key = crate::core::keymap::parse_key_seq("C-x 2").unwrap();
         assert_eq!(ed.keymap().lookup(&key), Some("split-window-below"));
+    }
+
+    #[test]
+    fn append_message_joins_notices_in_order() {
+        // I-56
+        let ed = Editor::new(Config::default()).append_message("first");
+        assert_eq!(ed.message(), "first");
+        let ed = ed.append_message("second").append_message("third");
+        assert_eq!(ed.message(), "first; second; third");
+    }
+
+    #[test]
+    fn adopt_settings_moves_settings_and_keeps_documents() {
+        // I-58
+        let ed = editor_with("kept").set_message("kept message");
+        let from = Editor::new(Config {
+            fill_column: 85,
+            ..Config::default()
+        })
+        .with_cwd(PathBuf::from("elsewhere"))
+        .with_keymap(|km| km.bind_str("C-x 9", "forward-char").unwrap())
+        .with_current_buffer(|b| b.with_text(Text::from_bytes(b"dropped")));
+        let ed = ed.adopt_settings(from);
+        assert_eq!(ed.config().fill_column, 85);
+        assert_eq!(ed.cwd(), Path::new("elsewhere"));
+        let key = crate::core::keymap::parse_key_seq("C-x 9").unwrap();
+        assert_eq!(ed.keymap().lookup(&key), Some("forward-char"));
+        assert_eq!(text(&ed), "kept");
+        assert_eq!(ed.message(), "kept message");
     }
 
     #[test]

@@ -18,5 +18,5 @@ pub use file::{
 pub use prompt::{completions, prompt_key};
 pub use registry::CommandRegistry;
 pub use search::{isearch_key, query_key, start_query_replace};
-pub use shell_output::{lua_done, shell_done};
+pub use shell_output::{init_loaded, lua_done, record_init_error, shell_done};
 pub use table::{BUILTINS, Builtin, find};

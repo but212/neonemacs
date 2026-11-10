@@ -8,8 +8,9 @@ mod tests;
 pub use active::ActiveShell;
 
 use crate::core::editor::{Editor, Mode};
-use crate::core::effect::Event as CoreEvent;
+use crate::core::effect::{Event as CoreEvent, InitLoad};
 use crate::core::step;
+use crate::shell::startup::{InitSource, configure, init_source};
 use crate::shell::terminal::from_terminal;
 use crate::shell::wal;
 use crate::shell::{ShellOutcome, handle_interactive, perform_all};
@@ -34,7 +35,7 @@ pub struct ShellSession {
 }
 
 impl ShellSession {
-    /// `ed` must come from `lua::bootstrap`: the bundled keymap and syntax definitions are loaded only there.
+    /// `ed` and `lua` are made together, by `startup::start` or by `lua::bootstrap`.
     #[must_use]
     pub fn new(ed: Editor, lua: Lua) -> Self {
         Self {
@@ -78,6 +79,22 @@ impl ShellSession {
         }
     }
 
+    /// Builds the settings and the Lua state again from `source`. They replace the current ones
+    /// only when `source` applies whole or is absent; the buffers and windows stay (I-54, I-58).
+    pub fn reload_init(&mut self, source: InitSource) {
+        let ed = std::mem::take(&mut self.ed);
+        let (ed, load) = match configure(ed.cwd().to_path_buf(), source) {
+            Ok((fresh, lua, load @ (InitLoad::Applied | InitLoad::Absent))) => {
+                self.lua = lua;
+                (ed.adopt_settings(fresh), load)
+            }
+            Ok((_, _, load @ InitLoad::Rejected(_))) => (ed, load),
+            Err(e) => (ed, InitLoad::Rejected(e.to_string())),
+        };
+        let (ed, fx) = step(ed, CoreEvent::InitLoaded(Some(load)));
+        self.ed = perform_all(ed, Some(&self.lua), fx);
+    }
+
     #[must_use]
     pub const fn is_quit(&self) -> bool {
         self.ed.quit()
@@ -115,6 +132,7 @@ impl ShellSession {
                         active.set_already_running();
                     }
                 }
+                ShellOutcome::ReloadInit => self.reload_init(init_source()),
                 ShellOutcome::None => {}
             }
             if self.ed.edit_seq() != prev_seq && self.has_wal_dirty_file_buffer() {

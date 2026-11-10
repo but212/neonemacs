@@ -64,6 +64,7 @@
 | 줄 끝 방식 전환 (LF / CRLF) | `toggle-eol` (8절) |
 | 커서와 마크 위치 교환 | `exchange-point-and-mark` |
 | 셸 명령 실행 | `shell-command` |
+| `init.lua` 다시 읽기 | `reload-init` (12절) |
 | 잘라낸 텍스트 순환 | `yank-pop` |
 | 실행 취소 (키 없이) | `undo` |
 | 보기 전용 켜기 / 끄기 | `view-mode` (10절) |
@@ -195,6 +196,25 @@
   - 구문 강조(`syntax.lua`: Rust, C/C++, Python, JavaScript/TypeScript, Lua, Go, Shell, Makefile, SQL, TOML, JSON, YAML, Markdown), 파레토 텍스트 편집 명령(`text.lua`), 확장 키맵(`keymap.lua`: `C-k`, `C-x 2`, `C-x 3`, `C-x 1`, `C-x o`, `C-x b`, `C-x k`, `C-x C-w`, `C-x C-q`, `C-x h`, `C-x u`, `M-y`, `M-q`, `M-d`, `M-DEL`, `M-;`, `C-r`, `M-%`, `M-g`, `M-<`, `M->`, `C-l`, `M-!`)과 두벌식 자판 별칭(자모 26자와 Shift 자모 7자를 QWERTY 키로, 예: `ㅛ`→`y`, `ㅜ`→`n`, `ㅂ`→`q`, `ㅠ`→`b`)을 바이너리에 내장한다.
   - 내장 스크립트는 `init.lua` 전에 실행되며, `init.lua`에서 재정의하거나 해제할 수 있다.
 - 다중 버퍼 임의 접근, 이벤트 훅, 직접 파일 I/O는 공개하지 않는다.
+- **Lua 표준 라이브러리**: 기본 함수와 `string`, `table`, `math`, `utf8`만 쓸 수 있다. `io`, `os`, `package`, `require`, `coroutine`, `debug`, `dofile`, `loadfile`은 없다 (I-57). `print`는 화면 뒤의 터미널에 쓰므로 `message`를 쓴다.
+
+### `init.lua` 적용과 다시 읽기
+
+- **전부 또는 전무 (I-54)**: `init.lua`는 끝까지 오류 없이 실행됐을 때만 적용된다. 문법 오류든 실행 중 오류든, 오류가 나면 그 앞의 `set`, `bind`, `command`도 남지 않고 번들 스크립트만 적용된 상태로 시작한다. `init.lua`가 `run`으로 일으킨 편집기 밖의 결과(예: 파일 저장)는 되돌리지 않는다.
+- **있는 파일이 적용되지 않으면 반드시 알린다 (I-55)**: 파일이 없으면 알리지 않는다. 파일이 있지만 읽을 수 없거나(권한, 디렉터리) UTF-8이 아니면(예: CP949) 오류로 알린다.
+- **오류 기록**: 오류 전문은 `*init-log*` 버퍼에 남는다 (파일 없음, 수정 표시 없음, 화면에 자동으로 띄우지 않음). `switch-to-buffer`로 연다. 에코 영역에는 `init.lua: <오류 첫 줄>`을 보이며, Lua 오류의 첫 줄에는 `init.lua:<줄 번호>:`가 들어 있다.
+- **`reload-init`**: 편집기를 끄지 않고 `init.lua`를 다시 읽는다 (I-58).
+
+  | 결과 | 설정과 Lua 명령 | 에코 영역 |
+  | --- | --- | --- |
+  | 성공 | 번들 스크립트 + 새 `init.lua`로 교체 | `Loaded init.lua` |
+  | 파일 없음 | 번들 스크립트만으로 교체 | `No init.lua` |
+  | 읽기 실패 또는 Lua 오류 | 이전 그대로 | `init.lua: <오류 첫 줄>` |
+  | Lua 명령 안에서 `run("reload-init")` | 이전 그대로 | `reload-init: not available from Lua` |
+
+  - 교체는 새로 시작한 것과 같다. 새 파일이 다시 만들지 않은 설정, 키, 별칭, 구문 정의, Lua 명령, Lua 전역 변수는 사라진다.
+  - 버퍼, 창, 킬 링, 되돌리기 기록은 그대로다. 다시 읽을 때 `init.lua`가 한 버퍼 편집, `message`, 종료 요청은 반영하지 않는다.
+  - 성공하거나 파일이 없으면 `*init-log*`를 비운다.
 
 ### 설정 가능 범위
 
@@ -255,9 +275,11 @@ WAL 형식, `run` 재귀 깊이 50, 이벤트 폴링 간격, 한 번에 하나�
   - `-v`와 `-h`는 편집기를 시작하지 않으므로 `init.lua` 실행, WAL 복구, 터미널 원시 모드 설정을 수행하지 않는다. 먼저 나온 쪽이 이기며, 그 앞의 `+n` 오류가 있으면 오류가 우선한다.
   - `--` 이후의 인자는 `-`로 시작해도 파일로 취급한다. `+n` 규칙은 그대로 적용된다.
   - 그 밖의 `-`로 시작하는 인자(단독 `-` 포함)는 `unknown option: <인자>`를 출력하고 종료 코드 `2`로 종료한다.
-- 파일마다 `open`과 같은 경로로 열고(7절, I-45) 유효한 미저장 WAL이 있으면 자동 복구(`restore_buffer_content`)한다. 알림(`[Recovered NAME from WAL]`, `Stale WAL kept as ...`, `File too large ...`, `Cannot open ...`)은 알림이 있는 파일마다 하나씩 `; `로 이어 표시한다. 알림이 없으면 앞선 메시지(예: `init.lua` 오류)가 남는다.
+- 파일마다 `open`과 같은 경로로 열고(7절, I-45) 유효한 미저장 WAL이 있으면 자동 복구(`restore_buffer_content`)한다. 알림(`[Recovered NAME from WAL]`, `Stale WAL kept as ...`, `File too large ...`, `Cannot open ...`)은 알림이 있는 파일마다 하나씩 표시한다.
 - scratch 슬롯은 파일을 열기 전에 복구한다 (7절).
-- `init.lua` 실행 중 오류가 발생해도 프로세스를 중단하지 않고 에코 영역에 첫 줄 오류 메시지를 남긴다.
+- `init.lua`를 읽지 못하거나 실행 중 오류가 나도 프로세스를 중단하지 않는다. 번들 스크립트만 적용하고 위 "`init.lua` 적용과 다시 읽기"대로 알린다.
+- 시작 알림은 서로를 대체하지 않는다 (I-56). `init.lua` 오류, scratch 복구 알림, 파일 알림을 이 순서로 `; `로 이어 표시한다.
+- `*scratch*`는 `init.lua`가 정한 `default-eol`로 시작한다. `init.lua`가 `*scratch*`를 편집했으면(예: `run("toggle-eol")`) 그 편집이 남긴 줄 끝 방식을 유지한다. WAL에서 복구한 scratch는 기록된 줄 끝 방식을 따른다.
 
 ## 13. 플랫폼
 
@@ -282,5 +304,6 @@ WAL 형식, `run` 재귀 깊이 50, 이벤트 폴링 간격, 한 번에 하나�
 - 한글 IME 조합 표시는 터미널 구현에 따른다.
 - 같은 파일이나 같은 상태 디렉터리를 쓰는 편집기를 둘 이상 실행하면 WAL과 scratch 슬롯을 서로 덮어쓸 수 있다. 잠금이 없으므로 막지 않는다 (8절).
 - 기본 자판 별칭은 두벌식뿐이다. 다른 입력 배열은 `init.lua`에서 `key_alias`로 추가한다. 별칭은 질문 응답과 접두·수정 키의 바인딩 조회에만 적용되고, 일반 입력(self-insert), 프롬프트 입력, 검색어에는 적용되지 않는다 (I-48). 바인딩 조회는 정확히 일치하는 글자만 보므로 대소문자가 있는 배열은 두 형태를 모두 등록해야 한다.
-- `default-eol`은 `init.lua`가 끝난 뒤에 만드는 버퍼에만 적용된다. `*scratch*`는 `init.lua`보다 먼저 만들어지므로 항상 `lf`로 시작한다.
+- `reload-init`으로 바꾼 `default-eol`은 그 뒤에 만드는 버퍼에만 적용된다. 이미 있는 `*scratch*`의 줄 끝 방식은 바뀌지 않는다.
+- Lua 명령이 실행 중에 낸 오류는 에코 영역에 첫 줄만 보이고 `*init-log*`에는 남지 않는다.
 - 터미널과 입력기에 따라 한글 상태의 `Alt`+자모가 다른 값으로 전달될 수 있다. 그 경우 `Esc` 뒤 자모나 영문 전환을 쓴다.

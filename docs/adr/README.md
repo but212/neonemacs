@@ -23,6 +23,7 @@
 | [0013](0013-save-epoch-modified-tracking.md) | Save Epoch and Clean-by-Undo | Accepted | 2026-11-05 | §7 | Undo back to the saved text restores clean and drops the WAL (I-41) |
 | [0014](0014-lua-key-aliases.md) | Lua key aliases | Accepted | 2026-11-06 | §3, §8, §9, §12, §15 | `key_alias`/`key_unalias`, full two-set table in bundled `keymap.lua`, aliases apply to modal answers and to prefixed or modified binding lookups after an exact miss (I-46, I-48) |
 | [0015](0015-init-lua-configurable-surface.md) | Everything outside the panic room is configurable from init.lua | Accepted | 2026-11-10 | §6, §12, §15 | `Setting` sum type (`I-52`), panic-room list (`I-53`), `ShellSpec`, `Metrics`, `heading_prefix` |
+| [0016](0016-init-lua-loading.md) | init.lua loads whole or not at all, and can be reloaded | Accepted | 2026-11-10 | §4, §12, §15 | Atomic `configure` (`I-54`), `InitSource`/`InitLoad` and `*init-log*` (`I-55`), joined start-up notices (`I-56`), restricted Lua libraries (`I-57`), `reload-init` (`I-58`) |
 
 ---
 
@@ -79,7 +80,7 @@
 
 ## 3. System Invariants
 
-The current wording of every invariant (`I-01` ~ `I-53`) is in [`docs/invariants.md`](../invariants.md), which governs if an ADR's wording differs. ADRs record when and why an invariant changed.
+The current wording of every invariant (`I-01` ~ `I-58`) is in [`docs/invariants.md`](../invariants.md), which governs if an ADR's wording differs. ADRs record when and why an invariant changed.
 
 ---
 

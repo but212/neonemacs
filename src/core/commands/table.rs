@@ -22,7 +22,7 @@ use crate::core::commands::search::{
     isearch_backward, isearch_backward_regexp, isearch_forward, isearch_forward_regexp,
     query_replace_cmd, query_replace_regexp_cmd,
 };
-use crate::core::commands::shell_output::shell_command_cmd;
+use crate::core::commands::shell_output::{reload_init_cmd, shell_command_cmd};
 use crate::core::editor::Editor;
 use crate::core::effect::Effects;
 
@@ -65,6 +65,7 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
     ("query-replace", query_replace_cmd as Builtin),
     ("query-replace-regexp", query_replace_regexp_cmd as Builtin),
     ("recenter", recenter as Builtin),
+    ("reload-init", reload_init_cmd as Builtin),
     ("revert-buffer", revert_buffer as Builtin),
     ("save-buffer", save_buffer_cmd as Builtin),
     (
