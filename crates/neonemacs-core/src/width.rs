@@ -26,12 +26,57 @@ impl Metrics {
     }
 }
 
+fn contiguous_slice(text: &Text, pos: usize, end: usize) -> &[u8] {
+    let (left, right) = text.slices_in(pos..end);
+    if left.is_empty() { right } else { left }
+}
+
+/// Counts leading printable ASCII bytes (`0x20..=0x7E`), each occupying 1 byte and 1 column.
+fn ascii_printable_run(bytes: &[u8]) -> usize {
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    const LOW_BIAS: u64 = 0x6060_6060_6060_6060;
+    const DEL_BIAS: u64 = 0x0101_0101_0101_0101;
+
+    let mut i = 0;
+    while i + 8 <= bytes.len() {
+        let word = u64::from_ne_bytes([
+            bytes[i],
+            bytes[i + 1],
+            bytes[i + 2],
+            bytes[i + 3],
+            bytes[i + 4],
+            bytes[i + 5],
+            bytes[i + 6],
+            bytes[i + 7],
+        ]);
+        if (word & HIGH) == 0
+            && (word.wrapping_add(LOW_BIAS) & HIGH) == HIGH
+            && (word.wrapping_add(DEL_BIAS) & HIGH) == 0
+        {
+            i += 8;
+        } else {
+            break;
+        }
+    }
+    while i < bytes.len() && (0x20..=0x7E).contains(&bytes[i]) {
+        i += 1;
+    }
+    i
+}
+
 /// Display column of `pos` relative to the start of its line.
 #[must_use]
 pub fn column(text: &Text, pos: usize, tab: Metrics) -> usize {
+    let pos = pos.min(text.len());
     let mut col = 0;
     let mut p = text.line_start(pos);
     while p < pos {
+        let run = ascii_printable_run(contiguous_slice(text, p, pos));
+        if run > 0 {
+            p += run;
+            col += run;
+            continue;
+        }
         let Some((unit, n)) = text.unit_at(p) else {
             break;
         };
@@ -41,12 +86,21 @@ pub fn column(text: &Text, pos: usize, tab: Metrics) -> usize {
     col
 }
 
-/// Position on the line starting at `line` whose column is at most `col`.
+/// Position and exact display column on the line starting at `line` whose column is at most `col`.
 #[must_use]
-pub fn pos_at_column(text: &Text, line: usize, col: usize, tab: Metrics) -> usize {
+pub(crate) fn pos_and_column(text: &Text, line: usize, col: usize, tab: Metrics) -> (usize, usize) {
     let end = text.line_end(line);
     let (mut p, mut c) = (line, 0);
     while p < end {
+        if c < col {
+            let max_ascii = (col - c).min(end - p);
+            let run = ascii_printable_run(contiguous_slice(text, p, p + max_ascii));
+            if run > 0 {
+                p += run;
+                c += run;
+                continue;
+            }
+        }
         let Some((unit, n)) = text.unit_at(p) else {
             break;
         };
@@ -57,7 +111,13 @@ pub fn pos_at_column(text: &Text, line: usize, col: usize, tab: Metrics) -> usiz
         c += w;
         p += n;
     }
-    p
+    (p, c)
+}
+
+/// Position on the line starting at `line` whose column is at most `col`.
+#[must_use]
+pub fn pos_at_column(text: &Text, line: usize, col: usize, tab: Metrics) -> usize {
+    pos_and_column(text, line, col, tab).0
 }
 
 /// Columns occupied by `unit` when it starts at column `col`.

@@ -113,7 +113,7 @@ pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects)
         return (ed, fx);
     }
     let start = ed.buffer().text().prev_boundary(p);
-    (ed.delete_range(start, p).0, fx)
+    (ed.delete_only(start, p), fx)
 }
 
 pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -123,7 +123,7 @@ pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
         return (ed, fx);
     }
     let end = text.next_boundary(p);
-    (ed.delete_range(p, end).0, fx)
+    (ed.delete_only(p, end), fx)
 }
 
 pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -168,7 +168,7 @@ pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let LastCommand::Yank { start, end } = ed.prev() else {
         return (ed.set_message("Previous command was not a yank"), fx);
     };
-    let (ed, _) = ed.delete_range(start, end);
+    let ed = ed.delete_only(start, end);
     let ed = ed.with_kill_ring(|kr| kr.rotate_right(1));
     let bytes = ed
         .kill_ring()

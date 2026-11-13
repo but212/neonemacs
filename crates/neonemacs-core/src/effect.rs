@@ -18,11 +18,10 @@ pub enum Effect {
         target: StatTarget,
         path: PathBuf,
     },
-    /// Writes `bytes` to `path` atomically. Only after the I-04 check or a confirmation.
+    /// Writes buffer `id` to `path` atomically. Only after the I-04 check or a confirmation.
     WriteFile {
         id: BufferId,
         path: PathBuf,
-        bytes: Vec<u8>,
     },
     /// Reads `path`. A file longer than `max_size` is not read: the result carries only its length.
     ReadFile {
@@ -76,14 +75,13 @@ impl WalTarget {
     }
 }
 
-/// The unsaved text of buffer `id` and what its WAL header records.
+/// Metadata for the unsaved text of buffer `id` recorded in its WAL header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalEntry {
     pub id: BufferId,
     pub target: WalTarget,
     pub disk: DiskState,
     pub eol: Eol,
-    pub bytes: Vec<u8>,
 }
 
 /// The outcome of one `WalEntry`.

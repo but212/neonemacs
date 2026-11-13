@@ -80,10 +80,7 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
     buffer_table.set(
         "delete",
         scope.create_function(|_, (start, end): (usize, usize)| {
-            mutate_editor(cell, |ed| {
-                let (ed, _) = ed.delete_range(start, end);
-                ed
-            });
+            mutate_editor(cell, |ed| ed.delete_only(start, end));
             Ok(())
         })?,
     )?;
@@ -98,10 +95,7 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
         "replace",
         scope.create_function(|_, (start, end, text): (usize, usize, mlua::LuaString)| {
             let bytes = text.as_bytes();
-            mutate_editor(cell, |ed| {
-                let (ed, _) = ed.delete_range(start, end);
-                ed.insert_at(start, &bytes)
-            });
+            mutate_editor(cell, |ed| ed.delete_only(start, end).insert_at(start, &bytes));
             Ok(())
         })?,
     )?;

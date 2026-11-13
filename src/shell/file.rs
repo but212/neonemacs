@@ -1,24 +1,24 @@
 //! File I/O for the shell: reads, atomic saves, and disk state (§8, A2, A12).
 
-use crate::core::{DiskState, RawFile, Read as FileRead};
+use crate::core::{DiskState, Eol, RawFile, Read as FileRead};
 use std::fs::{self, File, OpenOptions, Permissions};
-use std::io::{self, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// Atomically writes `bytes` to `target` using a PID- and sequence-isolated temporary file.
+/// Atomically writes to `target` via a PID- and sequence-isolated temporary file using `write_fn`.
 /// Calls `sync_all` before renaming over `target`, and cleans up the temporary file on error.
 ///
 /// # Errors
 /// Returns `io::Error` if creating, writing, flushing, or renaming the temporary file fails.
-pub fn atomic_write(
+pub fn atomic_write_with(
     target: &Path,
     prefix: &str,
     suffix: &str,
-    bytes: &[u8],
     permissions: Option<Permissions>,
+    write_fn: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
     let dir = target
         .parent()
@@ -29,16 +29,20 @@ pub fn atomic_write(
     let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!("{prefix}{name}.{pid}_{seq}{suffix}"));
 
-    let result = write_and_sync(&tmp, bytes, permissions).and_then(|()| fs::rename(&tmp, target));
+    let result = write_with_and_sync(&tmp, permissions, write_fn).and_then(|()| fs::rename(&tmp, target));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
 }
 
-fn write_and_sync(tmp: &Path, bytes: &[u8], permissions: Option<Permissions>) -> io::Result<()> {
+fn write_with_and_sync(
+    tmp: &Path,
+    permissions: Option<Permissions>,
+    write_fn: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
     let mut f = OpenOptions::new().write(true).create_new(true).open(tmp)?;
-    f.write_all(bytes)?;
+    write_fn(&mut f)?;
     f.sync_all()?;
     if let Some(perms) = permissions {
         let _ = fs::set_permissions(tmp, perms);
@@ -99,14 +103,46 @@ fn read_capped(file: &mut File, n: u64) -> io::Result<Vec<u8>> {
 /// # Errors
 /// Returns `io::Error` if canonicalization or atomic file writing fails.
 pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
+    save_slices(path, Eol::Lf, bytes, &[])
+}
+
+/// Streams gap-buffer slices `left` and `right` to `path` atomically, encoding line endings
+/// according to `eol`. Symlinks are followed; permissions are kept (A2).
+///
+/// # Errors
+/// Returns `io::Error` if canonicalization or atomic file writing fails.
+pub fn save_slices(path: &Path, eol: Eol, left: &[u8], right: &[u8]) -> io::Result<DiskState> {
     let target = if fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) {
         fs::canonicalize(path)?
     } else {
         path.to_path_buf()
     };
     let permissions = fs::metadata(&target).ok().map(|m| m.permissions());
-    atomic_write(&target, ".", ".tmp", bytes, permissions)?;
+    atomic_write_with(&target, ".", ".tmp", permissions, |f| match eol {
+        Eol::Lf => {
+            f.write_all(left)?;
+            f.write_all(right)
+        }
+        Eol::Crlf => {
+            let mut w = BufWriter::with_capacity(64 * 1024, f);
+            write_crlf_slice(&mut w, left)?;
+            write_crlf_slice(&mut w, right)?;
+            w.flush()
+        }
+    })?;
     Ok(disk_state(&target))
+}
+
+fn write_crlf_slice(w: &mut impl Write, slice: &[u8]) -> io::Result<()> {
+    for (i, part) in slice.split(|&b| b == b'\n').enumerate() {
+        if i > 0 {
+            w.write_all(b"\r\n")?;
+        }
+        if !part.is_empty() {
+            w.write_all(part)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

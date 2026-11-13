@@ -105,11 +105,11 @@ fn kill_chain_across_commands() {
 #[test]
 fn edit_seq_counts_accepted_edits() {
     // C-03: every accepted edit adds exactly one; a refused edit adds none.
-    let (ed, _) = editor().apply(&Edit::insert(0, b"a".as_slice()));
+    let (ed, _) = editor().apply(Edit::insert(0, b"a".as_slice()));
     assert_eq!(ed.edit_seq(), 1);
 
     let ed = ed.with_current_buffer(|b| b.set_view_only(true));
-    let (ed, applied) = ed.apply(&Edit::insert(0, b"b".as_slice()));
+    let (ed, applied) = ed.apply(Edit::insert(0, b"b".as_slice()));
     assert!(applied.is_none());
     assert_eq!(ed.edit_seq(), 1);
 }

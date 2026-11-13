@@ -5,7 +5,7 @@ use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::text::{Text, Unit};
-use crate::width::{Metrics, column, unit_width};
+use crate::width::{Metrics, column, pos_and_column, unit_width};
 
 /// A single terminal cell containing display glyph and syntax style (I-22).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,11 +190,19 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         } else {
             &[]
         };
-        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, m, marks);
+        let point = w.point.min(buf.text().len());
+        let point_col = column(buf.text(), point, m);
+        let (body, (row, col)) =
+            window_cells(syntax, buf.text(), w, area, m, marks, point_col);
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
-        let status = fit(&status_text(buf, w.point, area.w, m), area.w, '-', m);
+        let status = fit(
+            &status_text_with_col(buf, w.point, point_col, area.w, m),
+            area.w,
+            '-',
+            m,
+        );
         let status_cells: Vec<Cell> = status.into_iter().map(Cell::plain).collect();
         grid = put(
             grid,
@@ -253,6 +261,7 @@ fn window_cells(
     area: Rect,
     metrics: Metrics,
     marks: &[(usize, usize)],
+    point_col: usize,
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
     let point = window.point.min(text.len());
@@ -266,7 +275,7 @@ fn window_cells(
         }
         let line_end = text.line_end(line_start);
         if line_start <= point && point <= line_end {
-            let col = column(text, point, metrics).saturating_sub(window.left_col);
+            let col = point_col.saturating_sub(window.left_col);
             cursor = (row, col);
         }
         body.push(line_cells(
@@ -297,28 +306,54 @@ fn line_cells(
     let (start, end) = (line.start, line.end);
     let mut cells = vec![Cell::space(); width];
     let right = left + width;
-    let mut col = 0;
-    let mut pos = start;
+    let (mut pos, mut col) = if left > 0 && end - start > 4096 {
+        pos_and_column(text, start, left - 1, metrics)
+    } else {
+        (start, 0)
+    };
     let mut cut = false;
 
-    let line_bytes = text.bytes(start..end);
-    let token_kinds = highlight_line(syntax, &line_bytes);
+    let token_kinds = if syntax.is_some() {
+        let scan_end = if end - start > 4096 {
+            let mut cap_end = (pos + width.saturating_mul(4).max(4096)).min(end);
+            let lookahead_end = (cap_end + 256).min(end);
+            while cap_end < lookahead_end {
+                let b = text.byte_at(cap_end);
+                if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                    cap_end += 1;
+                } else {
+                    break;
+                }
+            }
+            cap_end
+        } else {
+            end
+        };
+        let line_bytes = text.bytes(start..scan_end);
+        highlight_line(syntax, &line_bytes)
+    } else {
+        Vec::new()
+    };
 
     while pos < end {
         let Some((unit, len)) = text.unit_at(pos) else {
             break;
         };
-        let style = token_kinds
-            .get(pos - start)
-            .copied()
-            .unwrap_or(TokenKind::Normal);
-        let reverse = marks.iter().any(|&(from, to)| from <= pos && pos < to);
-
         if col >= right {
             cut = true;
             break;
         }
         let width_of_unit = unit_width(unit, col, metrics);
+        if col + width_of_unit <= left {
+            col += width_of_unit;
+            pos += len;
+            continue;
+        }
+        let style = token_kinds
+            .get(pos - start)
+            .copied()
+            .unwrap_or(TokenKind::Normal);
+        let reverse = marks.iter().any(|&(from, to)| from <= pos && pos < to);
         if width_of_unit == 0 {
             // Combining mark: attach to the cell before it.
             if col > left && col - left - 1 < width {
@@ -380,7 +415,19 @@ fn glyph(c: char, w: usize) -> Vec<String> {
 
 /// The status line for a window `width` cells wide. Line and column are 1-based; the column is the display column.
 /// What does not fit is dropped in this order: the EOL mode, then the percentage.
+#[cfg(test)]
 fn status_text(buf: &Buffer, point: usize, width: usize, m: Metrics) -> String {
+    let col = column(buf.text(), point.min(buf.text().len()), m);
+    status_text_with_col(buf, point, col, width, m)
+}
+
+fn status_text_with_col(
+    buf: &Buffer,
+    point: usize,
+    display_col: usize,
+    width: usize,
+    m: Metrics,
+) -> String {
     let mark = if buf.modified() { "**" } else { "--" };
     let view = if buf.view_only() { " (view)" } else { "" };
     let percent = (point as u64 * 100)
@@ -389,7 +436,7 @@ fn status_text(buf: &Buffer, point: usize, width: usize, m: Metrics) -> String {
     let text = buf.text();
     let p = point.min(text.len());
     let line = text.count_lines(0, p) + 1;
-    let col = column(text, p, m) + 1;
+    let col = display_col + 1;
     let head = format!("-{mark}-  {}{view}", buf.name());
     let eol = buf.eol().label();
     let pos = format!("{line}:{col}");
@@ -794,5 +841,49 @@ mod tests {
     fn prompt_note_message_leaves_cursor_in_text_area() {
         let ed = prompt_editor("is", "").set_message("No match");
         assert_eq!(frame(&ed, 40, 4).cursor, (0, 0));
+    }
+
+    #[test]
+    fn scrolled_long_line_preserves_heading_and_line_comment_highlighting() {
+        let m = Metrics { tab: 8, cjk: false };
+
+        let heading_def = SyntaxDef::new(
+            "notes",
+            vec!["md".to_owned()],
+            vec![],
+            None,
+            vec!["let".to_owned()],
+            vec![],
+            false,
+        )
+        .with_heading_prefix(Some("#".to_owned()));
+        let heading = Text::from_bytes(format!("# {}", "a".repeat(5000)).as_bytes());
+        let cells = line_cells(Some(&heading_def), &heading, 0..heading.len(), 4500, 10, m, &[]);
+        assert!(cells[..9].iter().all(|c| c.style == TokenKind::Keyword));
+
+        let non_heading = Text::from_bytes(format!("{}#{}", "a".repeat(2500), "b".repeat(3000)).as_bytes());
+        let cells = line_cells(
+            Some(&heading_def),
+            &non_heading,
+            0..non_heading.len(),
+            4500,
+            10,
+            m,
+            &[],
+        );
+        assert!(cells.iter().all(|c| c.style == TokenKind::Normal));
+
+        let rust_def = SyntaxDef::new(
+            "rust",
+            vec!["rs".to_owned()],
+            vec![],
+            Some("//".to_owned()),
+            vec!["let".to_owned()],
+            vec![],
+            false,
+        );
+        let comment = Text::from_bytes(format!("// {} let x = 1;", "a".repeat(4500)).as_bytes());
+        let cells = line_cells(Some(&rust_def), &comment, 0..comment.len(), 4505, 10, m, &[]);
+        assert!(cells[..9].iter().all(|c| c.style == TokenKind::Comment));
     }
 }

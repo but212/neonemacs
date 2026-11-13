@@ -306,14 +306,7 @@ fn confirmed_external_writes_without_recheck() {
     fs::write(&path, b"external").unwrap();
 
     let (_, fx) = confirmed(ed, Confirm::SaveExternal(id), Vec::new());
-    assert_eq!(
-        fx,
-        vec![Effect::WriteFile {
-            id,
-            path,
-            bytes: b"xabc".to_vec()
-        }]
-    );
+    assert_eq!(fx, vec![Effect::WriteFile { id, path }]);
 }
 
 #[test]

@@ -143,13 +143,26 @@ impl UndoLog {
         self
     }
 
+    /// Closes the open group and, when `limit > 0`, immediately evicts it if the group exceeds `limit` (I-35).
+    #[must_use]
+    pub fn close_with_limit(mut self, limit: usize) -> Self {
+        self.open = false;
+        if limit > 0 {
+            self = self.trim(limit).0;
+        }
+        self
+    }
+
     fn trim(mut self, limit: usize) -> (Self, usize) {
         let keep_open = usize::from(self.open);
+        let max_drop = self.groups.len().saturating_sub(keep_open);
         let mut dropped = 0;
-        while self.size > limit && self.groups.len() > keep_open {
-            let group = self.groups.remove(0);
-            self.size -= group.size();
+        while self.size > limit && dropped < max_drop {
+            self.size -= self.groups[dropped].size();
             dropped += 1;
+        }
+        if dropped > 0 {
+            self.groups.drain(..dropped);
         }
         (self, dropped)
     }
@@ -223,5 +236,21 @@ mod tests {
         let (log, dropped) = trimmed_twice(4);
         assert_eq!(dropped, 2);
         assert_eq!(log.groups().len(), 1);
+    }
+
+    #[test]
+    fn close_with_limit_evicts_oversized_single_group_when_limit_positive() {
+        let (log, _) = UndoLog::new().record(insert(0, "12345"), 4, None);
+        assert_eq!(log.groups().len(), 1);
+        let log = log.close_with_limit(4);
+        assert!(log.groups().is_empty());
+
+        let (exact, _) = UndoLog::new().record(insert(0, "1234"), 4, None);
+        let exact = exact.close_with_limit(4);
+        assert_eq!(exact.groups().len(), 1);
+
+        let (zero, _) = UndoLog::new().record(insert(0, "1234"), 0, None);
+        let zero = zero.close_with_limit(0);
+        assert_eq!(zero.groups().len(), 1);
     }
 }
