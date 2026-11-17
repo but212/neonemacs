@@ -263,7 +263,7 @@ fn replace_match(
         MatchKind::Literal => q.replacement.as_bytes().to_vec(),
     };
     let after = start + replacement.len();
-    let (ed, applied) = ed.apply(&Edit::Replace {
+    let (ed, applied) = ed.apply(Edit::Replace {
         pos: start,
         removed: matched,
         inserted: replacement,

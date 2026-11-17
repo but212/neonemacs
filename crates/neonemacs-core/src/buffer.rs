@@ -240,8 +240,8 @@ impl Buffer {
     }
 
     #[must_use]
-    pub fn close_undo(mut self) -> Self {
-        self.undo = self.undo.close();
+    pub fn close_undo(mut self, undo_limit: usize) -> Self {
+        self.undo = self.undo.close_with_limit(undo_limit);
         self
     }
 

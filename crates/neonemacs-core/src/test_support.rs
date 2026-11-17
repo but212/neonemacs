@@ -128,10 +128,11 @@ pub(crate) fn file_buffer(ed: Editor, bytes: &[u8], eol: Eol) -> Editor {
 /// The bytes that saving buffer `id` would write.
 pub(crate) fn saved_bytes(ed: &Editor, id: BufferId) -> Vec<u8> {
     let fx = crate::commands::file::write_buffer(ed, id, Vec::new());
-    let Effect::WriteFile { bytes, .. } = &fx[0] else {
+    let Effect::WriteFile { id: write_id, .. } = &fx[0] else {
         panic!("expected WriteFile");
     };
-    bytes.clone()
+    let buf = ed.buffer_by_id(*write_id);
+    buf.eol().encode(&buf.text().to_bytes())
 }
 
 pub(crate) fn known(size: u64) -> DiskState {

@@ -11,7 +11,7 @@ impl Editor {
     /// Applies `edit` to the buffer of the selected window. Returns the new editor and
     /// the number of undo groups dropped to respect the limit, or `None` when refused.
     #[must_use]
-    pub fn apply(mut self, edit: &Edit) -> (Self, Option<usize>) {
+    pub fn apply(mut self, edit: Edit) -> (Self, Option<usize>) {
         let id = self.window().buffer;
         if self.buffer_by_id(id).view_only() {
             return (self.set_message("Buffer is read-only"), None);
@@ -22,17 +22,18 @@ impl Editor {
             self.interaction.last = LastCommand::Other;
         }
 
+        let span = EditSpan::from_edit(&edit);
         let mut dropped_res = None;
         let undo_limit = self.settings.config.undo_limit;
         self.documents.edit_seq = self.documents.edit_seq.wrapping_add(1);
         self.documents.buffers = self.documents.buffers.with_buffer(id, |buf| {
-            let (buf, dropped) = buf.apply_edit(edit.clone(), |a| remap(edit, a), undo_limit);
+            let (buf, dropped) = buf.apply_edit(edit, |a| remap_span(span, a), undo_limit);
             dropped_res = Some(dropped);
             buf
         });
 
         let text = self.documents.buffers.get_by_id(id).text();
-        let anchor = |a| snap(text, remap(edit, a));
+        let anchor = |a| snap(text, remap_span(span, a));
         self.documents.windows = self.documents.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
@@ -51,18 +52,35 @@ impl Editor {
     /// Deletes `start..end`. Returns the editor and the removed bytes.
     #[must_use]
     pub fn delete_range(self, start: usize, end: usize) -> (Self, Vec<u8>) {
+        self.delete_range_inner(start, end, true)
+    }
+
+    /// Deletes `start..end` without returning a copy of the removed bytes.
+    #[must_use]
+    pub fn delete_only(self, start: usize, end: usize) -> Self {
+        self.delete_range_inner(start, end, false).0
+    }
+
+    fn delete_range_inner(self, start: usize, end: usize, return_removed: bool) -> (Self, Vec<u8>) {
         let text = self.buffer().text();
         let start = snap(text, start);
         let end = snap_end(text, end);
         if start >= end {
             return (self, Vec::new());
         }
-        let bytes = self.buffer().text().bytes(start..end);
-        let (ed, applied) = self.apply(&Edit::delete(start, bytes.clone()));
-        if applied.is_none() {
+        if self.buffer().view_only() {
+            let (ed, _) = self.apply(Edit::delete(0, Vec::new()));
             return (ed, Vec::new());
         }
-        (ed, bytes)
+        let bytes = self.buffer().text().bytes(start..end);
+        let removed = if return_removed {
+            bytes.clone()
+        } else {
+            Vec::new()
+        };
+        let (ed, applied) = self.apply(Edit::delete(start, bytes));
+        debug_assert!(applied.is_some());
+        (ed, removed)
     }
 
     /// Deletes `start..end` and pushes the removed bytes to the kill ring.
@@ -88,7 +106,7 @@ impl Editor {
     #[must_use]
     pub fn insert_at(self, pos: usize, bytes: &[u8]) -> Self {
         let pos = snap(self.buffer().text(), pos);
-        let (ed, applied) = self.apply(&Edit::insert(pos, bytes));
+        let (ed, applied) = self.apply(Edit::insert(pos, bytes));
         if applied.is_some() {
             ed.move_point(pos + bytes.len())
         } else {
@@ -99,7 +117,8 @@ impl Editor {
     /// Ends the current undo group.
     #[must_use]
     pub fn boundary(self) -> Self {
-        self.with_current_buffer(Buffer::close_undo)
+        let limit = self.settings.config.undo_limit;
+        self.with_current_buffer(|b| b.close_undo(limit))
     }
 
     #[must_use]
@@ -143,7 +162,7 @@ impl Editor {
             c.to_string().into_bytes()
         };
         let len = bytes.len();
-        let (ed, applied) = self.apply(&Edit::insert(at, bytes));
+        let (ed, applied) = self.apply(Edit::insert(at, bytes));
         if applied.is_none() {
             return ed;
         }
@@ -170,11 +189,15 @@ impl Editor {
             "No further undo information".clone_into(&mut ed.interaction.message);
             return (ed, fx);
         };
-        let group = ed.buffer_by_id(id).undo().groups()[idx].clone();
+        let (clean_epoch, inverses) = {
+            let group = &ed.buffer_by_id(id).undo().groups()[idx];
+            let inverses: Vec<Edit> = group.edits().iter().rev().map(Edit::inverse).collect();
+            (group.clean_epoch(), inverses)
+        };
         let mut dropped = 0;
         let mut complete = true;
-        for edit in group.edits().iter().rev() {
-            let (next, applied) = ed.apply(&edit.inverse());
+        for inv in inverses {
+            let (next, applied) = ed.apply(inv);
             ed = next;
             if let Some(d) = applied {
                 dropped += d;
@@ -185,7 +208,7 @@ impl Editor {
         }
         let mut ed = ed.boundary();
         // The group opened on text equal to the saved one, so undoing all of it restores that text (I-41).
-        if complete && group.clean_epoch() == Some(ed.buffer_by_id(id).epoch()) {
+        if complete && clean_epoch == Some(ed.buffer_by_id(id).epoch()) {
             fx.extend(ed.remove_wal_effect(id));
             ed = ed.with_buffer(id, Buffer::restore_clean);
         }
@@ -196,23 +219,55 @@ impl Editor {
     }
 }
 
+#[derive(Clone, Copy)]
+enum EditSpan {
+    Replace {
+        pos: usize,
+        removed: usize,
+        inserted: usize,
+    },
+    SetEol,
+}
+
+impl EditSpan {
+    const fn from_edit(edit: &Edit) -> Self {
+        match edit {
+            Edit::Replace {
+                pos,
+                removed,
+                inserted,
+            } => Self::Replace {
+                pos: *pos,
+                removed: removed.len(),
+                inserted: inserted.len(),
+            },
+            Edit::SetEol { .. } => Self::SetEol,
+        }
+    }
+}
+
 /// Where an anchor at `a` lands after `edit`.
+#[cfg(test)]
 fn remap(edit: &Edit, a: usize) -> usize {
-    match edit {
-        Edit::Replace {
+    remap_span(EditSpan::from_edit(edit), a)
+}
+
+const fn remap_span(span: EditSpan, a: usize) -> usize {
+    match span {
+        EditSpan::Replace {
             pos,
             removed,
             inserted,
         } => {
-            if a <= *pos {
+            if a <= pos {
                 a
-            } else if a <= pos + removed.len() {
-                *pos
+            } else if a <= pos + removed {
+                pos
             } else {
-                a - removed.len() + inserted.len()
+                a - removed + inserted
             }
         }
-        Edit::SetEol { .. } => a,
+        EditSpan::SetEol => a,
     }
 }
 
@@ -428,7 +483,7 @@ mod tests {
         });
         let ed = type_char(ed, 'a');
         let ed = run_command(ed, |e, fx| {
-            let (e, _) = e.apply(&Edit::delete(0, b"a".to_vec()));
+            let (e, _) = e.apply(Edit::delete(0, b"a".to_vec()));
             (e, fx)
         });
         assert_eq!(text(&ed), "");
@@ -468,7 +523,7 @@ mod tests {
     #[test]
     fn replace_undoes_in_one_step() {
         let ed = editor_with("hello world");
-        let (ed, _) = ed.apply(&Edit::Replace {
+        let (ed, _) = ed.apply(Edit::Replace {
             pos: 6,
             removed: b"world".to_vec(),
             inserted: b"there".to_vec(),
@@ -483,9 +538,17 @@ mod tests {
     #[test]
     fn view_mode_blocks_edits() {
         let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
-        let (ed, applied) = ed.apply(&Edit::insert(0, b"x".as_slice()));
+        let (ed, applied) = ed.apply(Edit::insert(0, b"x".as_slice()));
         assert!(applied.is_none());
         assert_eq!(ed.interaction.message, "Buffer is read-only");
+    }
+
+    #[test]
+    fn empty_delete_range_on_view_only_is_a_noop() {
+        let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
+        let (ed, removed) = ed.delete_range(2, 2);
+        assert!(removed.is_empty());
+        assert_eq!(ed.interaction.message, "");
     }
 
     #[test]
@@ -493,7 +556,7 @@ mod tests {
         let ed = editor_with("abcdef")
             .with_window(|w| Window { point: 4, ..w })
             .with_current_buffer(|b| b.set_mark(Some(2)).set_saved_point(5));
-        let (ed, _) = ed.apply(&Edit::insert(1, b"XYZ".as_slice()));
+        let (ed, _) = ed.apply(Edit::insert(1, b"XYZ".as_slice()));
         assert_eq!(ed.window().point, 7);
         assert_eq!(ed.buffer().mark(), Some(5));
         assert_eq!(ed.buffer().saved_point(), 8);
@@ -502,7 +565,7 @@ mod tests {
     #[test]
     fn anchor_snaps_to_unit_start() {
         let ed = editor_with("a\r\nb").with_window(|w| Window { point: 1, ..w });
-        let (ed, _) = ed.apply(&Edit::insert(0, b"x".as_slice()));
+        let (ed, _) = ed.apply(Edit::insert(0, b"x".as_slice()));
         assert_eq!(ed.window().point, 2);
     }
 

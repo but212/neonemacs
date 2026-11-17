@@ -18,7 +18,6 @@ pub fn idle(ed: Editor, mut fx: Effects) -> (Editor, Effects) {
                 target,
                 disk: buf.backing().disk(),
                 eol: buf.eol(),
-                bytes: buf.text().to_bytes(),
             }),
             None => memory_only.push(buf.id()),
         }
@@ -96,7 +95,6 @@ mod tests {
                     target: WalTarget::Slot(slot()),
                     disk: DiskState::Unknown,
                     eol: Eol::Lf,
-                    bytes: b"x".to_vec(),
                 }]
             }]
         );

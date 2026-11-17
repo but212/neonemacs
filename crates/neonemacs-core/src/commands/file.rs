@@ -137,13 +137,8 @@ pub(crate) fn write_buffer(ed: &Editor, id: BufferId, fx: Effects) -> Effects {
 }
 
 /// Asks the shell to write the buffer to `path`. The buffer's file changes only in `written` (I-36).
-fn write_to(ed: &Editor, id: BufferId, path: PathBuf, mut fx: Effects) -> Effects {
-    let buf = ed.buffer_by_id(id);
-    fx.push(Effect::WriteFile {
-        id,
-        path,
-        bytes: buf.eol().encode(&buf.text().to_bytes()),
-    });
+fn write_to(_ed: &Editor, id: BufferId, path: PathBuf, mut fx: Effects) -> Effects {
+    fx.push(Effect::WriteFile { id, path });
     fx
 }
 
@@ -210,7 +205,7 @@ pub(crate) fn write_file(ed: Editor, input: &str, mut fx: Effects) -> (Editor, E
 pub(crate) fn toggle_eol(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let from = ed.buffer().eol();
     let to = from.toggled();
-    let (ed, applied) = ed.apply(&Edit::SetEol { from, to });
+    let (ed, applied) = ed.apply(Edit::SetEol { from, to });
     if applied.is_none() {
         return (ed, fx);
     }
@@ -492,7 +487,6 @@ mod tests {
             vec![Effect::WriteFile {
                 id,
                 path: PathBuf::from("other.txt"),
-                bytes: b"abc".to_vec()
             }]
         );
         // Only `written` moves the buffer (I-36).

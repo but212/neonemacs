@@ -108,9 +108,9 @@ mod tests {
         result.unwrap();
 
         // Two edits in two undo groups. With limit 0 the first group is dropped at once (I-35).
-        let (ed, _) = ed.apply(&Edit::insert(0, b"a".as_slice()));
+        let (ed, _) = ed.apply(Edit::insert(0, b"a".as_slice()));
         let ed = ed.end_command();
-        let (ed, _) = ed.apply(&Edit::insert(1, b"b".as_slice()));
+        let (ed, _) = ed.apply(Edit::insert(1, b"b".as_slice()));
         let ed = ed.end_command();
 
         // Each undo is its own command, as in the event loop.

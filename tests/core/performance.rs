@@ -19,13 +19,13 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
     let edit = Edit::insert(0, b"x".as_slice());
 
     // First edit initializes the gap
-    let (ed, _) = ed.apply(&edit);
+    let (ed, _) = ed.apply(edit);
 
     // Second edit must be O(1) in-place without deep-cloning the 32MB buffer.
     // If Editor::apply clones the entire Buffer on each keypress, this will take tens of ms.
     let edit2 = Edit::insert(1, b"y".as_slice());
     let start = Instant::now();
-    let (ed, _) = ed.apply(&edit2);
+    let (ed, _) = ed.apply(edit2);
     let elapsed = start.elapsed();
 
     assert_eq!(ed.buffer().text().len(), size + 2);
@@ -116,4 +116,114 @@ fn lua_comment_dwim_100_lines_on_32mb_buffer_is_fast() {
     );
     // Verify first line commented
     assert_eq!(&ed.buffer().text().bytes(0..15), b"// let x = 42;\n");
+}
+
+#[test]
+fn oversized_closed_undo_group_is_evicted_on_boundary() {
+    let config = Config {
+        undo_limit: 4096,
+        ..Config::default()
+    };
+    let ed = Editor::new(config);
+    let large = vec![b'a'; 16 * 1024];
+    let (ed, id) = ed.add_buffer("undo-limit", Text::from_bytes(&large), Backing::None);
+    let ed = neonemacs::core::switch_to(ed, id);
+
+    let (ed, _) = ed.apply(Edit::delete(0, large[..8192].to_vec()));
+    let ed = ed.end_command();
+
+    let ed = neonemacs::shell::handle(
+        ed,
+        None,
+        neonemacs::core::effect::Event::Run("undo".to_owned()),
+    );
+    assert_eq!(ed.message(), "No further undo information");
+    assert_eq!(ed.buffer().text().len(), 8192);
+}
+
+#[test]
+fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
+    let ed = Editor::new(Config::default());
+    let size = 10 * 1024 * 1024;
+    let line = vec![b'x'; size];
+    let (ed, id) = ed.add_buffer("long-line", Text::from_bytes(&line), Backing::None);
+    let ed = neonemacs::core::switch_to(ed, id);
+
+    // 1. Near line start: must not copy or highlight the 10MB tail.
+    let ed = ed.move_point(200);
+    let start = Instant::now();
+    let ed = neonemacs::core::render::scroll(ed, 120, 40);
+    let frame = neonemacs::core::render::frame(&ed, 120, 40);
+    let elapsed_head = start.elapsed();
+    assert!(!frame.rows.is_empty());
+    assert!(
+        elapsed_head < Duration::from_millis(60),
+        "scroll + frame near start of 10MB single line took {elapsed_head:?} (expected < 60ms)"
+    );
+
+    // 2. Scrolled 5MB horizontally into the 10MB single line: must skip off-screen glyph allocations.
+    let ed = ed.move_point(size / 2);
+    let start = Instant::now();
+    let ed = neonemacs::core::render::scroll(ed, 120, 40);
+    let frame = neonemacs::core::render::frame(&ed, 120, 40);
+    let elapsed_mid = start.elapsed();
+    assert!(!frame.rows.is_empty());
+    assert!(
+        elapsed_mid < Duration::from_millis(150),
+        "scroll + frame at 5MB offset of 10MB single line took {elapsed_mid:?} (expected < 150ms)"
+    );
+}
+
+#[test]
+fn wal_flush_streams_split_gap_buffer_without_full_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("split.txt");
+    let initial = b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec();
+    std::fs::write(&file_path, &initial).unwrap();
+
+    let ed = Editor::new(Config::default());
+    let fx = neonemacs::core::request_open(&ed, &file_path, None, true, Vec::new());
+    let ed = neonemacs::shell::perform_all(ed, None, fx);
+    let disk = neonemacs::shell::file::disk_state(&file_path);
+
+    // Edit at offset 10 so the gap splits the buffer between left and right halves.
+    let (ed, _) = ed.apply(Edit::insert(10, b"[MID]".as_slice()));
+    let (ed, fx) = neonemacs::core::step(ed, neonemacs::core::effect::Event::Idle);
+    assert!(
+        fx.iter()
+            .any(|e| matches!(e, neonemacs::core::effect::Effect::FlushWal { .. }))
+    );
+
+    let _ed = neonemacs::shell::perform_all(ed, None, fx);
+    let wal = neonemacs::shell::wal::read_wal(&file_path, disk).unwrap();
+    assert_eq!(wal.bytes, b"0123456789[MID]abcdefghijklmnopqrstuvwxyz");
+}
+
+#[test]
+fn large_eol_from_raw_and_encode_are_simd_chunked() {
+    let line = b"abcdefghijklmnopqrstuvwxyz0123456789\r\n";
+    let mut raw = Vec::with_capacity(line.len() * 200_000);
+    for _ in 0..200_000 {
+        raw.extend_from_slice(line);
+    }
+    let start = Instant::now();
+    let (eol, normalized) = neonemacs::core::Eol::from_raw(raw, neonemacs::core::Eol::Lf);
+    let elapsed_from_raw = start.elapsed();
+    assert_eq!(eol, neonemacs::core::Eol::Crlf);
+
+    let start = Instant::now();
+    let encoded = eol.encode(&normalized);
+    let elapsed_encode = start.elapsed();
+    assert_eq!(encoded.len(), line.len() * 200_000);
+    // Timing budgets apply only to optimized builds; debug builds still check correctness.
+    if !cfg!(debug_assertions) {
+        assert!(
+            elapsed_from_raw < Duration::from_millis(120),
+            "Eol::from_raw on 7.6MB CRLF took {elapsed_from_raw:?} (expected < 120ms)"
+        );
+        assert!(
+            elapsed_encode < Duration::from_millis(120),
+            "Eol::encode on 7.4MB CRLF took {elapsed_encode:?} (expected < 120ms)"
+        );
+    }
 }

@@ -190,11 +190,197 @@ fn run(nodes: &[Node], text: &Text, pos: usize, fold: bool) -> Option<usize> {
     }
 }
 
+/// Returns exact UTF-8 needle bytes when `pat` is a non-empty literal pattern that can be
+/// matched directly over canonical UTF-8 (Latin-1 atoms use the unit matcher).
+/// Returns `Some(Vec::new())` if the pattern contains `\n` (which can never match).
+fn exact_byte_needle(pat: &Pattern) -> Option<Vec<u8>> {
+    if pat.nodes.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(pat.nodes.len());
+    for node in &pat.nodes {
+        let Node::Atom {
+            class: Class::Lit(c),
+            star: false,
+        } = *node
+        else {
+            return None;
+        };
+        if c == '\n' {
+            return Some(Vec::new());
+        }
+        if !c.is_ascii() && c <= '\u{FF}' {
+            return None;
+        }
+        let mut buf = [0u8; 4];
+        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    }
+    Some(out)
+}
+
+/// Text also decodes overlong sequences, which have no canonical byte match.
+/// A range or gap splitting a UTF-8 unit conservatively falls back to unit matching.
+fn is_canonical_utf8(text: &Text, range: std::ops::Range<usize>) -> bool {
+    let (left, right) = text.slices_in(range);
+    std::str::from_utf8(left).is_ok() && std::str::from_utf8(right).is_ok()
+}
+
+fn gap_match_at(left: &[u8], right: &[u8], pos: usize, needle: &[u8]) -> bool {
+    let left_len = left.len();
+    if pos + needle.len() > left_len + right.len() {
+        return false;
+    }
+    let from_left = left_len.saturating_sub(pos);
+    left[pos..] == needle[..from_left] && right[..needle.len() - from_left] == needle[from_left..]
+}
+
+fn find_literal_forward(text: &Text, needle: &[u8], from: usize) -> Option<(usize, usize)> {
+    if needle.is_empty() {
+        return None;
+    }
+    let (left, right) = text.slices();
+    let left_len = left.len();
+    let finder = memchr::memmem::Finder::new(needle);
+
+    if from < left_len {
+        if let Some(off) = finder.find(&left[from..]) {
+            let start = from + off;
+            return Some((start, start + needle.len()));
+        }
+        let cross_start = left_len.saturating_sub(needle.len() - 1).max(from);
+        for p in cross_start..left_len {
+            if gap_match_at(left, right, p, needle) {
+                return Some((p, p + needle.len()));
+            }
+        }
+        if let Some(off) = finder.find(right) {
+            let start = left_len + off;
+            return Some((start, start + needle.len()));
+        }
+        None
+    } else {
+        let r_from = from - left_len;
+        finder.find(&right[r_from..]).map(|off| {
+            let start = from + off;
+            (start, start + needle.len())
+        })
+    }
+}
+
+fn find_literal_backward(text: &Text, needle: &[u8], from: usize) -> Option<(usize, usize)> {
+    if needle.is_empty() || from == 0 {
+        return None;
+    }
+    let (left, right) = text.slices();
+    let left_len = left.len();
+    let finder = memchr::memmem::FinderRev::new(needle);
+
+    if from > left_len {
+        let r_limit = ((from - left_len - 1) + needle.len()).min(right.len());
+        if let Some(off) = finder.rfind(&right[..r_limit]) {
+            let start = left_len + off;
+            if start < from {
+                return Some((start, start + needle.len()));
+            }
+        }
+        let cross_start = left_len.saturating_sub(needle.len() - 1);
+        for p in (cross_start..left_len).rev() {
+            if gap_match_at(left, right, p, needle) {
+                return Some((p, p + needle.len()));
+            }
+        }
+        finder
+            .rfind(left)
+            .map(|start| (start, start + needle.len()))
+    } else {
+        let cross_start = left_len.saturating_sub(needle.len() - 1);
+        for p in (cross_start..from).rev() {
+            if gap_match_at(left, right, p, needle) {
+                return Some((p, p + needle.len()));
+            }
+        }
+        let l_limit = ((from - 1) + needle.len()).min(left_len);
+        finder
+            .rfind(&left[..l_limit])
+            .filter(|&start| start < from)
+            .map(|start| (start, start + needle.len()))
+    }
+}
+
+fn find_bol_forward(text: &Text, pat: &Pattern, from: usize, fold: bool) -> Option<(usize, usize)> {
+    if from == 0
+        && let Some(end) = pat.match_at(text, 0, fold)
+    {
+        return Some((0, end));
+    }
+    let (left, right) = text.slices();
+    let left_len = left.len();
+    let nl_from = from.saturating_sub(1);
+
+    if nl_from < left_len {
+        for off in memchr::memchr_iter(b'\n', &left[nl_from..]) {
+            let cand = nl_from + off + 1;
+            if cand >= from
+                && let Some(end) = pat.match_at(text, cand, fold)
+            {
+                return Some((cand, end));
+            }
+        }
+        for off in memchr::memchr_iter(b'\n', right) {
+            let cand = left_len + off + 1;
+            if let Some(end) = pat.match_at(text, cand, fold) {
+                return Some((cand, end));
+            }
+        }
+    } else {
+        let r_from = nl_from - left_len;
+        for off in memchr::memchr_iter(b'\n', &right[r_from..]) {
+            let cand = nl_from + off + 1;
+            if cand >= from
+                && let Some(end) = pat.match_at(text, cand, fold)
+            {
+                return Some((cand, end));
+            }
+        }
+    }
+    None
+}
+
+fn find_bol_backward(
+    text: &Text,
+    pat: &Pattern,
+    from: usize,
+    fold: bool,
+) -> Option<(usize, usize)> {
+    let mut p = from;
+    while p > 0 {
+        let cand = text.line_start(p - 1);
+        if cand < from
+            && let Some(end) = pat.match_at(text, cand, fold)
+        {
+            return Some((cand, end));
+        }
+        p = cand;
+    }
+    None
+}
+
 /// First match starting at or after `from`. Returns `(start, end)`.
 #[must_use]
 pub fn find_forward(text: &Text, pat: &Pattern, from: usize, fold: bool) -> Option<(usize, usize)> {
     if from > text.len() {
         return None;
+    }
+    if !fold && let Some(needle) = exact_byte_needle(pat) {
+        let found = find_literal_forward(text, &needle, from);
+        let end = found.map_or(text.len(), |(_, end)| end);
+        // Validate only the searched span, not the whole buffer on every replacement.
+        if is_canonical_utf8(text, from..end) {
+            return found;
+        }
+    }
+    if matches!(pat.nodes.first(), Some(Node::Bol)) {
+        return find_bol_forward(text, pat, from, fold);
     }
     let mut p = from;
     loop {
@@ -217,6 +403,17 @@ pub fn find_backward(
     fold: bool,
 ) -> Option<(usize, usize)> {
     let mut p = from.min(text.len());
+    if !fold && let Some(needle) = exact_byte_needle(pat) {
+        let found = find_literal_backward(text, &needle, p);
+        let start = found.map_or(0, |(start, _)| start);
+        let end = found.map_or(p, |(_, end)| end.max(p));
+        if is_canonical_utf8(text, start..end) {
+            return found;
+        }
+    }
+    if matches!(pat.nodes.first(), Some(Node::Bol)) {
+        return find_bol_backward(text, pat, p, fold);
+    }
     while p > 0 {
         p = text.prev_boundary(p);
         if let Some(end) = pat.match_at(text, p, fold) {
@@ -299,5 +496,104 @@ mod tests {
     fn replacement_expands_ampersand() {
         assert_eq!(expand_replacement("[&]", b"xy"), b"[xy]");
         assert_eq!(expand_replacement("\\&", b"x"), b"&");
+    }
+
+    #[test]
+    fn literal_search_preserves_decoded_units_at_every_gap_position() {
+        let cases: &[(&[u8], &str)] = &[
+            (b"/", "/"),
+            (&[0xC0, 0xAF], "/"),
+            (&[0xE0, 0x80, 0xAF], "/"),
+            (&[0xF0, 0x80, 0x80, 0xAF], "/"),
+            ("Ā".as_bytes(), "Ā"),
+            (&[0xF0, 0x80, 0x84, 0x80], "Ā"),
+            (&[0xC0, 0xAF, 0xF0, 0x80, 0x84, 0x80], "/Ā"),
+        ];
+        for &(bytes, needle) in cases {
+            for gap in 0..=bytes.len() {
+                let t = Text::from_bytes(bytes)
+                    .insert(gap, b"X")
+                    .delete(gap..gap + 1);
+                for pat in [Pattern::literal(needle), Pattern::regex(needle).unwrap()] {
+                    for fold in [false, true] {
+                        assert_eq!(pat.match_at(&t, 0, fold), Some(bytes.len()));
+                        for from in 0..=bytes.len() + 1 {
+                            let forward = (from == 0).then_some((0, bytes.len()));
+                            let backward = (from > 0).then_some((0, bytes.len()));
+                            assert_eq!(
+                                find_forward(&t, &pat, from, fold),
+                                forward,
+                                "forward: bytes={bytes:02x?}, gap={gap}, from={from}, fold={fold}"
+                            );
+                            assert_eq!(
+                                find_backward(&t, &pat, from, fold),
+                                backward,
+                                "backward: bytes={bytes:02x?}, gap={gap}, from={from}, fold={fold}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn literal_search_matches_unit_search_in_mixed_encodings() {
+        for (encoded, needle, unit_pattern) in [
+            (&[0xC0, 0xAF][..], "/", "[/]"),
+            (&[0xF0, 0x80, 0x84, 0x80][..], "Ā", "[Ā]"),
+        ] {
+            let bytes = [needle.as_bytes(), encoded, needle.as_bytes()].concat();
+            let pat = Pattern::literal(needle);
+            let unit_pat = Pattern::regex(unit_pattern).unwrap();
+            for gap in 0..=bytes.len() {
+                let t = Text::from_bytes(&bytes)
+                    .insert(gap, b"X")
+                    .delete(gap..gap + 1);
+                for from in 0..=bytes.len() + 1 {
+                    assert_eq!(
+                        find_forward(&t, &pat, from, false),
+                        find_forward(&t, &unit_pat, from, false),
+                        "forward: needle={needle}, gap={gap}, from={from}"
+                    );
+                    assert_eq!(
+                        find_backward(&t, &pat, from, false),
+                        find_backward(&t, &unit_pat, from, false),
+                        "backward: needle={needle}, gap={gap}, from={from}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn literal_and_bol_search_across_gap_and_edge_cases() {
+        // Insert in the middle so the gap splits "needle" right across left/right slices.
+        let t = Text::from_bytes(b"aaaneedlebbb\n^line2\nneedleccc")
+            .insert(6, b"") // move gap to 6 ("aaanee" | "dlebbb...")
+            ;
+        let t = t.insert(3, b"X").delete(3..4); // gap at 3 ("aaa" | "needle...")
+        let t = t.insert(6, b"Y").delete(6..7); // gap at 6 ("aaanee" | "dle...")
+        let pat = Pattern::literal("needle");
+        assert_eq!(find_forward(&t, &pat, 0, false), Some((3, 9)));
+        assert_eq!(find_forward(&t, &pat, 4, false), Some((20, 26)));
+        assert_eq!(find_backward(&t, &pat, t.len(), false), Some((20, 26)));
+        // `from` inside the gap-crossing match still finds it backward.
+        assert_eq!(find_backward(&t, &pat, 7, false), Some((3, 9)));
+        assert_eq!(find_backward(&t, &pat, 4, false), Some((3, 9)));
+        assert_eq!(find_backward(&t, &pat, 3, false), None);
+
+        // Newline inside literal never matches.
+        assert_eq!(
+            find_forward(&t, &Pattern::literal("bbb\n^line2"), 0, false),
+            None
+        );
+
+        // `^`-anchored search across gap.
+        let bol_pat = Pattern::regex("^needle").unwrap();
+        assert_eq!(find_forward(&t, &bol_pat, 0, false), Some((20, 26)));
+        assert_eq!(find_backward(&t, &bol_pat, t.len(), false), Some((20, 26)));
+        assert_eq!(find_backward(&t, &bol_pat, 21, false), Some((20, 26)));
+        assert_eq!(find_backward(&t, &bol_pat, 20, false), None);
     }
 }

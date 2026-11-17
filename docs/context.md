@@ -81,12 +81,12 @@ The system partitions strictly into a pure functional core and an imperative she
   - Consecutive `self-insert` insertions amalgamate into a single group up to `amalgamating-undo-limit` (default 20 characters). Non-insert commands immediately seal the group.
   - Clean state restoration (I-41): undo groups opened while clean record save epoch. Undoing the full group restores clean status (`modified = false`) and removes WAL iff epoch matches.
   - Whole-buffer replacements (`Buffer::with_text`: revert, WAL restore, shell output) wipe undo history to prevent stale offset replay (I-34).
-  - Undo capacity is bounded by `Config.undo_limit`; `UndoLog` maintains no internal limit state (I-35).
+  - Undo capacity is bounded by `Config.undo_limit`; `UndoLog` maintains no internal limit state (I-35). Closed groups exceeding a positive limit are evicted immediately on boundary.
 - **`KillRing`**: Ring buffer capped at `kill-ring-max` entries (default 120) per `push` (I-26). Consecutive kills (`kill-line`, `kill-word`, `C-w`) merge into the latest entry (I-09). `yank-pop` cycles entries strictly immediately after `LastCommand::Yank` (I-38).
 
 ### 2.3 Persistence and Crash Recovery (WAL)
 
-- **Write-Ahead Log (WAL)**: Sibling file `.<name>.wal` holding unsaved buffer text, flushed after 1.0s user idle delay.
+- **Write-Ahead Log (WAL)**: Sibling file `.<name>.wal` holding unsaved buffer text, flushed after 1.0s user idle delay. Both `Effect::FlushWal` and `Effect::WriteFile` stream `Text::slices()` directly from the shell without whole-buffer heap copies.
 - **`wal_dirty`**: Set on edit, cleared on flush. Managed only for `Backing::File` and `Backing::Scratch`; unbacked buffers never trigger disk writes.
 - **WAL wire format (`NEONWAL2`)**:
   - Header: 8-byte magic `NEONWAL2`, target file size, modification timestamp (`mtime`), and EOL mode byte (`0` LF, `1` CRLF).
@@ -226,7 +226,7 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-18** | Zero `&mut` references in any `neonemacs-core` function signatures, return types, or struct fields. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
 | **I-19** | Selected window index is strictly bounded: `selected < layout.leaf_count()`. | Runtime (`WindowTree`) |
 | **I-20** | Any buffer ID passed to `with_buffer` exists within the buffer pool. | Runtime (`BufferPool::with_buffer`) |
-| **I-21** | The shell's `RefCell<Option<Editor>>` is `None` strictly during `step`, and no borrow is held across Lua invocations or effect execution. | Runtime (`shell::step_in`, `perform_in`, Lua `run`) |
+| **I-21** | The shell's `RefCell<Option<Editor>>` is `None` strictly during `step`, and no borrow is held across Lua invocations; effect execution only holds a short immutable borrow scoped strictly to slice reads during `WriteFile` and `FlushWal`. | Runtime (`shell::step_in`, `perform_in`, `perform`, Lua `run`) |
 | **I-22** | Terminal ANSI escape sequences do not affect character display widths, coordinate mapping, or differential screen updates. | Type + Output render queue (`session/screen.rs`) |
 | **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. Header records EOL mode (`NEONWAL2`). | Runtime (`wal.rs`) |
 | **I-24** | Background shell execution is non-blocking with spinner animation; concurrent execution requests are rejected with busy notices. | Runtime + Worker thread channel (`mpsc`) |
@@ -238,7 +238,7 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-32** | `Editor` internal groups (`Documents`, `Interaction`, `Settings`) are private to `editor`; cross-group interactions compose exclusively in `Editor` methods. | Module privacy (`crates/neonemacs-core/src/editor/`) |
 | **I-33** | *Retired*: Renumbered as I-31. | - |
 | **I-34** | Whole-buffer text replacements (`Buffer::with_text`) wipe undo history to prevent replaying stale offsets against replaced content. | Runtime (`Buffer::with_text`) |
-| **I-35** | Undo log memory cap is governed strictly by `Config.undo_limit`; `UndoLog` maintains no internal limit state. | Type (`UndoLog::record(edit, limit)`) |
+| **I-35** | Undo log memory cap is governed strictly by `Config.undo_limit`; `UndoLog` maintains no internal limit state, and `close_with_limit` evicts oversized closed groups when `limit > 0`. | Type (`UndoLog::record(edit, limit)`, `UndoLog::close_with_limit(limit)`) |
 | **I-36** | `write-file` updates buffer path, name, and old WAL strictly upon `Event::Written` success. | Type (`Event::Written { id, path, result }`) |
 | **I-37** | `FilePath` is constructed exclusively through `FilePath::resolve` (lexical folding of `.` and `..`); strictly one buffer visits a given path. | Type (`FilePath`) + Runtime (`commands/file.rs`) |
 | **I-38** | `LastCommand::Yank` remains valid strictly until the immediately following command or edit. | Runtime (`Editor::apply`) |

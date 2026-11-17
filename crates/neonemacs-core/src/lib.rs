@@ -1,5 +1,7 @@
 //! Pure editor transitions. Nothing here touches the file system, a process, Lua, or the terminal (I-14).
 
+#![forbid(unsafe_code)]
+
 mod buffer;
 mod commands;
 mod config;

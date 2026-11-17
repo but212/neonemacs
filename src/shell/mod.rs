@@ -143,7 +143,7 @@ pub fn step_in(cell: &RefCell<Option<Editor>>, event: Event) -> Effects {
 /// No `RefCell` borrow is held while an effect runs (I-21).
 pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Effects) {
     for effect in effects {
-        let event = perform(effect, lua);
+        let event = perform(cell, effect, lua);
         let next = step_in(cell, event);
         perform_in(cell, lua, next);
     }
@@ -162,16 +162,25 @@ const fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
 }
 
 /// Performs one effect and returns the single event that answers it (I-15).
+///
+/// # Panics
+/// Panics if `cell` does not contain an editor (violating I-21).
 #[must_use]
-pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
+pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>) -> Event {
     match effect {
         Effect::StatDisk { target, path } => Event::Disk {
             target,
             state: file::disk_state(&path),
             path,
         },
-        Effect::WriteFile { id, path, bytes } => {
-            let result = file::save(&path, &bytes).map_err(|e| e.to_string());
+        Effect::WriteFile { id, path } => {
+            let result = {
+                let guard = cell.borrow();
+                let ed = guard.as_ref().expect("editor is in the cell (I-21)");
+                let buf = ed.buffer_by_id(id);
+                let (left, right) = buf.text().slices();
+                file::save_slices(&path, buf.eol(), left, right).map_err(|e| e.to_string())
+            };
             Event::Written { id, path, result }
         }
         Effect::ReadFile {
@@ -193,13 +202,20 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
             }
             Event::WalRemoved
         }
-        Effect::FlushWal { entries } => Event::WalFlushed(
-            entries
+        Effect::FlushWal { entries } => {
+            let guard = cell.borrow();
+            let ed = guard.as_ref().expect("editor is in the cell (I-21)");
+            let writes = entries
                 .into_iter()
                 .map(|e| {
+                    let (left, right) = ed.buffer_by_id(e.id).text().slices();
                     let result = match &e.target {
-                        WalTarget::Sibling(path) => wal::write_wal(path, e.disk, e.eol, &e.bytes),
-                        WalTarget::Slot(slot) => wal::write_scratch(slot, e.eol, &e.bytes),
+                        WalTarget::Sibling(path) => {
+                            wal::write_wal_slices(path, e.disk, e.eol, left, right)
+                        }
+                        WalTarget::Slot(slot) => {
+                            wal::write_scratch_slices(slot, e.eol, left, right)
+                        }
                     };
                     WalWrite {
                         id: e.id,
@@ -207,8 +223,9 @@ pub fn perform(effect: Effect, lua: Option<&Lua>) -> Event {
                         result: result.map_err(|err| err.to_string()),
                     }
                 })
-                .collect(),
-        ),
+                .collect();
+            Event::WalFlushed(writes)
+        }
         Effect::ProbeWal { path, disk, line } => Event::WalProbed {
             probe: wal::probe(&path, disk),
             path,
@@ -291,17 +308,22 @@ fn run_lua(lua: Option<&Lua>, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::BufferId;
     use crate::core::effect::{ReadTarget, StatTarget};
     use crate::core::{DiskState, Read};
 
     #[test]
     fn effect_round_trip_yields_one_event_each() {
+        use crate::core::{Config, Text};
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("f.txt");
-        let id = BufferId(1);
+        let ed = Editor::new(Config::default())
+            .with_current_buffer(|b| b.with_text(Text::from_bytes(b"hi")));
+        let id = ed.buffer().id();
+        let cell = RefCell::new(Some(ed));
 
         let stat = perform(
+            &cell,
             Effect::StatDisk {
                 target: StatTarget::Save(id),
                 path: path.clone(),
@@ -317,10 +339,10 @@ mod tests {
             }
         );
         let write = perform(
+            &cell,
             Effect::WriteFile {
                 id,
                 path: path.clone(),
-                bytes: b"hi".to_vec(),
             },
             None,
         );
@@ -332,6 +354,7 @@ mod tests {
             }
         ));
         let read = perform(
+            &cell,
             Effect::ReadFile {
                 target: ReadTarget::Revert(id),
                 path,
@@ -347,6 +370,7 @@ mod tests {
             }
         ));
         let shell = perform(
+            &cell,
             Effect::RunShell {
                 command: "echo hi".to_owned(),
                 shell: ShellSpec::default(),
@@ -355,6 +379,7 @@ mod tests {
         );
         assert!(matches!(shell, Event::ShellDone(Ok(s)) if s.starts_with("hi")));
         let lua_missing = perform(
+            &cell,
             Effect::RunLua {
                 name: "nope".to_owned(),
             },

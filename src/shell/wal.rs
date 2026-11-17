@@ -7,7 +7,7 @@ use crate::core::effect::WalProbe;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -32,27 +32,32 @@ const fn eol_byte(eol: Eol) -> u8 {
     }
 }
 
+/// Encodes the fixed 30-byte WAL header (`NEONWAL2`, EOL mode, and `DiskState`).
+#[must_use]
+pub fn encode_wal_header(disk: DiskState, eol: Eol) -> [u8; HEADER_LEN] {
+    let mut header = [0u8; HEADER_LEN];
+    header[..8].copy_from_slice(WAL_MAGIC);
+    header[8] = eol_byte(eol);
+    match disk {
+        DiskState::Known { mtime, size } => {
+            header[9] = 1;
+            let since = mtime.duration_since(UNIX_EPOCH).unwrap_or_default();
+            header[10..18].copy_from_slice(&since.as_secs().to_le_bytes());
+            header[18..22].copy_from_slice(&since.subsec_nanos().to_le_bytes());
+            header[22..30].copy_from_slice(&size.to_le_bytes());
+        }
+        DiskState::Unknown => {
+            header[9] = 0;
+        }
+    }
+    header
+}
+
 /// Serializes payload with its EOL and `DiskState` header (schema).
 #[must_use]
 pub fn encode_wal(disk: DiskState, eol: Eol, bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + bytes.len());
-    out.extend_from_slice(WAL_MAGIC);
-    out.push(eol_byte(eol));
-    match disk {
-        DiskState::Known { mtime, size } => {
-            out.push(1);
-            let since = mtime.duration_since(UNIX_EPOCH).unwrap_or_default();
-            out.extend_from_slice(&since.as_secs().to_le_bytes());
-            out.extend_from_slice(&since.subsec_nanos().to_le_bytes());
-            out.extend_from_slice(&size.to_le_bytes());
-        }
-        DiskState::Unknown => {
-            out.push(0);
-            out.extend_from_slice(&0u64.to_le_bytes());
-            out.extend_from_slice(&0u32.to_le_bytes());
-            out.extend_from_slice(&0u64.to_le_bytes());
-        }
-    }
+    out.extend_from_slice(&encode_wal_header(disk, eol));
     out.extend_from_slice(bytes);
     out
 }
@@ -124,10 +129,45 @@ pub fn has_wal(path: &Path) -> bool {
     bytes.len() >= HEADER_LEN && &bytes[0..8] == WAL_MAGIC
 }
 
-/// Writes buffer contents with its EOL and base `DiskState` to the WAL file `wp` atomically.
-fn write_at(wp: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
-    let encoded = encode_wal(disk, eol, bytes);
-    crate::shell::file::atomic_write(wp, ".", ".wal.tmp", &encoded, None)
+/// Streams header and gap-buffer slices `left` and `right` to the WAL file `wp` atomically.
+fn write_slices_at(
+    wp: &Path,
+    disk: DiskState,
+    eol: Eol,
+    left: &[u8],
+    right: &[u8],
+) -> io::Result<()> {
+    crate::shell::file::atomic_write_with(wp, ".", ".wal.tmp", None, |f| {
+        let header = encode_wal_header(disk, eol);
+        f.write_all(&header)?;
+        f.write_all(left)?;
+        f.write_all(right)
+    })
+}
+
+/// Writes buffer slices with EOL and base `DiskState` to the sibling WAL atomically.
+///
+/// # Errors
+/// Returns `io::Error` if atomic writing of WAL bytes fails.
+pub fn write_wal_slices(
+    path: &Path,
+    disk: DiskState,
+    eol: Eol,
+    left: &[u8],
+    right: &[u8],
+) -> io::Result<()> {
+    write_slices_at(&wal_path(path), disk, eol, left, right)
+}
+
+/// Streams the unsaved text slices of the scratch buffer to its slot, creating the slot directory.
+///
+/// # Errors
+/// Returns `io::Error` if the directory or the atomic write fails.
+pub fn write_scratch_slices(slot: &Path, eol: Eol, left: &[u8], right: &[u8]) -> io::Result<()> {
+    if let Some(dir) = slot.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    write_slices_at(slot, DiskState::Unknown, eol, left, right)
 }
 
 /// Writes buffer contents with its EOL and base `DiskState` to WAL atomically via temp file.
@@ -135,7 +175,7 @@ fn write_at(wp: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()
 /// # Errors
 /// Returns `io::Error` if atomic writing of WAL bytes fails.
 pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
-    write_at(&wal_path(path), disk, eol, bytes)
+    write_wal_slices(path, disk, eol, bytes, &[])
 }
 
 /// Writes the unsaved text of the scratch buffer to its slot, creating the slot directory. The
@@ -144,10 +184,7 @@ pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Re
 /// # Errors
 /// Returns `io::Error` if the directory or the atomic write fails.
 pub fn write_scratch(slot: &Path, eol: Eol, bytes: &[u8]) -> io::Result<()> {
-    if let Some(dir) = slot.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    write_at(slot, DiskState::Unknown, eol, bytes)
+    write_scratch_slices(slot, eol, bytes, &[])
 }
 
 /// `$XDG_STATE_HOME/neonemacs/scratch.wal`, else `<home>/.local/state/neonemacs/scratch.wal`,
