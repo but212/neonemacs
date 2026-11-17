@@ -312,11 +312,19 @@ fn line_cells(
     };
     let mut cut = false;
 
-    let token_kinds = if syntax.is_some() {
+    let token_kinds = if let Some(def) = syntax {
         let scan_end = if end - start > 4096 {
-            let mut cap_end = (pos + width.saturating_mul(4).max(4096)).min(end);
-            let lookahead_end = (cap_end + 256).min(end);
-            while cap_end < lookahead_end {
+            // A byte budget cannot bound visible text: combining marks occupy no columns.
+            let (mut cap_end, mut scan_col) = (pos, col);
+            while cap_end < end && scan_col < right {
+                let Some((unit, len)) = text.unit_at(cap_end) else {
+                    break;
+                };
+                scan_col += unit_width(unit, scan_col, metrics);
+                cap_end += len;
+            }
+            // Finish the token so truncation cannot turn an identifier into a keyword or vice versa.
+            while cap_end < end {
                 let b = text.byte_at(cap_end);
                 if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
                     cap_end += 1;
@@ -324,7 +332,15 @@ fn line_cells(
                     break;
                 }
             }
+            // Prefixes beginning in the visible region must not be cut short.
+            let prefix_len = def
+                .line_comment
+                .as_ref()
+                .map_or(0, String::len)
+                .max(def.heading_prefix.as_ref().map_or(0, String::len));
             cap_end
+                .saturating_add(prefix_len.saturating_sub(1))
+                .min(end)
         } else {
             end
         };
@@ -840,6 +856,109 @@ mod tests {
     fn prompt_note_message_leaves_cursor_in_text_area() {
         let ed = prompt_editor("is", "").set_message("No match");
         assert_eq!(frame(&ed, 40, 4).cursor, (0, 0));
+    }
+
+    #[test]
+    fn long_line_highlighting_covers_visible_tokens_after_combining_marks() {
+        let m = Metrics { tab: 8, cjk: false };
+        let def = SyntaxDef::new(
+            "t",
+            vec!["t".to_owned()],
+            vec![],
+            None,
+            vec!["let".to_owned()],
+            vec![],
+            false,
+        );
+        for left in [0, 4500] {
+            let input = format!("{}a{} let", "x".repeat(left), "\u{0301}".repeat(3000));
+            let text = Text::from_bytes(input.as_bytes());
+            let cells = line_cells(Some(&def), &text, 0..text.len(), left, 20, m, &[]);
+            assert_eq!(cells[0].glyph, format!("a{}", "\u{0301}".repeat(3000)));
+            assert_eq!(
+                highlight_line(Some(&def), input.as_bytes())[input.len() - 3],
+                TokenKind::Keyword
+            );
+            assert!(
+                cells[2..5].iter().all(|c| c.style == TokenKind::Keyword),
+                "left={left}"
+            );
+        }
+    }
+
+    #[test]
+    fn long_line_highlighting_preserves_comment_prefixes_crossing_right_edge() {
+        let m = Metrics { tab: 8, cjk: false };
+        for prefix in ["///", "<!--", "※※"] {
+            let def = SyntaxDef::new(
+                "t",
+                vec!["t".to_owned()],
+                vec![],
+                Some(prefix.to_owned()),
+                vec![],
+                vec![],
+                false,
+            );
+            for left in [0, 4500] {
+                let input = format!("{}{prefix}{}", " ".repeat(left + 18), "x".repeat(5000));
+                let text = Text::from_bytes(input.as_bytes());
+                let cells = line_cells(Some(&def), &text, 0..text.len(), left, 20, m, &[]);
+                assert_eq!(
+                    cells[18].style,
+                    TokenKind::Comment,
+                    "prefix={prefix}, left={left}"
+                );
+                assert_eq!(cells[19].glyph, "$");
+            }
+        }
+    }
+
+    #[test]
+    fn long_line_highlighting_checks_full_heading_prefix_beyond_right_edge() {
+        let m = Metrics { tab: 8, cjk: false };
+        let prefix = format!("{}###", " ".repeat(18));
+        let def = SyntaxDef::new(
+            "t",
+            vec!["t".to_owned()],
+            vec![],
+            None,
+            vec![],
+            vec![],
+            false,
+        )
+        .with_heading_prefix(Some(prefix.clone()));
+        for (ending, expected) in [("###", TokenKind::Keyword), ("##!", TokenKind::Normal)] {
+            let input = format!("{}{ending}{}", " ".repeat(18), "x".repeat(5000));
+            let text = Text::from_bytes(input.as_bytes());
+            let cells = line_cells(Some(&def), &text, 0..text.len(), 0, 20, m, &[]);
+            assert_eq!(highlight_line(Some(&def), input.as_bytes())[18], expected);
+            assert!(cells[..19].iter().all(|c| c.style == expected));
+        }
+    }
+
+    #[test]
+    fn long_line_highlighting_finishes_the_visible_token() {
+        let m = Metrics { tab: 8, cjk: false };
+        let keyword = "a".repeat(5000);
+        let def = SyntaxDef::new(
+            "t",
+            vec!["t".to_owned()],
+            vec![],
+            None,
+            vec![keyword.clone()],
+            vec![],
+            false,
+        );
+        for suffix in ["", "b"] {
+            let text = Text::from_bytes(format!("{keyword}{suffix}").as_bytes());
+            let cells = line_cells(Some(&def), &text, 0..text.len(), 0, 20, m, &[]);
+            let expected = if suffix.is_empty() {
+                TokenKind::Keyword
+            } else {
+                TokenKind::Normal
+            };
+            assert!(cells[..19].iter().all(|c| c.style == expected));
+        }
     }
 
     #[test]
