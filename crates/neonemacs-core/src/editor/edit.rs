@@ -61,12 +61,7 @@ impl Editor {
         self.delete_range_inner(start, end, false).0
     }
 
-    fn delete_range_inner(
-        self,
-        start: usize,
-        end: usize,
-        return_removed: bool,
-    ) -> (Self, Vec<u8>) {
+    fn delete_range_inner(self, start: usize, end: usize, return_removed: bool) -> (Self, Vec<u8>) {
         let text = self.buffer().text();
         let start = snap(text, start);
         let end = snap_end(text, end);

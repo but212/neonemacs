@@ -29,7 +29,8 @@ pub fn atomic_write_with(
     let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!("{prefix}{name}.{pid}_{seq}{suffix}"));
 
-    let result = write_with_and_sync(&tmp, permissions, write_fn).and_then(|()| fs::rename(&tmp, target));
+    let result =
+        write_with_and_sync(&tmp, permissions, write_fn).and_then(|()| fs::rename(&tmp, target));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }

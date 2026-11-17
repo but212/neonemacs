@@ -38,25 +38,17 @@ fn ascii_printable_run(bytes: &[u8]) -> usize {
     const DEL_BIAS: u64 = 0x0101_0101_0101_0101;
 
     let mut i = 0;
-    while i + 8 <= bytes.len() {
-        let word = u64::from_ne_bytes([
-            bytes[i],
-            bytes[i + 1],
-            bytes[i + 2],
-            bytes[i + 3],
-            bytes[i + 4],
-            bytes[i + 5],
-            bytes[i + 6],
-            bytes[i + 7],
-        ]);
-        if (word & HIGH) == 0
-            && (word.wrapping_add(LOW_BIAS) & HIGH) == HIGH
-            && (word.wrapping_add(DEL_BIAS) & HIGH) == 0
-        {
-            i += 8;
-        } else {
-            break;
+    let (chunks, _) = bytes.as_chunks::<8>();
+    for chunk in chunks {
+        let word = u64::from_le_bytes(*chunk);
+        // Byte b is in 0x20..=0x7E iff (b & 0x80) == 0, ((b + 0x60) & 0x80) != 0, ((b + 0x01) & 0x80) == 0.
+        let bad = (word & HIGH)
+            | ((word.wrapping_add(LOW_BIAS) ^ HIGH) & HIGH)
+            | (word.wrapping_add(DEL_BIAS) & HIGH);
+        if bad != 0 {
+            return i + (bad.trailing_zeros() as usize / 8);
         }
+        i += 8;
     }
     while i < bytes.len() && (0x20..=0x7E).contains(&bytes[i]) {
         i += 1;
@@ -134,9 +126,21 @@ pub fn unit_width(unit: Unit, col: usize, m: Metrics) -> usize {
 /// Display columns occupied by string `s`, starting at column 0.
 #[must_use]
 pub fn str_width(s: &str, m: Metrics) -> usize {
+    let bytes = s.as_bytes();
+    let mut i = 0;
     let mut col = 0;
-    for c in s.chars() {
+    while i < bytes.len() {
+        let run = ascii_printable_run(&bytes[i..]);
+        if run > 0 {
+            col += run;
+            i += run;
+            continue;
+        }
+        let Some(c) = s[i..].chars().next() else {
+            break;
+        };
         col += unit_width(Unit::Char(c), col, m);
+        i += c.len_utf8();
     }
     col
 }
@@ -198,5 +202,25 @@ mod tests {
         assert_eq!(column(&t, 5, M8), 10);
         assert_eq!(pos_at_column(&t, 0, 9, M8), 2);
         assert_eq!(pos_at_column(&t, 0, 10, M8), 5);
+    }
+
+    #[test]
+    fn ascii_printable_run_matches_scalar_for_all_bytes_and_lanes() {
+        for offset in 0..16 {
+            for b in 0..=u8::MAX {
+                let mut buf = vec![b'a'; offset + 9];
+                buf[offset] = b;
+                let expected = if (0x20..=0x7E).contains(&b) {
+                    buf.len()
+                } else {
+                    offset
+                };
+                assert_eq!(
+                    ascii_printable_run(&buf),
+                    expected,
+                    "offset={offset}, byte={b:#04x}"
+                );
+            }
+        }
     }
 }

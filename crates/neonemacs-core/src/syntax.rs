@@ -259,22 +259,22 @@ impl<'a> LineLexer<'a> {
             return (self, false);
         }
         let quote = b;
-        self.out[self.pos] = TokenKind::String;
         let mut j = self.pos + 1;
-        let mut escaped = false;
         let n = self.bytes.len();
         while j < n {
-            self.out[j] = TokenKind::String;
-            if escaped {
-                escaped = false;
-            } else if self.bytes[j] == b'\\' {
-                escaped = true;
-            } else if self.bytes[j] == quote {
+            let Some(offset) = memchr::memchr2(quote, b'\\', &self.bytes[j..]) else {
+                j = n;
+                break;
+            };
+            j += offset;
+            if self.bytes[j] == b'\\' {
+                j = (j + 2).min(n);
+            } else {
                 j += 1;
                 break;
             }
-            j += 1;
         }
+        self.out[self.pos..j].fill(TokenKind::String);
         self.pos = j;
         (self, true)
     }

@@ -18,9 +18,8 @@ impl Eol {
     #[must_use]
     pub fn from_raw(raw: Vec<u8>, default: Self) -> (Self, Vec<u8>) {
         let lf = memchr_iter(b'\n', &raw).count();
-        let crlf = raw
-            .windows(2)
-            .filter(|w| w[0] == b'\r' && w[1] == b'\n')
+        let crlf = memchr_iter(b'\r', &raw)
+            .filter(|&i| raw.get(i + 1) == Some(&b'\n'))
             .count();
         let lone_lf = lf.saturating_sub(crlf);
         let eol = if lf == 0 {
@@ -36,12 +35,14 @@ impl Eol {
         }
 
         let mut normalized = Vec::with_capacity(raw.len() - crlf);
-        for (i, &b) in raw.iter().enumerate() {
-            if b == b'\r' && raw.get(i + 1) == Some(&b'\n') {
-                continue;
+        let mut last = 0;
+        for i in memchr_iter(b'\r', &raw) {
+            if raw.get(i + 1) == Some(&b'\n') {
+                normalized.extend_from_slice(&raw[last..i]);
+                last = i + 1;
             }
-            normalized.push(b);
         }
+        normalized.extend_from_slice(&raw[last..]);
         (eol, normalized)
     }
 
@@ -52,13 +53,17 @@ impl Eol {
             Self::Lf => text.to_vec(),
             Self::Crlf => {
                 let lf_count = memchr_iter(b'\n', text).count();
-                let mut out = Vec::with_capacity(text.len() + lf_count);
-                for &b in text {
-                    if b == b'\n' {
-                        out.push(b'\r');
-                    }
-                    out.push(b);
+                if lf_count == 0 {
+                    return text.to_vec();
                 }
+                let mut out = Vec::with_capacity(text.len() + lf_count);
+                let mut last = 0;
+                for i in memchr_iter(b'\n', text) {
+                    out.extend_from_slice(&text[last..i]);
+                    out.extend_from_slice(b"\r\n");
+                    last = i + 1;
+                }
+                out.extend_from_slice(&text[last..]);
                 out
             }
         }

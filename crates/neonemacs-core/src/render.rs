@@ -192,8 +192,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         };
         let point = w.point.min(buf.text().len());
         let point_col = column(buf.text(), point, m);
-        let (body, (row, col)) =
-            window_cells(syntax, buf.text(), w, area, m, marks, point_col);
+        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, m, marks, point_col);
         for (r, cells) in body.into_iter().enumerate() {
             grid = put(grid, area.y + r, area.x, cells);
         }
@@ -858,10 +857,19 @@ mod tests {
         )
         .with_heading_prefix(Some("#".to_owned()));
         let heading = Text::from_bytes(format!("# {}", "a".repeat(5000)).as_bytes());
-        let cells = line_cells(Some(&heading_def), &heading, 0..heading.len(), 4500, 10, m, &[]);
+        let cells = line_cells(
+            Some(&heading_def),
+            &heading,
+            0..heading.len(),
+            4500,
+            10,
+            m,
+            &[],
+        );
         assert!(cells[..9].iter().all(|c| c.style == TokenKind::Keyword));
 
-        let non_heading = Text::from_bytes(format!("{}#{}", "a".repeat(2500), "b".repeat(3000)).as_bytes());
+        let non_heading =
+            Text::from_bytes(format!("{}#{}", "a".repeat(2500), "b".repeat(3000)).as_bytes());
         let cells = line_cells(
             Some(&heading_def),
             &non_heading,
@@ -883,7 +891,15 @@ mod tests {
             false,
         );
         let comment = Text::from_bytes(format!("// {} let x = 1;", "a".repeat(4500)).as_bytes());
-        let cells = line_cells(Some(&rust_def), &comment, 0..comment.len(), 4505, 10, m, &[]);
+        let cells = line_cells(
+            Some(&rust_def),
+            &comment,
+            0..comment.len(),
+            4505,
+            10,
+            m,
+            &[],
+        );
         assert!(cells[..9].iter().all(|c| c.style == TokenKind::Comment));
     }
 }

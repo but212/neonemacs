@@ -1,5 +1,7 @@
 //! Entry point: terminal setup and restore, and the event loop (§5, §12, §13).
 
+#![forbid(unsafe_code)]
+
 use neonemacs::shell::session::ShellSession;
 use neonemacs::shell::startup::{
     FileArg, Invocation, USAGE, init_source, open_files, parse_args, restore_scratch, start,

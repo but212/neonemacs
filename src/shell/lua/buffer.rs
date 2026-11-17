@@ -95,7 +95,9 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
         "replace",
         scope.create_function(|_, (start, end, text): (usize, usize, mlua::LuaString)| {
             let bytes = text.as_bytes();
-            mutate_editor(cell, |ed| ed.delete_only(start, end).insert_at(start, &bytes));
+            mutate_editor(cell, |ed| {
+                ed.delete_only(start, end).insert_at(start, &bytes)
+            });
             Ok(())
         })?,
     )?;

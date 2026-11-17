@@ -199,3 +199,31 @@ fn wal_flush_streams_split_gap_buffer_without_full_copy() {
     assert_eq!(wal.bytes, b"0123456789[MID]abcdefghijklmnopqrstuvwxyz");
 }
 
+#[test]
+fn large_eol_from_raw_and_encode_are_simd_chunked() {
+    let line = b"abcdefghijklmnopqrstuvwxyz0123456789\r\n";
+    let mut raw = Vec::with_capacity(line.len() * 200_000);
+    for _ in 0..200_000 {
+        raw.extend_from_slice(line);
+    }
+    let start = Instant::now();
+    let (eol, normalized) = neonemacs::core::Eol::from_raw(raw, neonemacs::core::Eol::Lf);
+    let elapsed_from_raw = start.elapsed();
+    assert_eq!(eol, neonemacs::core::Eol::Crlf);
+
+    let start = Instant::now();
+    let encoded = eol.encode(&normalized);
+    let elapsed_encode = start.elapsed();
+    assert_eq!(encoded.len(), line.len() * 200_000);
+    // Timing budgets apply only to optimized builds; debug builds still check correctness.
+    if !cfg!(debug_assertions) {
+        assert!(
+            elapsed_from_raw < Duration::from_millis(120),
+            "Eol::from_raw on 7.6MB CRLF took {elapsed_from_raw:?} (expected < 120ms)"
+        );
+        assert!(
+            elapsed_encode < Duration::from_millis(120),
+            "Eol::encode on 7.4MB CRLF took {elapsed_encode:?} (expected < 120ms)"
+        );
+    }
+}
