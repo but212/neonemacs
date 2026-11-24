@@ -20,6 +20,7 @@ mod syntax;
 mod test_support;
 mod text;
 mod undo;
+pub mod weave_tree;
 mod width;
 mod window;
 
