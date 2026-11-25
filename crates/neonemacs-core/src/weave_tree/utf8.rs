@@ -134,7 +134,10 @@ pub(crate) fn try_append_slices(
         };
         let chunk = &bytes[start..end];
         slices.try_reserve(1).map_err(|_| AllocError)?;
-        let buf = Arc::try_from_header_and_slice((), chunk)?;
+        let mut v = Vec::new();
+        v.try_reserve_exact(chunk.len()).map_err(|_| AllocError)?;
+        v.extend_from_slice(chunk);
+        let buf = Arc::try_new(v)?;
         let line_breaks = count_line_breaks(chunk);
         slices.push(ByteSlice {
             buf,

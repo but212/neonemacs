@@ -49,9 +49,9 @@ pub enum Unit {
 /// 불변 슬라이스 리프 조각 (단일 백킹 할당; 비교는 try_for_each_slice 또는 Eq 사용)
 #[derive(Clone, Debug)]
 pub(crate) struct ByteSlice {
-    pub(crate) buf: Arc<HeaderSlice<(), [u8]>>, // 최대 MAX_SLICE_BYTES 단위 독립 할당
+    pub(crate) buf: Arc<Vec<u8>>,              // 최대 MAX_SLICE_BYTES 단위 독립 할당 (H1 Arc::get_mut 지원)
     pub(crate) range: Range<usize>,            // 항상 !range.is_empty()
-    pub(crate) line_breaks: usize,             // buf.slice[range] 내 '\n' 개수
+    pub(crate) line_breaks: usize,             // buf[range] 내 '\n' 개수
 }
 
 /// 내부 노드 및 루트의 자식 참조 + 인라인 요약 (단일 진실 원천)
@@ -132,7 +132,7 @@ pub enum DocError {
    * *3단 결합(`좌 + insert + 우`):* `insert_total_bytes <= 2`이고 `좌측 꼬리(k_left: 1..=3) + insert + 우측 머리(k_right: 1..=3)`가 단일 유효 UTF-8(`<= 4B`, 순수 삭제 시 `k_left >= 1 && k_right >= 1`)을 형성하면 `insert` 전체를 흡수하고 `k_left`, `k_right`, 단일 문자를 확정한다.
    * *양단 독립 결합:* 그 외에는 좌측 `좌측 꼬리(<=3B) + insert 선두(<=3B)`에서 최우측 `k_left` 기준 최장 UTF-8(`<=4B`), 잔여 `insert`가 있으면 우측 `insert 말미(<=3B) + 우측 머리(<=3B)`에서 최좌측 `k_right` 기준 최장 UTF-8(`<=4B`)을 결합한다(예: `[0xC3, 0xC3] + [0xA9]` → `[0xC3, 0xA9]`만 결합).
    * `apply`에서 흡수된 `insert` 양단은 `split`으로 절단하고, 재병합 문자(경계당 최대 4B)는 5단계 조각으로 합류시킨다.
-4. **`split` 분할 및 구조적 원문 회수:** 최악 $O(\log^2 P)$ `split(doc, pos) -> (Doc, Doc)`로 `[offset - k_left, offset + delete_len + k_right)`를 분리한다(`delete_len == 0 && k_left == 0 && k_right == 0`이면 1회 `split`). `delete_len > 0`이면 중간 트리에서 `[offset, offset + delete_len)` 구간을 **평탄화 복사 없이** `deleted_doc: Doc`으로 분리한다(`delete_len == 0`이면 `Doc::default()`).
+4. **`split` 분할 및 구조적 원문 회수:** 단일 패스 스파인 누적 기반 최악 $O(\log P)$ `split(doc, pos) -> (Doc, Doc)`로 `[offset - k_left, offset + delete_len + k_right)`를 분리한다(`delete_len == 0 && k_left == 0 && k_right == 0`이면 1회 `split`). `delete_len > 0`이면 중간 트리에서 `[offset, offset + delete_len)` 구간을 **평탄화 복사 없이** `deleted_doc: Doc`으로 분리한다(`delete_len == 0`이면 `Doc::default()`).
 5. **삽입 트리 구성:** `apply`는 이미 `D-01`·`D-02`를 만족하는 `edit.insert: Doc`을 그대로 사용하며(이음새 재병합 시에만 경계 4B 조각을 `join`), `replace`는 `insert: &[u8]`를 `MAX_SLICE_BYTES` 이하 유효 `Unit` 경계로 분할해 독립 백킹 할당을 가진 리프로 구성한다.
 6. **`join` 재결합 및 언더플로 전파 (`D-02`):** `join(left, join(mid, right))`로 균형·팬아웃을 일괄 복원한다. `join` 하강 경로의 최하단 인접 리프에서 동일 버퍼 연속 구간(`Arc::ptr_eq && a.range.end == b.range.start`, 합 `<= MAX_SLICE_BYTES`)은 $O(1)$ 병합하고, 합 `<= CHUNK_CAP`이면 CoW 병합한다. 병합으로 리프 원소 수가 `MIN_FANOUT - 1`이 되면 스파인을 따라 형제 차용(borrow)/병합(merge)을 루트까지 전파한다(루트 `Internal` 자식 1개 시 높이 -1, 루트 `Leaf` 0개 시 `None`).
    * *필수 `proptest` 검증:* 임의 높이(1~4), 비대칭 높이 차이, `split` 직후 소규모 루트(`1..MIN_FANOUT` 리프, 2-자식 `Internal`), 비정규 UTF-8 3단 재병합(`k_left + insert + k_right`), `D-04` 역연산 왕복, 상이 청크 분할 간 `PartialEq` 동등성.
@@ -172,7 +172,7 @@ impl Doc {
     /// 순차 바이트 편집 경계 어댑터 (사전 Doc 할당 없이 &[u8] 전달; 실패 시 원본 Doc 반환)
     pub fn replace(self, offset: usize, delete_len: usize, insert: &[u8]) -> Result<(Self, Replace), (Self, DocError)>;
 
-    /// 최악 O(log² P) CoW 부분 문서 추출 (OutOfBounds / InvalidBoundary)
+    /// 최악 O(log P) CoW 부분 문서 추출 (OutOfBounds / InvalidBoundary)
     pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError>;
 
     /// 0-based 줄 번호 <-> 바이트 오프셋 (OutOfBounds / LineOutOfBounds / InvalidBoundary)
@@ -226,5 +226,5 @@ impl Doc {
 
 * **구현 위치:** `crates/neonemacs-core/src/weave_tree/` (`mod.rs`, `utf8.rs`, `tree.rs`), `crates/neonemacs-core/src/lib.rs`에서 `Doc`, `Replace`, `Unit`, `DocError` 노출.
 * **통합 상태:** 기존 갭버퍼(`text.rs`) 및 호환 심(`len`, `is_empty`, `snap_point`, `bytes`, `to_bytes`, `line_start`, `line_end`, `nth_line_start`, `count_lines`, `Editor::delete_range`, `Eol::encode`) 완전 제거. `Buffer`, `UndoLog`(`Edit::Replace(Replace)` 역패치 CoW 저장), `KillRing`(`Vec<Doc>` + `Doc::slice`), `Editor::apply`, `syntax::highlight_line(&Doc, Range)`(단일 슬라이스 무복사), `render`, `commands`, `search`, `width`, 및 `src/shell/`(`file::save_doc`, `wal::write_wal_doc`, `wal::write_scratch_doc`)이 모두 네이티브 `weave_tree::Doc`·`Replace` 및 `try_for_each_slice` 스트리밍으로 전환됨(`assert_invariants()`는 핫패스 `O(N)` 방지를 위해 `weave_tree_proptest.rs`에서 명시 호출).
-* **기준선 범위:** 순수 CoW 기준선 구현 완료(`H1` `Arc::get_mut` 최적화 및 `H1`/`H2` `criterion` 벤치마크는 후속 단계).
+* **구현 상태:** 순수 CoW 기준선 위에 단일 패스 $O(\log P)$ `split_at`, `H1` `Arc<Vec<u8>>` 기반 `Arc::get_mut` 제자리 확장(`<= CHUNK_CAP` 무이음새 순수 삽입), 스택 기반 이음새 검사가 적용됨(`criterion` 벤치마크 스위트 `crates/neonemacs-core/benches/weave_tree_bench.rs` 포함). `MAX_SLICE_BYTES = 16 KiB` + SIMD `memchr` 기반 `line_to_offset`/`offset_to_line`은 실측 수십 ns 수준이므로 별도 라인 인덱스 테이블 없이 유지(`H2`).
 * **검증:** `#![forbid(unsafe_code)]`, `I-14`·`I-18`(`crates/neonemacs-core/tests/purity.rs`), `D-01`~`D-05` 단위·`proptest` 스위트(`crates/neonemacs-core/tests/weave_tree_proptest.rs`), 워크스페이스 전체 테스트(`cargo test --workspace`) 및 `cargo clippy --workspace --all-targets -- -D warnings` 통과.

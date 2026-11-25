@@ -7,9 +7,9 @@ mod utf8;
 use core::ops::{ControlFlow, Range};
 
 use memchr::memchr_iter;
-use triomphe::{AllocError, Arc, HeaderSlice};
+use triomphe::{AllocError, Arc};
 
-use self::tree::{from_slices, join, split_at, try_from_slices};
+use self::tree::{from_slices, join, split_at, try_from_slices, try_insert_in_place};
 use self::utf8::{
     ceil_in_slice, chunk_bytes_to_slices, compute_seam_merge, count_line_breaks, floor_in_slice,
     is_boundary_in_slice, next_in_slice, try_append_slices,
@@ -32,7 +32,7 @@ pub enum Unit {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ByteSlice {
-    pub(crate) buf: Arc<HeaderSlice<(), [u8]>>,
+    pub(crate) buf: Arc<Vec<u8>>,
     pub(crate) range: Range<usize>,
     pub(crate) line_breaks: usize,
 }
@@ -94,19 +94,34 @@ impl InsertSource<'_> {
         }
     }
 
-    fn head_bytes(&self, max: usize) -> Vec<u8> {
+    fn head_bytes3(&self) -> ([u8; 3], usize) {
         match self {
-            Self::Bytes(b) => b[..b.len().min(max)].to_vec(),
-            Self::Tree(d) => d.read_range_bytes(0..d.total_bytes().min(max)),
+            Self::Bytes(b) => {
+                let n = b.len().min(3);
+                let mut out = [0u8; 3];
+                out[..n].copy_from_slice(&b[..n]);
+                (out, n)
+            }
+            Self::Tree(d) => {
+                let n = d.total_bytes().min(3);
+                (d.read_small_range(0..n), n)
+            }
         }
     }
 
-    fn tail_bytes(&self, max: usize) -> Vec<u8> {
+    fn tail_bytes3(&self) -> ([u8; 3], usize) {
         match self {
-            Self::Bytes(b) => b[b.len().saturating_sub(max)..].to_vec(),
+            Self::Bytes(b) => {
+                let n = b.len().min(3);
+                let mut out = [0u8; 3];
+                out[..n].copy_from_slice(&b[b.len() - n..]);
+                (out, n)
+            }
             Self::Tree(d) => {
                 let total = d.total_bytes();
-                d.read_range_bytes(total.saturating_sub(max)..total)
+                let start = total.saturating_sub(3);
+                let n = total - start;
+                (d.read_small_range(start..total), n)
             }
         }
     }
@@ -302,17 +317,74 @@ impl Doc {
         }
 
         // Step 3: Pre-mutation UTF-8 seam analysis (D-01).
-        let left_raw = self.trailing_raw_bytes(offset, 3);
-        let right_raw = self.leading_raw_bytes(end, 3);
-        let insert_head = insert.head_bytes(3);
-        let insert_tail = insert.tail_bytes(3);
+        let (left_raw, left_raw_len) = self.trailing_raw_bytes3(offset);
+        let (right_raw, right_raw_len) = self.leading_raw_bytes3(end);
+        let (insert_head, insert_head_len) = insert.head_bytes3();
+        let (insert_tail, insert_tail_len) = insert.tail_bytes3();
         let seam = compute_seam_merge(
-            &left_raw,
-            &insert_head,
-            &insert_tail,
+            &left_raw[..left_raw_len],
+            &insert_head[..insert_head_len],
+            &insert_tail[..insert_tail_len],
             insert_len,
-            &right_raw,
+            &right_raw[..right_raw_len],
         );
+
+        // H1 fast path: in-place append for micro-edits when uniquely owned and seam-free.
+        if delete_len == 0
+            && seam.k_left == 0
+            && seam.k_right == 0
+            && seam.abs_insert_left == 0
+            && seam.abs_insert_right == 0
+            && let InsertSource::Bytes(bytes) = insert
+            && !bytes.is_empty()
+            && bytes.len() <= CHUNK_CAP
+        {
+            if let Some(root) = self.root {
+                match try_insert_in_place(root, offset, bytes) {
+                    Ok(updated_root) => {
+                        return Ok((
+                            Self {
+                                root: Some(updated_root),
+                            },
+                            Replace {
+                                offset,
+                                delete_len: insert_len,
+                                insert: Self::default(),
+                            },
+                        ));
+                    }
+                    Err(orig_root) => {
+                        return Self {
+                            root: Some(orig_root),
+                        }
+                        .apply_cow(offset, delete_len, insert, seam);
+                    }
+                }
+            } else {
+                return Ok((
+                    Self {
+                        root: from_slices(chunk_bytes_to_slices(bytes)),
+                    },
+                    Replace {
+                        offset,
+                        delete_len: insert_len,
+                        insert: Self::default(),
+                    },
+                ));
+            }
+        }
+
+        self.apply_cow(offset, delete_len, insert, seam)
+    }
+
+    fn apply_cow(
+        self,
+        offset: usize,
+        delete_len: usize,
+        insert: InsertSource<'_>,
+        seam: self::utf8::SeamMerge,
+    ) -> Result<(Self, Replace), (Self, DocError)> {
+        let insert_len = insert.len();
 
         // Step 4: Structural split without flattening.
         let (left_root, rest) = split_at(self.root, offset - seam.k_left);
@@ -382,7 +454,7 @@ impl Doc {
         Ok(())
     }
 
-    /// Extracts a `CoW` subdocument in O(log² P) worst-case time for P slices.
+    /// Extracts a `CoW` subdocument in O(log P) worst-case time for P slices.
     pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError> {
         self.validate_range(&range)?;
         if range.start == range.end {
@@ -424,7 +496,7 @@ impl Doc {
                 SliceNode::Leaf { slices } => {
                     for slice in slices {
                         if rem_lines <= slice.line_breaks {
-                            let bytes = &slice.buf.slice[slice.range.clone()];
+                            let bytes = &slice.buf[slice.range.clone()];
                             let mut seen = 0usize;
                             for nl_pos in memchr_iter(b'\n', bytes) {
                                 seen += 1;
@@ -482,7 +554,7 @@ impl Doc {
                         let len = slice.range.len();
                         if rem_bytes < len {
                             let sub =
-                                &slice.buf.slice[slice.range.start..slice.range.start + rem_bytes];
+                                &slice.buf[slice.range.start..slice.range.start + rem_bytes];
                             return Ok(line_acc + count_line_breaks(sub));
                         }
                         rem_bytes -= len;
@@ -561,7 +633,7 @@ impl Doc {
                     if slice_end > range.start && cur_base < range.end {
                         let lo = range.start.saturating_sub(cur_base);
                         let hi = (range.end - cur_base).min(len);
-                        let sub = &slice.buf.slice[slice.range.start + lo..slice.range.start + hi];
+                        let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
                         if let ControlFlow::Break(b) = f(sub) {
                             return (ControlFlow::Break(b), f);
                         }
@@ -609,7 +681,7 @@ impl Doc {
                     if cur_end > range.start && slice_start < range.end {
                         let lo = range.start.saturating_sub(slice_start);
                         let hi = (range.end - slice_start).min(len);
-                        let sub = &slice.buf.slice[slice.range.start + lo..slice.range.start + hi];
+                        let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
                         if let ControlFlow::Break(b) = f(sub) {
                             return (ControlFlow::Break(b), f);
                         }
@@ -633,7 +705,7 @@ impl Doc {
             return p;
         }
         let (slice, slice_start) = self.locate_slice(p);
-        slice_start + floor_in_slice(&slice.buf.slice[slice.range.clone()], p - slice_start)
+        slice_start + floor_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
     }
 
     /// Returns `total_bytes()` if `offset >= total_bytes()`, else the smallest valid `Unit` boundary >= `offset`.
@@ -647,7 +719,7 @@ impl Doc {
             return 0;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        slice_start + ceil_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
+        slice_start + ceil_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
     /// Clamps `offset` to `total_bytes()`; returns `0` if `0`, else the greatest valid `Unit` boundary < `offset`.
@@ -659,7 +731,7 @@ impl Doc {
             return 0;
         }
         let (slice, slice_start) = self.locate_slice(p - 1);
-        slice_start + prev_in_slice(&slice.buf.slice[slice.range.clone()], p - slice_start)
+        slice_start + prev_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
     }
 
     /// Returns `total_bytes()` if `offset >= total_bytes()`, else the smallest valid `Unit` boundary > `offset`.
@@ -670,7 +742,7 @@ impl Doc {
             return total;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        slice_start + next_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
+        slice_start + next_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
     /// Decodes the `Unit` at `offset`, returning `None` if `offset >= total_bytes()` or not a boundary.
@@ -680,7 +752,7 @@ impl Doc {
             return None;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        decode_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
+        decode_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
     /// Returns the raw byte at `offset`, or `None` if `offset >= total_bytes()`.
@@ -690,7 +762,7 @@ impl Doc {
             return None;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        Some(slice.buf.slice[slice.range.start + (offset - slice_start)])
+        Some(slice.buf[slice.range.start + (offset - slice_start)])
     }
 
     #[must_use]
@@ -733,7 +805,7 @@ impl Doc {
             return true;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        is_boundary_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
+        is_boundary_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
     /// Precondition: `offset < self.total_bytes()`.
@@ -768,50 +840,61 @@ impl Doc {
         }
     }
 
-    fn trailing_raw_bytes(&self, offset: usize, max: usize) -> Vec<u8> {
-        let mut rev_bytes = Vec::with_capacity(max);
+    fn trailing_raw_bytes3(&self, offset: usize) -> ([u8; 3], usize) {
+        let mut rev = [0u8; 3];
+        let mut len = 0usize;
         let mut cur = offset;
-        while rev_bytes.len() < max && cur > 0 {
+        while len < 3 && cur > 0 {
             let prev = self.prev_boundary(cur);
             if cur - prev != 1 {
                 break;
             }
             match self.decode_at(prev) {
                 Some((Unit::Raw(b), 1)) => {
-                    rev_bytes.push(b);
+                    rev[len] = b;
+                    len += 1;
                     cur = prev;
                 }
                 _ => break,
             }
         }
-        rev_bytes.reverse();
-        rev_bytes
+        rev[..len].reverse();
+        (rev, len)
     }
 
-    fn leading_raw_bytes(&self, offset: usize, max: usize) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(max);
+    fn leading_raw_bytes3(&self, offset: usize) -> ([u8; 3], usize) {
+        let mut bytes = [0u8; 3];
+        let mut len = 0usize;
         let mut cur = offset;
         let total = self.total_bytes();
-        while bytes.len() < max && cur < total {
+        while len < 3 && cur < total {
             match self.decode_at(cur) {
                 Some((Unit::Raw(b), 1)) => {
-                    bytes.push(b);
+                    bytes[len] = b;
+                    len += 1;
                     cur += 1;
                 }
                 _ => break,
             }
         }
-        bytes
+        (bytes, len)
     }
 
-    fn read_range_bytes(&self, range: Range<usize>) -> Vec<u8> {
-        let mut out = Vec::with_capacity(range.len());
+    fn read_small_range(&self, range: Range<usize>) -> [u8; 3] {
+        let mut out = [0u8; 3];
+        let mut written = 0usize;
         if range.start < range.end
             && let Some(root) = &self.root
         {
             let _ = Self::visit_fwd(root, 0, &range, |chunk: &[u8]| {
-                out.extend_from_slice(chunk);
-                ControlFlow::<()>::Continue(())
+                let take = chunk.len().min(3 - written);
+                out[written..written + take].copy_from_slice(&chunk[..take]);
+                written += take;
+                if written >= 3 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
             });
         }
         out
@@ -869,13 +952,13 @@ impl Doc {
                 for slice in slices {
                     assert!(!slice.range.is_empty());
                     assert!(slice.range.len() <= MAX_SLICE_BYTES);
-                    let raw = &slice.buf.slice[slice.range.clone()];
+                    let raw = &slice.buf[slice.range.clone()];
                     assert_eq!(slice.line_breaks, count_line_breaks(raw));
                     // D-01: no Unit::Char split across slice boundaries (first byte cannot be
                     // an orphaned UTF-8 continuation that belongs to an earlier char, and
                     // trailing bytes cannot be an incomplete prefix that continues in the next slice).
                     sum_bytes += slice.range.len();
-                    sum_backing = sum_backing.saturating_add(slice.buf.slice.len());
+                    sum_backing = sum_backing.saturating_add(slice.buf.len());
                     sum_lines += slice.line_breaks;
                 }
                 assert_eq!(entry.bytes, sum_bytes);
@@ -1094,9 +1177,9 @@ fn entries_eq(a: &ChildEntry, b: &ChildEntry) -> bool {
         let rem_b = sb_slice.range.len() - *ob;
         let take = rem_a.min(rem_b);
         let bytes_a =
-            &sa_slice.buf.slice[sa_slice.range.start + *oa..sa_slice.range.start + *oa + take];
+            &sa_slice.buf[sa_slice.range.start + *oa..sa_slice.range.start + *oa + take];
         let bytes_b =
-            &sb_slice.buf.slice[sb_slice.range.start + *ob..sb_slice.range.start + *ob + take];
+            &sb_slice.buf[sb_slice.range.start + *ob..sb_slice.range.start + *ob + take];
         if bytes_a != bytes_b {
             return false;
         }

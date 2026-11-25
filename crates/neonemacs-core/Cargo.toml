@@ -13,4 +13,9 @@ triomphe = { version = "0.1", default-features = false }
 unicode-width = { version = "0.2", features = ["no_std"] }
 
 [dev-dependencies]
+criterion = "0.5"
 proptest = "1"
+
+[[bench]]
+name = "weave_tree_bench"
+harness = false

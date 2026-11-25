@@ -18,7 +18,7 @@ fn try_summarize_leaf(slices: Vec<ByteSlice>) -> Result<ChildEntry, AllocError> 
     let mut line_breaks = 0usize;
     for s in &slices {
         bytes += s.range.len();
-        backing_bytes = backing_bytes.saturating_add(s.buf.slice.len());
+        backing_bytes = backing_bytes.saturating_add(s.buf.len());
         line_breaks += s.line_breaks;
     }
     Ok(ChildEntry {
@@ -133,10 +133,10 @@ fn merge_two_slices(a: ByteSlice, b: ByteSlice) -> ByteSlice {
         };
     }
     let mut buf = Vec::with_capacity(combined);
-    buf.extend_from_slice(&a.buf.slice[a.range]);
-    buf.extend_from_slice(&b.buf.slice[b.range]);
+    buf.extend_from_slice(&a.buf[a.range]);
+    buf.extend_from_slice(&b.buf[b.range]);
     ByteSlice {
-        buf: Arc::from_header_and_slice((), &buf),
+        buf: Arc::new(buf),
         range: 0..combined,
         line_breaks: a.line_breaks + b.line_breaks,
     }
@@ -392,7 +392,7 @@ fn split_byte_slice(slice: &ByteSlice, local: usize) -> (ByteSlice, ByteSlice) {
     let split_pt = slice.range.start + local;
     let left_range = slice.range.start..split_pt;
     let right_range = split_pt..slice.range.end;
-    let left_lb = count_line_breaks(&slice.buf.slice[left_range.clone()]);
+    let left_lb = count_line_breaks(&slice.buf[left_range.clone()]);
     let right_lb = slice.line_breaks - left_lb;
     (
         ByteSlice {
@@ -408,8 +408,49 @@ fn split_byte_slice(slice: &ByteSlice, local: usize) -> (ByteSlice, ByteSlice) {
     )
 }
 
-/// Splits at a valid `Unit` boundary in O(log² P) worst case: joins can walk
-/// subtree edges at each level of the split.
+fn assemble_split_side(
+    mut levels: Vec<Vec<ChildEntry>>,
+    leaf: Option<ChildEntry>,
+    start_child_h: usize,
+    is_left: bool,
+) -> Option<ChildEntry> {
+    let mut carry: Option<(ChildEntry, usize)> = leaf.map(|e| (e, 1));
+    let mut child_h = start_child_h;
+    while let Some(mut level_children) = levels.pop() {
+        if !level_children.is_empty() {
+            carry = match carry {
+                None => {
+                    let len = level_children.len();
+                    from_children_list(level_children).map(|e| {
+                        let h = if len == 1 { child_h } else { child_h + 1 };
+                        (e, h)
+                    })
+                }
+                Some((c, ch)) => {
+                    let combined = if is_left {
+                        let last = level_children.pop().expect("non-empty level_children");
+                        let joined = join_at_height(last, c, child_h, ch);
+                        level_children.extend(joined);
+                        level_children
+                    } else {
+                        let first = level_children.remove(0);
+                        let mut joined = join_at_height(c, first, ch, child_h);
+                        joined.extend(level_children);
+                        joined
+                    };
+                    let len = combined.len();
+                    let e = from_children_list(combined).expect("non-empty combined");
+                    let h = if len == 1 { child_h } else { child_h + 1 };
+                    Some((e, h))
+                }
+            };
+        }
+        child_h += 1;
+    }
+    carry.map(|(e, _)| e)
+}
+
+/// Splits at a valid `Unit` boundary in O(log P) worst case via one-pass spine accumulation.
 #[must_use]
 pub(crate) fn split_at(
     root: Option<ChildEntry>,
@@ -424,52 +465,149 @@ pub(crate) fn split_at(
     if pos >= entry.bytes {
         return (Some(entry), None);
     }
-    split_entry(entry, pos)
+
+    let mut cur = entry;
+    let mut rem = pos;
+    let mut left_levels: Vec<Vec<ChildEntry>> = Vec::new();
+    let mut right_levels: Vec<Vec<ChildEntry>> = Vec::new();
+    let mut left_leaf: Option<ChildEntry> = None;
+    let mut right_leaf: Option<ChildEntry> = None;
+    let mut start_child_h = 1usize;
+
+    loop {
+        match cur.node.as_ref() {
+            SliceNode::Leaf { slices } => {
+                let mut acc = 0usize;
+                for (idx, slice) in slices.iter().enumerate() {
+                    let len = slice.range.len();
+                    if rem == acc {
+                        left_leaf = non_empty_leaf(slices[..idx].to_vec());
+                        right_leaf = non_empty_leaf(slices[idx..].to_vec());
+                        break;
+                    }
+                    if rem < acc + len {
+                        let (ls, rs) = split_byte_slice(slice, rem - acc);
+                        let mut left = slices[..idx].to_vec();
+                        left.push(ls);
+                        let mut right = Vec::with_capacity(slices.len() - idx);
+                        right.push(rs);
+                        right.extend_from_slice(&slices[idx + 1..]);
+                        left_leaf = non_empty_leaf(left);
+                        right_leaf = non_empty_leaf(right);
+                        break;
+                    }
+                    acc += len;
+                }
+                break;
+            }
+            SliceNode::Internal { children } => {
+                let mut acc = 0usize;
+                let mut next_child = None;
+                for (idx, child) in children.iter().enumerate() {
+                    if rem == acc {
+                        left_levels.push(children[..idx].to_vec());
+                        right_levels.push(children[idx..].to_vec());
+                        start_child_h = entry_height(child);
+                        break;
+                    }
+                    if rem < acc + child.bytes {
+                        left_levels.push(children[..idx].to_vec());
+                        right_levels.push(children[idx + 1..].to_vec());
+                        rem -= acc;
+                        next_child = Some(child.clone());
+                        break;
+                    }
+                    acc += child.bytes;
+                }
+                match next_child {
+                    Some(c) => cur = c,
+                    None => break,
+                }
+            }
+        }
+    }
+
+    (
+        assemble_split_side(left_levels, left_leaf, start_child_h, true),
+        assemble_split_side(right_levels, right_leaf, start_child_h, false),
+    )
 }
 
-fn split_entry(entry: ChildEntry, pos: usize) -> (Option<ChildEntry>, Option<ChildEntry>) {
-    match entry.node.as_ref() {
+/// Attempts an in-place append into a uniquely owned (`strong_count == 1`) leaf `ByteSlice`
+/// without allocating any `Arc` or `Vec` nodes along the spine (H1, D-05).
+pub(crate) fn try_insert_in_place(
+    mut entry: ChildEntry,
+    offset: usize,
+    bytes: &[u8],
+) -> Result<ChildEntry, ChildEntry> {
+    let Some(node) = Arc::get_mut(&mut entry.node) else {
+        return Err(entry);
+    };
+    match node {
         SliceNode::Leaf { slices } => {
             let mut acc = 0usize;
-            for (idx, slice) in slices.iter().enumerate() {
+            for slice in slices.iter_mut() {
                 let len = slice.range.len();
-                if pos == acc {
-                    return (
-                        non_empty_leaf(slices[..idx].to_vec()),
-                        non_empty_leaf(slices[idx..].to_vec()),
-                    );
-                }
-                if pos < acc + len {
-                    let (ls, rs) = split_byte_slice(slice, pos - acc);
-                    let mut left = slices[..idx].to_vec();
-                    left.push(ls);
-                    let mut right = Vec::with_capacity(slices.len() - idx);
-                    right.push(rs);
-                    right.extend_from_slice(&slices[idx + 1..]);
-                    return (non_empty_leaf(left), non_empty_leaf(right));
+                if offset <= acc + len {
+                    let local = offset - acc;
+                    if local == len
+                        && len + bytes.len() <= MAX_SLICE_BYTES
+                        && let Some(buf) = Arc::get_mut(&mut slice.buf)
+                    {
+                            buf.truncate(slice.range.end);
+                            buf.extend_from_slice(bytes);
+                            let added_lb = count_line_breaks(bytes);
+                            slice.range.end += bytes.len();
+                            slice.line_breaks += added_lb;
+                            entry.bytes += bytes.len();
+                            entry.line_breaks += added_lb;
+                            entry.backing_bytes = slices
+                                .iter()
+                                .map(|s| s.buf.len())
+                                .fold(0usize, usize::saturating_add);
+                            return Ok(entry);
+                    }
+                    return Err(entry);
                 }
                 acc += len;
             }
-            unreachable!("0 < pos < entry.bytes")
+            Err(entry)
         }
         SliceNode::Internal { children } => {
             let mut acc = 0usize;
+            let mut target_idx = None;
             for (idx, child) in children.iter().enumerate() {
-                if pos == acc {
-                    return (
-                        from_children_list(children[..idx].to_vec()),
-                        from_children_list(children[idx..].to_vec()),
-                    );
-                }
-                if pos < acc + child.bytes {
-                    let (mid_l, mid_r) = split_entry(child.clone(), pos - acc);
-                    let left_prefix = from_children_list(children[..idx].to_vec());
-                    let right_suffix = from_children_list(children[idx + 1..].to_vec());
-                    return (join(left_prefix, mid_l), join(mid_r, right_suffix));
+                if offset <= acc + child.bytes {
+                    target_idx = Some(idx);
+                    break;
                 }
                 acc += child.bytes;
             }
-            unreachable!("0 < pos < entry.bytes")
+            let Some(idx) = target_idx else {
+                return Err(entry);
+            };
+            let child = children.remove(idx);
+            match try_insert_in_place(child, offset - acc, bytes) {
+                Ok(updated) => {
+                    children.insert(idx, updated);
+                    let mut total_bytes = 0usize;
+                    let mut total_backing = 0usize;
+                    let mut total_lb = 0usize;
+                    for c in children.iter() {
+                        total_bytes += c.bytes;
+                        total_backing = total_backing.saturating_add(c.backing_bytes);
+                        total_lb += c.line_breaks;
+                    }
+                    entry.bytes = total_bytes;
+                    entry.backing_bytes = total_backing;
+                    entry.line_breaks = total_lb;
+                    Ok(entry)
+                }
+                Err(orig) => {
+                    children.insert(idx, orig);
+                    Err(entry)
+                }
+            }
         }
     }
 }
