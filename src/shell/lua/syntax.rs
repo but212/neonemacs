@@ -77,10 +77,10 @@ fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{bootstrap, new_state, test_script as script};
     use crate::core::Config;
     use crate::core::Editor;
     use crate::core::SyntaxRegistry;
+    use crate::shell::lua::{bootstrap, new_state, test_script as script};
 
     fn lang_of<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
         reg.find_by_filename(file).map(|d| d.name.as_str())

@@ -12,6 +12,7 @@ pub trait Summary: Clone + Default + Eq {
     fn from_slice(bytes: &[u8]) -> Self;
 
     /// Associative monoid combination.
+    #[must_use]
     fn combine(&self, other: &Self) -> Self;
 
     /// Computes summaries for `(left, right)` after splitting a slice with summary `self`.

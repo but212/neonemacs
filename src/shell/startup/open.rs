@@ -18,12 +18,11 @@ pub fn restore_scratch(ed: Editor) -> Editor {
         return ed;
     };
     let (ed, note) = match wal::probe_file(&slot, DiskState::Unknown) {
-        WalProbe::Absent => return ed,
+        WalProbe::Absent | WalProbe::ValidDelta(_) => return ed,
         WalProbe::Valid(r) => (
             ed.restore_scratch(r.doc, r.eol),
             "[Recovered *scratch* from WAL]".to_owned(),
         ),
-        WalProbe::ValidDelta(_) => return ed,
         WalProbe::Stale(Ok(kept)) => {
             let name = Path::new(&kept)
                 .file_name()

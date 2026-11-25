@@ -122,9 +122,9 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{bootstrap, new_state, test_script as script};
     use crate::core::Config;
     use crate::core::Editor;
+    use crate::shell::lua::{bootstrap, new_state, test_script as script};
 
     #[test]
     fn set_mark_and_query_from_lua_manage_active_region() {

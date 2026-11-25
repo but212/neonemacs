@@ -136,7 +136,7 @@ pub(crate) fn try_append_slices<S: Summary>(
 }
 
 /// Result of pre-mutation UTF-8 seam analysis around an edit site (D-01).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SeamMerge {
     pub(crate) k_left: usize,
     pub(crate) k_right: usize,

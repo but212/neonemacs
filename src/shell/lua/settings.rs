@@ -93,9 +93,11 @@ fn from_lua(value: &LuaValue) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{BUNDLED_KEYMAP, COMMANDS, bootstrap, new_state, test_script as script};
     use crate::core::{
         Code, Config, Confirm, Edit, Editor, Eol, Key, Mode, Toggles, is_builtin, parse_keys,
+    };
+    use crate::shell::lua::{
+        BUNDLED_KEYMAP, COMMANDS, bootstrap, new_state, test_script as script,
     };
     use mlua::{Function, Table};
 

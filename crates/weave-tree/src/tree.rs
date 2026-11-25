@@ -241,7 +241,7 @@ fn rebalance_edge_child<S: Summary>(
 }
 
 fn pop_edge_slice<S: Summary>(
-    entry: ChildEntry<S>,
+    entry: &ChildEntry<S>,
     from_right: bool,
 ) -> (Option<ChildEntry<S>>, ByteSlice<S>) {
     match entry.node.as_ref() {
@@ -261,7 +261,7 @@ fn pop_edge_slice<S: Summary>(
             } else {
                 rest.remove(0)
             };
-            let (new_edge, popped) = pop_edge_slice(child, from_right);
+            let (new_edge, popped) = pop_edge_slice(&child, from_right);
             let balanced = rebalance_edge_child(rest, new_edge, from_right);
             (from_children_list(balanced), popped)
         }
@@ -356,8 +356,8 @@ pub(crate) fn join<S: Summary>(
         (None, r) => return r,
     };
     if can_merge_slices(edge_slice(&l, true), edge_slice(&r, false)) {
-        let (l_rest, a) = pop_edge_slice(l, true);
-        let (r_rest, b) = pop_edge_slice(r, false);
+        let (l_rest, a) = pop_edge_slice(&l, true);
+        let (r_rest, b) = pop_edge_slice(&r, false);
         let merged = summarize_leaf(vec![merge_two_slices(a, b)]);
         return join_trees_raw(l_rest, join_trees_raw(Some(merged), r_rest));
     }

@@ -75,12 +75,12 @@ pub fn call_lua(lua: &Lua, name: &str) -> mlua::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{bootstrap, new_state, test_script as script};
     use crate::core::Config;
     use crate::core::Editor;
     use crate::core::effect::Event;
     use crate::core::request_open;
     use crate::core::{Code, Key};
+    use crate::shell::lua::{bootstrap, new_state, test_script as script};
     use crate::shell::{handle, perform_all};
     use std::fs;
 

@@ -174,7 +174,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = neonemacs::core::render::scroll(ed, 120, 40);
     let frame = neonemacs::core::render::frame(&ed, 120, 40);
     let elapsed_mid = start.elapsed();
-    assert_ne!(frame.rows, [] as [std::vec::Vec<neonemacs_core::render::Cell>; 0]);
+    assert_ne!(frame.rows, [] as [Vec<neonemacs_core::render::Cell>; 0]);
     assert!(
         elapsed_mid < Duration::from_millis(150),
         "scroll + frame at 5MB offset of 10MB single line took {elapsed_mid:?} (expected < 150ms)"

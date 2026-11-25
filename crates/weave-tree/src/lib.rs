@@ -376,7 +376,7 @@ impl<S: Summary> WeaveTree<S> {
             }
         }
 
-        tree.apply_cow(offset, delete_len, insert, seam)
+        Ok(tree.apply_cow(offset, delete_len, insert, seam))
     }
 
     fn apply_cow(
@@ -385,7 +385,7 @@ impl<S: Summary> WeaveTree<S> {
         delete_len: usize,
         insert: InsertSource<'_, S>,
         seam: self::utf8::SeamMerge,
-    ) -> Result<(Self, Replace<S>), (Self, DocError)> {
+    ) -> (Self, Replace<S>) {
         let insert_len = insert.len();
 
         let (left_root, rest) = split_at(self.root, offset - seam.k_left);
@@ -429,7 +429,7 @@ impl<S: Summary> WeaveTree<S> {
             }
         };
 
-        Ok((next_doc, inv))
+        (next_doc, inv)
     }
 
     pub(crate) fn validate_range(&self, range: &Range<usize>) -> Result<(), DocError> {
