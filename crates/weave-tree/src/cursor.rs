@@ -57,15 +57,6 @@ impl<'a, S: Summary> Cursor<'a, S> {
         .seek_byte(byte_offset)
     }
 
-    /// Creates a cursor positioned at `metric_offset` under `M`.
-    pub fn at_metric<M: Metric<S>>(
-        tree: &'a WeaveTree<S>,
-        metric_offset: usize,
-    ) -> Result<Self, DocError> {
-        let byte_offset = tree.metric_to_byte::<M>(metric_offset)?;
-        Self::at_byte(tree, byte_offset)
-    }
-
     /// Current byte offset of the cursor (`0..=tree.total_bytes()`).
     #[must_use]
     #[inline]
@@ -112,22 +103,6 @@ impl<'a, S: Summary> Cursor<'a, S> {
     pub fn seek_metric<M: Metric<S>>(self, metric_offset: usize) -> Result<Self, DocError> {
         let byte_offset = self.tree.metric_to_byte::<M>(metric_offset)?;
         self.seek_byte(byte_offset)
-    }
-
-    /// Returns `(slice_bytes, offset_within_slice)` at the cursor, or `None` at EOF.
-    #[must_use]
-    pub fn current_slice(&self) -> Option<(&'a [u8], usize)> {
-        let Some(CursorFrame::Leaf {
-            slices,
-            idx,
-            in_slice,
-            ..
-        }) = self.stack.last()
-        else {
-            return None;
-        };
-        let slice = &slices[*idx];
-        Some((&slice.buf[slice.range.clone()], *in_slice))
     }
 
     /// Returns the remaining bytes in the current slice and advances to the start of the next slice.

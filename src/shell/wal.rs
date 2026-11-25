@@ -194,22 +194,12 @@ pub fn has_wal(path: &Path) -> bool {
 
 /// Streams header and `doc` slices to the WAL file `wp` atomically.
 fn write_doc_at(wp: &Path, disk: DiskState, eol: Eol, doc: &crate::core::Doc) -> io::Result<()> {
-    use std::ops::ControlFlow;
-
     crate::shell::file::atomic_write_with(wp, ".", ".wal.tmp", None, |f| {
         let mut f = BufWriter::with_capacity(64 * 1024, f);
         let header = encode_wal_header(disk, eol);
         f.write_all(&header)?;
-        let flow = doc
-            .try_for_each_slice(0..doc.total_bytes(), |chunk| match f.write_all(chunk) {
-                Ok(()) => ControlFlow::Continue(()),
-                Err(e) => ControlFlow::Break(e),
-            })
-            .expect("full range is valid");
-        match flow {
-            ControlFlow::Continue(()) => f.flush(),
-            ControlFlow::Break(e) => Err(e),
-        }
+        crate::shell::file::write_doc_slices(doc, |chunk| f.write_all(chunk))?;
+        f.flush()
     })
 }
 
@@ -237,8 +227,6 @@ pub fn write_wal_deltas(
     base: WalBaseDigest,
     deltas: &[Replace],
 ) -> io::Result<()> {
-    use std::ops::ControlFlow;
-
     let bytes = deltas.iter().fold(0usize, |sum, r| {
         sum.saturating_add(WAL_DELTA_RECORD_BYTES)
             .saturating_add(r.insert.total_bytes())
@@ -270,16 +258,7 @@ pub fn write_wal_deltas(
             write(&(r.delete_len as u64).to_le_bytes())?;
             let insert_len = r.insert.total_bytes();
             write(&(insert_len as u64).to_le_bytes())?;
-            let flow = r
-                .insert
-                .try_for_each_slice(0..insert_len, |chunk| match write(chunk) {
-                    Ok(()) => ControlFlow::Continue(()),
-                    Err(e) => ControlFlow::Break(e),
-                })
-                .expect("full range is valid");
-            if let ControlFlow::Break(e) = flow {
-                return Err(e);
-            }
+            crate::shell::file::write_doc_slices(&r.insert, &mut write)?;
         }
         f.write_all(&digest.finalize())?;
         f.flush()
@@ -318,25 +297,15 @@ pub fn write_scratch(slot: &Path, eol: Eol, bytes: &[u8]) -> io::Result<()> {
 /// the same shape as `lua::config_path`.
 #[must_use]
 pub fn scratch_path_from(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    xdg.filter(|s| !s.is_empty()).map_or_else(
-        || {
-            home.map(|h| {
-                h.join(".local")
-                    .join("state")
-                    .join("neonemacs")
-                    .join("scratch.wal")
-            })
-        },
-        |xdg| Some(PathBuf::from(xdg).join("neonemacs").join("scratch.wal")),
-    )
+    crate::shell::xdg_path(xdg, home, &[".local", "state"], "scratch.wal")
 }
 
 /// The scratch slot for this process, from the environment.
 #[must_use]
 pub fn scratch_path() -> Option<PathBuf> {
     let xdg = env::var_os("XDG_STATE_HOME");
-    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
-    scratch_path_from(xdg.as_deref(), home.as_deref().map(Path::new))
+    let home = crate::shell::home_dir();
+    scratch_path_from(xdg.as_deref(), home.as_deref())
 }
 
 /// Reads the WAL contents if available and matching disk state.

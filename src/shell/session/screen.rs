@@ -1,6 +1,6 @@
 //! Terminal screen drawing: redraws only the rows that changed, and prints styled cells.
 
-use super::ShellSession;
+use super::{ShellSession, update_editor};
 use crate::core::TokenKind;
 use crate::core::render::{self, Cell, Frame};
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
@@ -71,10 +71,8 @@ impl ShellSession {
         cols: usize,
         rows: usize,
     ) -> io::Result<()> {
-        let ed = std::mem::take(&mut self.ed);
-        let ed = render::scroll(ed, cols, rows);
-        let frame = render::frame(&ed, cols, rows);
-        self.ed = ed;
+        update_editor(&mut self.ed, |ed| render::scroll(ed, cols, rows));
+        let frame = render::frame(&self.ed, cols, rows);
         self.screen.paint(frame, out, cols, rows)
     }
 }

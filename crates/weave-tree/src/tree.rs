@@ -75,11 +75,6 @@ fn try_pack_level<T, S: Summary>(
     Ok(level)
 }
 
-#[must_use]
-pub(crate) fn from_slices<S: Summary>(slices: Vec<ByteSlice<S>>) -> Option<ChildEntry<S>> {
-    try_from_slices(slices).expect("cannot allocate document tree")
-}
-
 pub(crate) fn try_from_slices<S: Summary>(
     slices: Vec<ByteSlice<S>>,
 ) -> Result<Option<ChildEntry<S>>, AllocError> {

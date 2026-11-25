@@ -18,11 +18,38 @@ use crate::core::effect::{Effect, Effects, Event, WalTarget, WalWrite};
 use crate::core::step;
 use mlua::Lua;
 use std::cell::RefCell;
+use std::env;
+use std::ffi::OsStr;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
+
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+pub(crate) fn xdg_path(
+    xdg: Option<&OsStr>,
+    home: Option<&Path>,
+    fallback: &[&str],
+    file: &str,
+) -> Option<PathBuf> {
+    let base = xdg.filter(|s| !s.is_empty()).map_or_else(
+        || {
+            home.map(|h| {
+                fallback
+                    .iter()
+                    .fold(h.to_path_buf(), |acc, part| acc.join(part))
+            })
+        },
+        |xdg| Some(PathBuf::from(xdg)),
+    )?;
+    Some(base.join("neonemacs").join(file))
+}
 
 /// The echo-area message while a background shell command runs, before the spinner's first frame.
 pub const RUNNING: &str = "[Running...]";
@@ -260,7 +287,10 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
             }
         }
         Effect::RunShell { command, shell } => Event::ShellDone(run_shell(&command, &shell)),
-        Effect::RunLua { name } => Event::LuaDone(run_lua(lua, &name)),
+        Effect::RunLua { name } => Event::LuaDone(lua.map_or_else(
+            || Err(format!("No command named {name}")),
+            |lua| lua::call_lua(lua, &name).map_err(|e| e.to_string()),
+        )),
         // Reached from a Lua command, which runs inside the state that a reload would replace.
         Effect::ReloadInit => Event::InitLoaded(None),
     }
@@ -324,13 +354,6 @@ fn run_shell_capped(command: &str, shell: &ShellSpec, cap: usize) -> Result<Stri
     let mut s = String::from_utf8_lossy(&parts[0]).into_owned();
     s.push_str(&String::from_utf8_lossy(&parts[1]));
     Ok(s)
-}
-
-fn run_lua(lua: Option<&Lua>, name: &str) -> Result<(), String> {
-    lua.map_or_else(
-        || Err(format!("No command named {name}")),
-        |lua| lua::call_lua(lua, name).map_err(|e| e.to_string()),
-    )
 }
 
 #[cfg(test)]

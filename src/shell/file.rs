@@ -122,14 +122,31 @@ pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
     save_doc(path, Eol::Lf, &crate::core::Doc::from_bytes(bytes))
 }
 
+/// Streams `doc` slices to `f`, propagating the first `io::Error` via `ControlFlow::Break`.
+pub(crate) fn write_doc_slices(
+    doc: &Doc,
+    mut f: impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    use std::ops::ControlFlow;
+
+    let flow = doc
+        .try_for_each_slice(0..doc.total_bytes(), |chunk| match f(chunk) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(e) => ControlFlow::Break(e),
+        })
+        .expect("full range is valid");
+    match flow {
+        ControlFlow::Continue(()) => Ok(()),
+        ControlFlow::Break(e) => Err(e),
+    }
+}
+
 /// Streams `doc` slices to `path` atomically, encoding line endings according to `eol`.
 /// Symlinks are followed; permissions are kept (A2).
 ///
 /// # Errors
 /// Returns `io::Error` if canonicalization or atomic file writing fails.
 pub fn save_doc(path: &Path, eol: Eol, doc: &crate::core::Doc) -> io::Result<DiskState> {
-    use std::ops::ControlFlow;
-
     let target = if fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) {
         fs::canonicalize(path)?
     } else {
@@ -138,22 +155,11 @@ pub fn save_doc(path: &Path, eol: Eol, doc: &crate::core::Doc) -> io::Result<Dis
     let permissions = fs::metadata(&target).ok().map(|m| m.permissions());
     atomic_write_with(&target, ".", ".tmp", permissions, |f| {
         let mut w = BufWriter::with_capacity(64 * 1024, f);
-        let flow = doc
-            .try_for_each_slice(0..doc.total_bytes(), |chunk| {
-                let result = match eol {
-                    Eol::Lf => w.write_all(chunk),
-                    Eol::Crlf => write_crlf_slice(&mut w, chunk),
-                };
-                match result {
-                    Ok(()) => ControlFlow::Continue(()),
-                    Err(e) => ControlFlow::Break(e),
-                }
-            })
-            .expect("full range is valid");
-        match flow {
-            ControlFlow::Continue(()) => w.flush(),
-            ControlFlow::Break(e) => Err(e),
-        }
+        write_doc_slices(doc, |chunk| match eol {
+            Eol::Lf => w.write_all(chunk),
+            Eol::Crlf => write_crlf_slice(&mut w, chunk),
+        })?;
+        w.flush()
     })?;
     Ok(disk_state(&target))
 }

@@ -377,14 +377,10 @@ impl Buffer {
 
     #[must_use]
     pub fn replace_from_disk(mut self, text: Doc, backing: Backing, eol: Eol) -> Self {
-        self.text = text;
         self.backing = backing;
         self.eol = eol;
         self.modified = false;
-        self.epoch = self.epoch.wrapping_add(1);
-        self.undo = UndoLog::new();
-        self.wal_deltas = None;
-        self.snap_anchors()
+        self.with_text(text)
     }
 
     /// Applies `edit` and records its inverse for undo (I-35). Returns `None` for an invalid edit.
@@ -397,6 +393,29 @@ impl Buffer {
         self.apply_recorded(edit.into(), remap_fn, undo_limit)
     }
 
+    fn apply_text_edit(
+        mut self,
+        forward: Option<crate::Replace>,
+        f: impl FnOnce(Doc) -> Result<(Doc, crate::Replace), (Doc, crate::DocError)>,
+    ) -> (Self, Option<Edit>) {
+        match f(self.text) {
+            Ok((next, inv)) => {
+                self.text = next;
+                if let Some(f) = forward {
+                    self.wal_deltas = self
+                        .wal_deltas
+                        .take()
+                        .and_then(|log| log.push(f, self.text.total_bytes()));
+                }
+                (self, Some(Edit::Replace(inv)))
+            }
+            Err((doc, _err)) => {
+                self.text = doc;
+                (self, None)
+            }
+        }
+    }
+
     pub(crate) fn apply_recorded(
         mut self,
         RecordedEdit { edit, span }: RecordedEdit,
@@ -406,22 +425,12 @@ impl Buffer {
         let inverse = match edit {
             Edit::Replace(r) => {
                 let forward = self.wal_deltas.is_some().then(|| r.clone());
-                match self.text.apply(r) {
-                    Ok((next, inv)) => {
-                        self.text = next;
-                        if let Some(f) = forward {
-                            self.wal_deltas = self
-                                .wal_deltas
-                                .take()
-                                .and_then(|log| log.push(f, self.text.total_bytes()));
-                        }
-                        Edit::Replace(inv)
-                    }
-                    Err((doc, _err)) => {
-                        self.text = doc;
-                        return (self, None);
-                    }
-                }
+                let (next_self, inv) = self.apply_text_edit(forward, |doc| doc.apply(r));
+                let Some(inv) = inv else {
+                    return (next_self, None);
+                };
+                self = next_self;
+                inv
             }
             Edit::InsertInline { offset, data } => {
                 let slice = data.as_slice();
@@ -430,22 +439,13 @@ impl Buffer {
                     delete_len: 0,
                     insert: crate::Doc::from_bytes(slice),
                 });
-                match self.text.replace(offset, 0, slice) {
-                    Ok((next, inv)) => {
-                        self.text = next;
-                        if let Some(f) = forward {
-                            self.wal_deltas = self
-                                .wal_deltas
-                                .take()
-                                .and_then(|log| log.push(f, self.text.total_bytes()));
-                        }
-                        Edit::Replace(inv)
-                    }
-                    Err((doc, _err)) => {
-                        self.text = doc;
-                        return (self, None);
-                    }
-                }
+                let (next_self, inv) =
+                    self.apply_text_edit(forward, |doc| doc.replace(offset, 0, slice));
+                let Some(inv) = inv else {
+                    return (next_self, None);
+                };
+                self = next_self;
+                inv
             }
             Edit::SetEol { from, to } => {
                 self.eol = to;

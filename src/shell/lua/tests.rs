@@ -1,13 +1,9 @@
+use super::test_script as script;
 use super::*;
 use crate::core::Config;
 use crate::core::effect::Event;
 use crate::shell::{handle, run_source};
 use mlua::Table;
-
-/// Runs `src` against `ed`. Returns the editor back with the result.
-fn script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
-    run_source(ed, lua, "=test", src)
-}
 
 #[test]
 fn mutate_editor_preserves_cell_on_error() {

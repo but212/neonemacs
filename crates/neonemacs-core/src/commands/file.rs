@@ -88,7 +88,11 @@ pub fn disk_checked(
             );
             return (ed, fx);
         }
-        let fx = write_to(&ed, id, path.to_owned(), fx);
+        let mut fx = fx;
+        fx.push(Effect::WriteFile {
+            id,
+            path: path.to_owned(),
+        });
         return (ed, fx);
     }
     if ed.buffer_by_id(id).backing().disk() == state {
@@ -112,7 +116,8 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
             (ed, fx)
         }
         Confirm::OverwriteFile { id, path } => {
-            let fx = write_to(&ed, id, path, fx);
+            let mut fx = fx;
+            fx.push(Effect::WriteFile { id, path });
             (ed, fx)
         }
         Confirm::QuitUnsaved => {
@@ -132,16 +137,13 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
 }
 
 /// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-04).
-pub(crate) fn write_buffer(ed: &Editor, id: BufferId, fx: Effects) -> Effects {
-    match ed.buffer_by_id(id).file_path() {
-        Some(path) => write_to(ed, id, path.to_owned(), fx),
-        None => fx,
+pub(crate) fn write_buffer(ed: &Editor, id: BufferId, mut fx: Effects) -> Effects {
+    if let Some(path) = ed.buffer_by_id(id).file_path() {
+        fx.push(Effect::WriteFile {
+            id,
+            path: path.to_owned(),
+        });
     }
-}
-
-/// Asks the shell to write the buffer to `path`. The buffer's file changes only in `written` (I-36).
-fn write_to(_ed: &Editor, id: BufferId, path: String, mut fx: Effects) -> Effects {
-    fx.push(Effect::WriteFile { id, path });
     fx
 }
 

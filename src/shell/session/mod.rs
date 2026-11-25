@@ -95,6 +95,11 @@ pub struct ShellSession {
     screen: Screen,
 }
 
+pub(super) fn update_editor(slot: &mut Editor, f: impl FnOnce(Editor) -> Editor) {
+    let ed = std::mem::take(slot);
+    *slot = f(ed);
+}
+
 impl ShellSession {
     /// `ed` and `lua` are made together, by `startup::start` or by `lua::bootstrap`.
     #[must_use]
@@ -111,10 +116,11 @@ impl ShellSession {
     /// Builds the settings and the Lua state again from `source`. They replace the current ones
     /// only when `source` applies whole or is absent; the buffers and windows stay (I-54, I-58).
     pub fn reload_init(&mut self, source: InitSource) {
+        let lua_slot = &mut self.lua;
         let ed = std::mem::take(&mut self.ed);
         let (ed, load) = match configure(std::path::PathBuf::from(ed.cwd()), source) {
             Ok((fresh, lua, load @ (InitLoad::Applied | InitLoad::Absent))) => {
-                self.lua = lua;
+                *lua_slot = lua;
                 (ed.adopt_settings(fresh), load)
             }
             Ok((_, _, load @ InitLoad::Rejected(_))) => (ed, load),
@@ -147,11 +153,15 @@ impl ShellSession {
             && let Some(key) = from_terminal(k.code, k.modifiers)
         {
             let prev_seq = self.ed.edit_seq();
-            let ed = std::mem::take(&mut self.ed);
             let shell_busy = self.active_shell.is_some();
-            let (new_ed, outcome) =
-                handle_interactive(ed, Some(&self.lua), CoreEvent::Key(key), shell_busy);
-            self.ed = new_ed;
+            let mut outcome = ShellOutcome::None;
+            let lua = &self.lua;
+            update_editor(&mut self.ed, |ed| {
+                let (new_ed, out) =
+                    handle_interactive(ed, Some(lua), CoreEvent::Key(key), shell_busy);
+                outcome = out;
+                new_ed
+            });
             match outcome {
                 ShellOutcome::Spawned(task) => {
                     self.active_shell = Some(ActiveShell::new(task));
@@ -187,12 +197,14 @@ impl ShellSession {
             match active.poll() {
                 Some(result) => {
                     self.active_shell = None;
-                    let ed = std::mem::take(&mut self.ed);
-                    self.ed = handle(ed, Some(&self.lua), CoreEvent::ShellDone(result));
+                    let lua = &self.lua;
+                    update_editor(&mut self.ed, |ed| {
+                        handle(ed, Some(lua), CoreEvent::ShellDone(result))
+                    });
                 }
                 None if active.owns(self.ed.message()) => {
                     let status = active.format_status();
-                    self.ed = std::mem::take(&mut self.ed).set_message(status);
+                    update_editor(&mut self.ed, |ed| ed.set_message(status));
                 }
                 None => {}
             }
@@ -200,8 +212,8 @@ impl ShellSession {
 
         // 2. Idle WAL flush (1s after edit). The core decides what to write and what a failure shows.
         if self.wal_deadline.is_some_and(|due| now >= due) {
-            let ed = std::mem::take(&mut self.ed);
-            self.ed = handle(ed, Some(&self.lua), CoreEvent::Idle);
+            let lua = &self.lua;
+            update_editor(&mut self.ed, |ed| handle(ed, Some(lua), CoreEvent::Idle));
             // A buffer whose write failed stays dirty, so the flush is tried again after another second.
             self.wal_deadline = self.has_wal_dirty_file_buffer().then(|| now + WAL_IDLE);
         }

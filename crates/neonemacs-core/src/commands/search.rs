@@ -1,10 +1,9 @@
 //! Incremental search and interactive query-replace commands (§9).
 
-use crate::commands::prompt::prompt;
 use crate::config::Toggles;
 use crate::dispatch::answer_char;
 use crate::editor::{
-    CANCEL_MESSAGE, Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
+    CANCEL_MESSAGE, Direction, Editor, Isearch, MatchKind, Mode, Prefix, QueryReplace,
 };
 use crate::effect::Effects;
 use crate::keymap::{Code, Key};
@@ -195,23 +194,27 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
         return ed;
     };
     let (start, end) = q.current;
-    match answer_char(ed.key_aliases(), key) {
-        Some('y' | ' ') => match replace_match(ed, &q, start, end) {
+    match (answer_char(ed.key_aliases(), key), key) {
+        (Some('y' | ' '), _) => match replace_match(ed, &q, start, end) {
             (ed, Some(from)) => {
                 q.count += 1;
                 step(ed, q, from)
             }
             (ed, None) => finish(ed, &q),
         },
-        Some('n') => {
+        (Some('n'), _)
+        | (
+            None,
+            Key {
+                code: Code::Backspace,
+                ctrl: false,
+                meta: false,
+            },
+        ) => {
             let from = resume(&ed, end, start == end);
             step(ed, q, from)
         }
-        None if key == Key::plain(Code::Backspace) => {
-            let from = resume(&ed, end, start == end);
-            step(ed, q, from)
-        }
-        Some('!') => {
+        (Some('!'), _) => {
             let mut ed = ed;
             let mut current = Some((start, end));
             while let Some((s, e)) = current {
@@ -225,8 +228,20 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
             }
             finish(ed, &q)
         }
-        Some('q' | '\n') => finish(ed, &q),
-        None if key == Key::ctrl('g') || key == Key::plain(Code::Esc) => finish(ed, &q),
+        (Some('q' | '\n'), _)
+        | (
+            None,
+            Key {
+                code: Code::Char('g'),
+                ctrl: true,
+                meta: false,
+            }
+            | Key {
+                code: Code::Esc,
+                ctrl: false,
+                meta: false,
+            },
+        ) => finish(ed, &q),
         _ => ed.set_message("Answer y, n, !, or q"),
     }
 }
@@ -290,32 +305,6 @@ fn finish(ed: Editor, q: &QueryReplace) -> Editor {
     ed.set_mode(Mode::normal())
         .boundary()
         .set_message(format!("Replaced {} occurrence(s)", q.count))
-}
-
-pub(crate) fn query_replace_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        prompt(
-            ed,
-            "Query replace: ",
-            Purpose::QueryFrom {
-                kind: MatchKind::Literal,
-            },
-        ),
-        fx,
-    )
-}
-
-pub(crate) fn query_replace_regexp_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        prompt(
-            ed,
-            "Query replace regexp: ",
-            Purpose::QueryFrom {
-                kind: MatchKind::Regex,
-            },
-        ),
-        fx,
-    )
 }
 
 #[cfg(test)]

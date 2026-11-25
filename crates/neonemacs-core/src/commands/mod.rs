@@ -26,10 +26,8 @@ use crate::commands::basic::{
 use crate::commands::file::{save_buffer_cmd, save_buffers_kill_emacs, toggle_eol};
 use crate::commands::load::revert_buffer;
 use crate::commands::prompt::prompt;
-use crate::commands::search::{
-    query_replace_cmd, query_replace_regexp_cmd, start_isearch,
-};
-use crate::commands::shell_output::{reload_init_cmd, shell_command_cmd};
+use crate::commands::search::start_isearch;
+use crate::commands::shell_output::reload_init_cmd;
 use crate::editor::{Direction, Editor, MatchKind, Purpose};
 use crate::effect::Effects;
 
@@ -92,8 +90,24 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
     ("next-line", Builtin::Fn(next_line)),
     ("other-window", Builtin::Fn(other_window)),
     ("previous-line", Builtin::Fn(previous_line)),
-    ("query-replace", Builtin::Fn(query_replace_cmd)),
-    ("query-replace-regexp", Builtin::Fn(query_replace_regexp_cmd)),
+    (
+        "query-replace",
+        Builtin::Prompt(
+            "Query replace: ",
+            Purpose::QueryFrom {
+                kind: MatchKind::Literal,
+            },
+        ),
+    ),
+    (
+        "query-replace-regexp",
+        Builtin::Prompt(
+            "Query replace regexp: ",
+            Purpose::QueryFrom {
+                kind: MatchKind::Regex,
+            },
+        ),
+    ),
     ("recenter", Builtin::Fn(recenter)),
     ("reload-init", Builtin::Fn(reload_init_cmd)),
     ("revert-buffer", Builtin::Fn(revert_buffer)),
@@ -103,7 +117,10 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
         Builtin::Fn(save_buffers_kill_emacs),
     ),
     ("set-mark-command", Builtin::Fn(set_mark_command)),
-    ("shell-command", Builtin::Fn(shell_command_cmd)),
+    (
+        "shell-command",
+        Builtin::Prompt("Shell command: ", Purpose::ShellCommand),
+    ),
     ("split-window-below", Builtin::Fn(split_window_below)),
     ("split-window-right", Builtin::Fn(split_window_right)),
     (

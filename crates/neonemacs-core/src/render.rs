@@ -5,7 +5,7 @@ use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
-use crate::{Doc, Unit, line_to_offset, offset_to_line, total_lines};
+use crate::{Doc, line_to_offset, offset_to_line, total_lines, unit_char};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -443,13 +443,6 @@ fn line_cells(
         cells[width - 1] = Cell::plain("$".to_owned());
     }
     cells
-}
-
-fn unit_char(unit: Unit) -> char {
-    match unit {
-        Unit::Char(c) => c,
-        Unit::Raw(b) => char::from(b),
-    }
 }
 
 /// `w` cells for one character: control characters as `^X`, C1 as `\HH`,

@@ -52,8 +52,8 @@ fn read_init(xdg: Option<&OsStr>, home: Option<&Path>) -> InitSource {
 #[must_use]
 pub fn init_source() -> InitSource {
     let xdg = env::var_os("XDG_CONFIG_HOME");
-    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
-    read_init(xdg.as_deref(), home.as_deref().map(Path::new))
+    let home = crate::shell::home_dir();
+    read_init(xdg.as_deref(), home.as_deref())
 }
 
 /// The editor and Lua state with only the bundled scripts applied.

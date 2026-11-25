@@ -85,10 +85,7 @@ pub fn new_state() -> mlua::Result<Lua> {
 /// `$XDG_CONFIG_HOME/neonemacs/init.lua`, else `<home>/.config/neonemacs/init.lua` (U2).
 #[must_use]
 pub fn config_path(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    xdg.filter(|s| !s.is_empty()).map_or_else(
-        || home.map(|h| h.join(".config").join("neonemacs").join("init.lua")),
-        |xdg| Some(PathBuf::from(xdg).join("neonemacs").join("init.lua")),
-    )
+    crate::shell::xdg_path(xdg, home, &[".config"], "init.lua")
 }
 
 /// The editor in `cell`. The cell is full whenever Lua runs (I-21).

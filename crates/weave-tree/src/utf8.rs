@@ -104,13 +104,6 @@ pub fn next_in_slice(slice: &[u8], pos: usize) -> usize {
     ceil_in_slice(slice, p + 1)
 }
 
-/// Splits `bytes` into `ByteSlice<S>` chunks of at most `MAX_SLICE_BYTES`,
-/// always breaking at valid `Unit` boundaries (D-01, D-02).
-#[must_use]
-pub(crate) fn chunk_bytes_to_slices<S: Summary>(bytes: &[u8]) -> Vec<ByteSlice<S>> {
-    try_append_slices(Vec::new(), bytes).expect("cannot allocate document slices")
-}
-
 pub(crate) fn try_append_slices<S: Summary>(
     mut slices: Vec<ByteSlice<S>>,
     bytes: &[u8],

@@ -8,7 +8,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::{ControlFlow, Range};
 
-use crate::{CHUNK_CAP, Doc, Unit};
+use crate::{CHUNK_CAP, Doc, unit_char};
 use weave_tree::utf8::{decode_in_slice, decode_unit_raw, prev_in_slice};
 
 // Edited documents can have slices as small as a byte. Bound the overlap copied at
@@ -38,13 +38,6 @@ enum Node {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
     nodes: Vec<Node>,
-}
-
-fn unit_char(unit: Unit) -> char {
-    match unit {
-        Unit::Char(c) => c,
-        Unit::Raw(b) => char::from(b),
-    }
 }
 
 fn lower(c: char) -> char {

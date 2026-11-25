@@ -51,6 +51,14 @@ pub type Doc = weave_tree::WeaveTree<LineBreaks>;
 pub type DocBuilder = weave_tree::WeaveTreeBuilder<LineBreaks>;
 pub type Replace = weave_tree::Replace<LineBreaks>;
 
+#[inline]
+pub(crate) fn unit_char(unit: Unit) -> char {
+    match unit {
+        Unit::Char(c) => c,
+        Unit::Raw(b) => char::from(b),
+    }
+}
+
 /// Total 1-based line count (`1` when empty).
 #[inline]
 #[must_use]

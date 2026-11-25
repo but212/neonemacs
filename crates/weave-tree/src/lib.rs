@@ -19,12 +19,10 @@ pub use summary::{LineBreakMetric, LineBreaks, Metric, Summary, Utf16CodeUnits, 
 
 use self::cursor::{CursorFrame, advance_internal_past, push_leftmost};
 
-use self::tree::{
-    from_slices, join, split_at, try_delete_in_place, try_from_slices, try_insert_in_place,
-};
+use self::tree::{join, split_at, try_delete_in_place, try_from_slices, try_insert_in_place};
 use self::utf8::{
-    ceil_in_slice, chunk_bytes_to_slices, compute_seam_merge, decode_in_slice, floor_in_slice,
-    is_boundary_in_slice, next_in_slice, prev_in_slice, try_append_slices,
+    ceil_in_slice, compute_seam_merge, decode_in_slice, floor_in_slice, is_boundary_in_slice,
+    next_in_slice, prev_in_slice, try_append_slices,
 };
 
 /// B-Tree node fanout and slice size constants.
@@ -143,7 +141,7 @@ impl<S: Summary> InsertSource<'_, S> {
         match self {
             Self::Bytes(b) => {
                 let sub = &b[trim_left..total - trim_right];
-                from_slices(chunk_bytes_to_slices(sub))
+                WeaveTree::from_bytes(sub).root
             }
             Self::Tree(d) => {
                 let (_, rest) = split_at(d.root, trim_left);
@@ -255,8 +253,7 @@ impl<S: Summary> WeaveTree<S> {
     /// Constructs a `WeaveTree` from a raw byte slice (`root: None` if empty).
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let root = from_slices(chunk_bytes_to_slices(bytes));
-        Self { root }
+        Self::try_from_bytes(bytes).expect("cannot allocate document tree")
     }
 
     /// Fallible byte-slice constructor returning `AllocError` on OOM.
@@ -379,9 +376,7 @@ impl<S: Summary> WeaveTree<S> {
                 }
             } else {
                 return Ok((
-                    Self {
-                        root: from_slices(chunk_bytes_to_slices(bytes)),
-                    },
+                    Self::from_bytes(bytes),
                     Replace {
                         offset,
                         delete_len: insert_len,
@@ -407,9 +402,7 @@ impl<S: Summary> WeaveTree<S> {
                         Replace {
                             offset,
                             delete_len: 0,
-                            insert: Self {
-                                root: from_slices(chunk_bytes_to_slices(&deleted)),
-                            },
+                            insert: Self::from_bytes(&deleted),
                         },
                     ));
                 }
@@ -451,8 +444,8 @@ impl<S: Summary> WeaveTree<S> {
             (None, rest)
         };
 
-        let left_seam_root = from_slices(chunk_bytes_to_slices(&seam.left_merged));
-        let right_seam_root = from_slices(chunk_bytes_to_slices(&seam.right_merged));
+        let left_seam_root = Self::from_bytes(&seam.left_merged).root;
+        let right_seam_root = Self::from_bytes(&seam.right_merged).root;
         let trimmed_insert = insert.into_trimmed_root(seam.abs_insert_left, seam.abs_insert_right);
         let mid_root = join(left_seam_root, join(trimmed_insert, right_seam_root));
 
@@ -622,17 +615,6 @@ impl<S: Summary> WeaveTree<S> {
         }
     }
 
-    /// Returns a stateful bidirectional [`Cursor`] at byte `0`.
-    #[must_use]
-    pub fn cursor(&self) -> Cursor<'_, S> {
-        Cursor::new(self)
-    }
-
-    /// Returns a [`Cursor`] positioned at `byte_offset`.
-    pub fn cursor_at(&self, byte_offset: usize) -> Result<Cursor<'_, S>, DocError> {
-        Cursor::at_byte(self, byte_offset)
-    }
-
     /// Returns a bidirectional [`Slices`] iterator over the entire tree.
     #[must_use]
     pub fn slices(&self) -> Slices<'_, S> {
@@ -661,19 +643,19 @@ impl<S: Summary> WeaveTree<S> {
         range: Range<usize>,
         f: impl FnMut(&[u8]) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, DocError> {
-        self.validate_range(&range)?;
-        if range.start == range.end {
-            return Ok(ControlFlow::Continue(()));
-        }
-        let Some(root) = &self.root else {
-            return Ok(ControlFlow::Continue(()));
-        };
-        let (flow, _) = Self::visit_fwd(root, 0, &range, f);
-        Ok(flow)
+        self.for_each_slice_dir::<false, B>(range, f)
     }
 
     /// Zero-copy reverse streaming over `range` (`ControlFlow`-based, `D-05` compatible).
     pub fn try_for_each_slice_rev<B>(
+        &self,
+        range: Range<usize>,
+        f: impl FnMut(&[u8]) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, DocError> {
+        self.for_each_slice_dir::<true, B>(range, f)
+    }
+
+    fn for_each_slice_dir<const REV: bool, B>(
         &self,
         range: Range<usize>,
         f: impl FnMut(&[u8]) -> ControlFlow<B>,
@@ -685,11 +667,11 @@ impl<S: Summary> WeaveTree<S> {
         let Some(root) = &self.root else {
             return Ok(ControlFlow::Continue(()));
         };
-        let (flow, _) = Self::visit_rev(root, 0, &range, f);
+        let (flow, _) = Self::visit_slices::<REV, B, _>(root, 0, &range, f);
         Ok(flow)
     }
 
-    fn visit_fwd<B, F: FnMut(&[u8]) -> ControlFlow<B>>(
+    fn visit_slices<const REV: bool, B, F: FnMut(&[u8]) -> ControlFlow<B>>(
         entry: &ChildEntry<S>,
         base: usize,
         range: &Range<usize>,
@@ -697,87 +679,79 @@ impl<S: Summary> WeaveTree<S> {
     ) -> (ControlFlow<B>, F) {
         match entry.node.as_ref() {
             SliceNode::Internal { children } => {
-                let mut cur_base = base;
-                for child in children {
-                    let child_end = cur_base + child.bytes;
-                    if child_end > range.start && cur_base < range.end {
-                        let (flow, next_f) = Self::visit_fwd(child, cur_base, range, f);
-                        f = next_f;
-                        if let ControlFlow::Break(b) = flow {
-                            return (ControlFlow::Break(b), f);
+                if REV {
+                    let mut cur_end = base + entry.bytes;
+                    for child in children.iter().rev() {
+                        let child_start = cur_end - child.bytes;
+                        if cur_end > range.start && child_start < range.end {
+                            let (flow, next_f) =
+                                Self::visit_slices::<true, B, F>(child, child_start, range, f);
+                            f = next_f;
+                            if let ControlFlow::Break(b) = flow {
+                                return (ControlFlow::Break(b), f);
+                            }
+                        }
+                        cur_end = child_start;
+                        if cur_end <= range.start {
+                            break;
                         }
                     }
-                    cur_base = child_end;
-                    if cur_base >= range.end {
-                        break;
+                } else {
+                    let mut cur_base = base;
+                    for child in children {
+                        let child_end = cur_base + child.bytes;
+                        if child_end > range.start && cur_base < range.end {
+                            let (flow, next_f) =
+                                Self::visit_slices::<false, B, F>(child, cur_base, range, f);
+                            f = next_f;
+                            if let ControlFlow::Break(b) = flow {
+                                return (ControlFlow::Break(b), f);
+                            }
+                        }
+                        cur_base = child_end;
+                        if cur_base >= range.end {
+                            break;
+                        }
                     }
                 }
                 (ControlFlow::Continue(()), f)
             }
             SliceNode::Leaf { slices } => {
-                let mut cur_base = base;
-                for slice in slices {
-                    let len = slice.range.len();
-                    let slice_end = cur_base + len;
-                    if slice_end > range.start && cur_base < range.end {
-                        let lo = range.start.saturating_sub(cur_base);
-                        let hi = (range.end - cur_base).min(len);
-                        let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
-                        if let ControlFlow::Break(b) = f(sub) {
-                            return (ControlFlow::Break(b), f);
+                if REV {
+                    let mut cur_end = base + entry.bytes;
+                    for slice in slices.iter().rev() {
+                        let len = slice.range.len();
+                        let slice_start = cur_end - len;
+                        if cur_end > range.start && slice_start < range.end {
+                            let lo = range.start.saturating_sub(slice_start);
+                            let hi = (range.end - slice_start).min(len);
+                            let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
+                            if let ControlFlow::Break(b) = f(sub) {
+                                return (ControlFlow::Break(b), f);
+                            }
+                        }
+                        cur_end = slice_start;
+                        if cur_end <= range.start {
+                            break;
                         }
                     }
-                    cur_base = slice_end;
-                    if cur_base >= range.end {
-                        break;
-                    }
-                }
-                (ControlFlow::Continue(()), f)
-            }
-        }
-    }
-
-    fn visit_rev<B, F: FnMut(&[u8]) -> ControlFlow<B>>(
-        entry: &ChildEntry<S>,
-        base: usize,
-        range: &Range<usize>,
-        mut f: F,
-    ) -> (ControlFlow<B>, F) {
-        match entry.node.as_ref() {
-            SliceNode::Internal { children } => {
-                let mut cur_end = base + entry.bytes;
-                for child in children.iter().rev() {
-                    let child_start = cur_end - child.bytes;
-                    if cur_end > range.start && child_start < range.end {
-                        let (flow, next_f) = Self::visit_rev(child, child_start, range, f);
-                        f = next_f;
-                        if let ControlFlow::Break(b) = flow {
-                            return (ControlFlow::Break(b), f);
+                } else {
+                    let mut cur_base = base;
+                    for slice in slices {
+                        let len = slice.range.len();
+                        let slice_end = cur_base + len;
+                        if slice_end > range.start && cur_base < range.end {
+                            let lo = range.start.saturating_sub(cur_base);
+                            let hi = (range.end - cur_base).min(len);
+                            let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
+                            if let ControlFlow::Break(b) = f(sub) {
+                                return (ControlFlow::Break(b), f);
+                            }
                         }
-                    }
-                    cur_end = child_start;
-                    if cur_end <= range.start {
-                        break;
-                    }
-                }
-                (ControlFlow::Continue(()), f)
-            }
-            SliceNode::Leaf { slices } => {
-                let mut cur_end = base + entry.bytes;
-                for slice in slices.iter().rev() {
-                    let len = slice.range.len();
-                    let slice_start = cur_end - len;
-                    if cur_end > range.start && slice_start < range.end {
-                        let lo = range.start.saturating_sub(slice_start);
-                        let hi = (range.end - slice_start).min(len);
-                        let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
-                        if let ControlFlow::Break(b) = f(sub) {
-                            return (ControlFlow::Break(b), f);
+                        cur_base = slice_end;
+                        if cur_base >= range.end {
+                            break;
                         }
-                    }
-                    cur_end = slice_start;
-                    if cur_end <= range.start {
-                        break;
                     }
                 }
                 (ControlFlow::Continue(()), f)
@@ -954,7 +928,7 @@ impl<S: Summary> WeaveTree<S> {
         if range.start < range.end
             && let Some(root) = &self.root
         {
-            let _ = Self::visit_fwd(root, 0, &range, |chunk: &[u8]| {
+            let _ = Self::visit_slices::<false, _, _>(root, 0, &range, |chunk: &[u8]| {
                 let take = chunk.len().min(3 - written);
                 out[written..written + take].copy_from_slice(&chunk[..take]);
                 written += take;
@@ -977,7 +951,7 @@ impl<S: Summary> WeaveTree<S> {
         assert!(depth >= 1);
         let mut prev_tail = [0u8; 3];
         let mut prev_tail_len = 0usize;
-        let _ = Self::visit_fwd(root, 0, &(0..root.bytes), |chunk: &[u8]| {
+        let _ = Self::visit_slices::<false, _, _>(root, 0, &(0..root.bytes), |chunk: &[u8]| {
             if prev_tail_len > 0 {
                 let mut seam = [0u8; 6];
                 let head_len = chunk.len().min(3);

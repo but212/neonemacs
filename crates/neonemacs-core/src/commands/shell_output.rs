@@ -5,18 +5,13 @@
 
 use crate::Doc;
 use crate::commands::basic::{split, switch_to};
-use crate::commands::prompt::prompt;
-use crate::editor::{Buffer, BufferId, Dir, Editor, Purpose};
+use crate::editor::{Buffer, BufferId, Dir, Editor};
 use crate::effect::{Effect, Effects, InitLoad};
 use crate::file::Backing;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-
-pub(crate) fn shell_command_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx)
-}
 
 /// Asks the shell to run `command`. The output comes back as `ShellDone`.
 pub(crate) fn run_shell(ed: &Editor, command: &str, mut fx: Effects) -> Effects {
