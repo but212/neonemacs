@@ -1,11 +1,11 @@
 //! Opening and reading files: asking the shell to read, applying what it read (new buffer or
 //! revert), and applying what it found in a WAL (docs/context.md §3.2, §4.2).
 
+use crate::EditorDocExt;
 use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
 use crate::file::{Read, loaded_from};
-use crate::EditorDocExt;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -186,13 +186,13 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
+    use crate::Doc;
     use crate::config::Config;
     use crate::effect::Recovered;
     use crate::eol::Eol;
     use crate::file::{Backing, DiskState, FilePath};
     use crate::file::{RawFile, Read};
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
-    use crate::Doc;
 
     /// An editor whose `max-file-size` is 4 bytes.
     fn small_limit() -> Editor {
@@ -310,10 +310,7 @@ mod tests {
     #[test]
     fn no_wal_changes_nothing() {
         let ed = probed(WalProbe::Absent);
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::Doc::from_bytes(b"disk")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"disk"));
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "");
     }
@@ -324,10 +321,7 @@ mod tests {
             eol: Eol::Crlf,
             doc: Doc::from_bytes(b"draft"),
         }));
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::Doc::from_bytes(b"draft")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"draft"));
         assert_eq!(ed.buffer().eol(), Eol::Crlf);
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "[Recovered f.txt from WAL]");
@@ -335,8 +329,8 @@ mod tests {
 
     #[test]
     fn replayed_delta_wal_restores_text_and_eol() {
-        use crate::effect::RecoveredDelta;
         use crate::Replace;
+        use crate::effect::RecoveredDelta;
         let delta = RecoveredDelta::replay(
             Doc::from_bytes(b"disk"),
             Eol::Crlf,
@@ -358,10 +352,7 @@ mod tests {
     #[test]
     fn unusable_wal_is_reported_and_leaves_the_text() {
         let ed = probed(WalProbe::Stale(Ok("dir/.f.txt.wal.stale".to_owned())));
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::Doc::from_bytes(b"disk")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"disk"));
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "Stale WAL kept as .f.txt.wal.stale");
 
@@ -397,10 +388,7 @@ mod tests {
             Ok(read),
             Vec::new(),
         );
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::Doc::from_bytes(b"ab")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"ab"));
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
         // Nothing is removed: the unsaved edits stay recoverable from the WAL.
@@ -419,10 +407,7 @@ mod tests {
             Ok(read),
             Vec::new(),
         );
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::Doc::from_bytes(b"x\n")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"x\n"));
         assert!(
             matches!(fx.as_slice(), [Effect::RemoveWal { target }] if target.path() == "f.txt")
         );
@@ -490,10 +475,7 @@ mod tests {
             Ok(Read::Missing),
             Vec::new(),
         );
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::Doc::from_bytes(b"abc")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"abc"));
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "Revert failed: f.txt does not exist");
         assert_eq!(fx, [] as [Effect; 0]);

@@ -4,8 +4,8 @@
 use core::ops::ControlFlow;
 
 use crate::{Doc, EditorDocExt, Unit};
-use weave_tree::utf8::decode_in_slice;
 use unicode_width::UnicodeWidthChar;
+use weave_tree::utf8::decode_in_slice;
 
 /// How wide the terminal draws things: the tab stop distance and whether East Asian ambiguous
 /// characters take two columns.

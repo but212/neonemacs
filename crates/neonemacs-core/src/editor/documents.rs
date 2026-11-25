@@ -3,8 +3,8 @@
 //! and windows (I-31). Fields are visible only to `editor`.
 
 use crate::buffer::BufferPool;
-use crate::{Doc, Replace};
 use crate::window::{Window, WindowManager};
+use crate::{Doc, Replace};
 use alloc::string::String;
 use alloc::vec::Vec;
 

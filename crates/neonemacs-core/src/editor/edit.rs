@@ -233,10 +233,10 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::Doc;
     use crate::config::Config;
     use crate::keymap::{Code, Key};
     use crate::test_support::{press, run_command, text};
-    use crate::Doc;
 
     fn editor_with(s: &str) -> Editor {
         Editor::new(Config::default())

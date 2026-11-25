@@ -11,6 +11,7 @@ mod edit;
 mod interaction;
 mod settings;
 
+use crate::Doc;
 use crate::buffer::{BufferPool, RecoveredDelta};
 use crate::config::{Config, Toggles};
 use crate::effect::{Effect, WalTarget};
@@ -18,7 +19,6 @@ use crate::eol::Eol;
 use crate::file::{Backing, FilePath};
 use crate::keymap::{KeyAliases, Keymap};
 use crate::syntax::SyntaxRegistry;
-use crate::Doc;
 use crate::window::WindowManager;
 use documents::Documents;
 pub use documents::KillRing;

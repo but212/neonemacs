@@ -2,9 +2,9 @@
 
 use crate::editor::{Buffer, BufferId, Confirm, Dir, Editor, LastCommand, Window};
 use crate::effect::Effects;
-use crate::{Doc, EditorDocExt};
 use crate::width::{column, pos_at_column};
 use crate::window::WindowManager;
+use crate::{Doc, EditorDocExt};
 
 /// Helper for region lookup on `Editor`.
 pub(crate) fn region(ed: &Editor) -> Option<(usize, usize)> {

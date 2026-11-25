@@ -1,8 +1,8 @@
 //! Lightweight crash recovery WAL (Write-Ahead Log) for unsaved edits (§7, §14, I-23, I-25).
 //! Operates strictly in the imperative shell layer: persists snapshots/deltas during idle time.
 
-use crate::core::effect::{RecoveredDelta, WalProbe};
 use crate::core::DocBuilder;
+use crate::core::effect::{RecoveredDelta, WalProbe};
 use crate::core::{
     DiskState, Doc, Eol, MAX_WAL_DELTA_BYTES, MAX_WAL_DELTA_RECORDS, Replace,
     WAL_DELTA_RECORD_BYTES, WalBaseDigest, wal_base_digest,

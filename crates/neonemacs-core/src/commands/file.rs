@@ -220,10 +220,10 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::Doc;
     use crate::eol::Eol;
     use crate::file::FilePath;
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
-    use crate::Doc;
 
     fn quit_message(names: &[&str]) -> String {
         let mut ed = editor();

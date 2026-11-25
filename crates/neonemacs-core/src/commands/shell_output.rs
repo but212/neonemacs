@@ -3,12 +3,12 @@
 //!
 //! Also the outcome of loading `init.lua`, whose errors go to `*init-log*` (§12).
 
+use crate::Doc;
 use crate::commands::basic::{split, switch_to};
 use crate::commands::prompt::prompt;
 use crate::editor::{Buffer, BufferId, Dir, Editor, Purpose};
 use crate::effect::{Effect, Effects, InitLoad};
 use crate::file::Backing;
-use crate::Doc;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;

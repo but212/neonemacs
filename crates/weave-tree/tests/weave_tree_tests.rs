@@ -57,7 +57,10 @@ fn cursor_and_iterators_traverse_multi_slice_tree() {
 
     let mut rev_chunks: Vec<&[u8]> = tree.slices().rev().collect();
     rev_chunks.reverse();
-    let rev_slices: Vec<u8> = rev_chunks.into_iter().flat_map(|s| s.iter().copied()).collect();
+    let rev_slices: Vec<u8> = rev_chunks
+        .into_iter()
+        .flat_map(|s| s.iter().copied())
+        .collect();
     assert_eq!(rev_slices, raw);
 
     // Double-ended Slices meeting in the middle

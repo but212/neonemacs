@@ -587,11 +587,7 @@ mod tests {
     #[test]
     fn query_replace_continues_after_joining_utf8_bytes() {
         let ed = editor()
-            .with_current_buffer(|b| {
-                b.with_text(crate::Doc::from_bytes(&[
-                    0xC3, b'X', 0xA9, b'X',
-                ]))
-            })
+            .with_current_buffer(|b| b.with_text(crate::Doc::from_bytes(&[0xC3, b'X', 0xA9, b'X'])))
             .move_point(1);
         let ed = start_query(ed, "X*", "", MatchKind::Regex);
         let ed = keys(ed, "!");

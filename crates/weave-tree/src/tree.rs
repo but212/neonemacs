@@ -262,9 +262,7 @@ fn rebalance_first_child<S: Summary>(
     out
 }
 
-fn pop_rightmost_slice<S: Summary>(
-    entry: ChildEntry<S>,
-) -> (Option<ChildEntry<S>>, ByteSlice<S>) {
+fn pop_rightmost_slice<S: Summary>(entry: ChildEntry<S>) -> (Option<ChildEntry<S>>, ByteSlice<S>) {
     match entry.node.as_ref() {
         SliceNode::Leaf { slices } => {
             let mut rest = slices.clone();
@@ -281,9 +279,7 @@ fn pop_rightmost_slice<S: Summary>(
     }
 }
 
-fn pop_leftmost_slice<S: Summary>(
-    entry: ChildEntry<S>,
-) -> (ByteSlice<S>, Option<ChildEntry<S>>) {
+fn pop_leftmost_slice<S: Summary>(entry: ChildEntry<S>) -> (ByteSlice<S>, Option<ChildEntry<S>>) {
     match entry.node.as_ref() {
         SliceNode::Leaf { slices } => {
             let mut rest = slices.clone();
@@ -404,9 +400,10 @@ fn split_byte_slice<S: Summary>(
     let left_range = slice.range.start..split_pt;
     let right_range = split_pt..slice.range.end;
     let backing_len = slice.buf.len();
-    let (ls, rs) = slice
-        .summary
-        .split_pair(&slice.buf[left_range.clone()], &slice.buf[right_range.clone()]);
+    let (ls, rs) = slice.summary.split_pair(
+        &slice.buf[left_range.clone()],
+        &slice.buf[right_range.clone()],
+    );
     (
         ByteSlice {
             buf: Arc::clone(&slice.buf),
@@ -660,9 +657,8 @@ pub(crate) fn try_delete_in_place<S: Summary>(
                         if local_end == len {
                             let left_end = abs_start;
                             let kept_range = slice.range.start..left_end;
-                            let (kept_s, _) = slice
-                                .summary
-                                .split_pair(&slice.buf[kept_range], &deleted);
+                            let (kept_s, _) =
+                                slice.summary.split_pair(&slice.buf[kept_range], &deleted);
                             slice.range.end -= delete_len;
                             if let Some(buf) = Arc::get_mut(&mut slice.buf) {
                                 buf.truncate(slice.range.end);
@@ -670,9 +666,8 @@ pub(crate) fn try_delete_in_place<S: Summary>(
                             slice.summary = kept_s.with_backing_len(slice.buf.len());
                         } else {
                             let kept_range = abs_end..slice.range.end;
-                            let (_, kept_s) = slice
-                                .summary
-                                .split_pair(&deleted, &slice.buf[kept_range]);
+                            let (_, kept_s) =
+                                slice.summary.split_pair(&deleted, &slice.buf[kept_range]);
                             slice.range.start += delete_len;
                             slice.summary = kept_s.with_backing_len(slice.buf.len());
                         }

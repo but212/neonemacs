@@ -2,13 +2,13 @@
 //! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15), except that an interactive session answers
 //! `RunShell` and `ReloadInit` itself: a `RunShell` refused while another runs gets no `Event`.
 
+use crate::Doc;
 use crate::buffer::BufferId;
 pub use crate::buffer::RecoveredDelta;
 use crate::config::ShellSpec;
 use crate::eol::Eol;
 use crate::file::{DiskState, Read};
 use crate::keymap::Key;
-use crate::Doc;
 use alloc::string::String;
 use alloc::vec::Vec;
 

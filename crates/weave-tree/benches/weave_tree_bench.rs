@@ -70,9 +70,7 @@ fn bench_micro_edits(c: &mut Criterion) {
             || base_100k.clone(),
             |doc| {
                 let (after_del, _) = doc.replace(50 * 1024, 1, b"").expect("valid delete");
-                let (after_ins, inv) = after_del
-                    .replace(50 * 1024, 0, b"q")
-                    .expect("valid insert");
+                let (after_ins, inv) = after_del.replace(50 * 1024, 0, b"q").expect("valid insert");
                 black_box((after_ins, inv))
             },
             BatchSize::SmallInput,
@@ -196,9 +194,7 @@ fn bench_micro_edits(c: &mut Criterion) {
         b.iter_batched(
             || base_100k.clone(),
             |doc| {
-                let (next, inv) = doc
-                    .replace(50 * 1024, 0, &paste_64k)
-                    .expect("valid paste");
+                let (next, inv) = doc.replace(50 * 1024, 0, &paste_64k).expect("valid paste");
                 black_box((next, inv))
             },
             BatchSize::SmallInput,

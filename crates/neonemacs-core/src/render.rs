@@ -4,8 +4,8 @@
 use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
-use crate::{Doc, EditorDocExt, Unit};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
+use crate::{Doc, EditorDocExt, Unit};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;

@@ -2,6 +2,7 @@
 //! transition that asks the shell for anything panics, so such a test belongs in `tests/`,
 //! where the shell performs the effects (I-14, I-15).
 
+use crate::Doc;
 use crate::config::Config;
 use crate::dispatch;
 use crate::editor::{BufferId, Editor};
@@ -10,7 +11,6 @@ use crate::eol::Eol;
 use crate::file::{Backing, DiskState, FilePath};
 use crate::keymap::{Code, Key, parse_keys};
 use crate::step;
-use crate::Doc;
 use alloc::string::String;
 use alloc::vec::Vec;
 

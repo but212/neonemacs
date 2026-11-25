@@ -1132,9 +1132,7 @@ fn advance_eq_cursor<S: Summary>(
     advance_eq_internal_past(stack)
 }
 
-fn advance_eq_internal_past<S: Summary>(
-    mut stack: Vec<EqFrame<'_, S>>,
-) -> Vec<EqFrame<'_, S>> {
+fn advance_eq_internal_past<S: Summary>(mut stack: Vec<EqFrame<'_, S>>) -> Vec<EqFrame<'_, S>> {
     while let Some(EqFrame::Internal {
         children,
         idx,
@@ -1229,10 +1227,8 @@ fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
         let rem_a = sa_slice.range.len() - *oa;
         let rem_b = sb_slice.range.len() - *ob;
         let take = rem_a.min(rem_b);
-        let bytes_a =
-            &sa_slice.buf[sa_slice.range.start + *oa..sa_slice.range.start + *oa + take];
-        let bytes_b =
-            &sb_slice.buf[sb_slice.range.start + *ob..sb_slice.range.start + *ob + take];
+        let bytes_a = &sa_slice.buf[sa_slice.range.start + *oa..sa_slice.range.start + *oa + take];
+        let bytes_b = &sb_slice.buf[sb_slice.range.start + *ob..sb_slice.range.start + *ob + take];
         if bytes_a != bytes_b {
             return false;
         }
