@@ -10,8 +10,9 @@ use crate::eol::Eol;
 use crate::file::{Backing, DiskState, FilePath};
 use crate::keymap::{Code, Key, parse_keys};
 use crate::step;
-use crate::text::Text;
-use std::path::Path;
+use crate::weave_tree::Doc;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 fn no_effects(ed: Editor, fx: Effects) -> Editor {
     assert!(fx.is_empty(), "effect needs shell: {fx:?}");
@@ -99,10 +100,43 @@ pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Eff
     no_effects(ed, fx)
 }
 
+/// Streams all bytes of `doc` into a `Vec<u8>` for test assertions.
+#[must_use]
+pub fn doc_bytes(doc: &Doc) -> Vec<u8> {
+    let mut out = Vec::with_capacity(doc.total_bytes());
+    let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
+        out.extend_from_slice(chunk);
+        core::ops::ControlFlow::<()>::Continue(())
+    });
+    out
+}
+
+/// Streams `doc` with `eol` conversion into a `Vec<u8>` for test assertions.
+#[must_use]
+pub(crate) fn doc_encode_eol(doc: &Doc, eol: Eol) -> Vec<u8> {
+    let mut out = Vec::with_capacity(doc.total_bytes());
+    let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
+        match eol {
+            Eol::Lf => out.extend_from_slice(chunk),
+            Eol::Crlf => {
+                let mut last = 0;
+                for i in memchr::memchr_iter(b'\n', chunk) {
+                    out.extend_from_slice(&chunk[last..i]);
+                    out.extend_from_slice(b"\r\n");
+                    last = i + 1;
+                }
+                out.extend_from_slice(&chunk[last..]);
+            }
+        }
+        core::ops::ControlFlow::<()>::Continue(())
+    });
+    out
+}
+
 /// The text of the selected buffer.
 #[must_use]
 pub fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
+    String::from_utf8_lossy(&doc_bytes(ed.buffer().text())).into_owned()
 }
 
 /// Point of the selected window.
@@ -114,10 +148,10 @@ pub fn point(ed: &Editor) -> usize {
 /// Replaces the selected buffer with an unmodified file-backed buffer holding `bytes`.
 pub(crate) fn file_buffer(ed: Editor, bytes: &[u8], eol: Eol) -> Editor {
     ed.with_current_buffer(|b| {
-        b.with_text(Text::from_bytes(bytes))
+        b.with_text(Doc::from_bytes(bytes))
             .set_name("f.txt")
             .set_backing(Backing::file(
-                FilePath::resolve(Path::new(""), Path::new("f.txt")),
+                FilePath::resolve("", "f.txt"),
                 DiskState::Unknown,
             ))
             .set_eol(eol)
@@ -132,12 +166,12 @@ pub(crate) fn saved_bytes(ed: &Editor, id: BufferId) -> Vec<u8> {
         panic!("expected WriteFile");
     };
     let buf = ed.buffer_by_id(*write_id);
-    buf.eol().encode(&buf.text().to_bytes())
+    doc_encode_eol(buf.text(), buf.eol())
 }
 
 pub(crate) fn known(size: u64) -> DiskState {
     DiskState::Known {
-        mtime: std::time::UNIX_EPOCH,
+        mtime: core::time::Duration::ZERO,
         size,
     }
 }

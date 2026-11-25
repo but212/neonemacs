@@ -123,7 +123,7 @@ mod tests {
         fs::write(&path, b"abc").unwrap();
         let lua = new_state().unwrap();
         let ed = Editor::new(Config::default());
-        let fx = request_open(&ed, &path, None, true, Vec::new());
+        let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
         let ed = perform_all(ed, None, fx);
         let ed = handle(ed, None, Event::Key(Key::plain(Code::Char('x'))));
 

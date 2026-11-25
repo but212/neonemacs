@@ -19,6 +19,7 @@ use crate::core::step;
 use mlua::Lua;
 use std::cell::RefCell;
 use std::io::Read;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -170,7 +171,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
     match effect {
         Effect::StatDisk { target, path } => Event::Disk {
             target,
-            state: file::disk_state(&path),
+            state: file::disk_state(Path::new(&path)),
             path,
         },
         Effect::WriteFile { id, path } => {
@@ -178,8 +179,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                 let guard = cell.borrow();
                 let ed = guard.as_ref().expect("editor is in the cell (I-21)");
                 let buf = ed.buffer_by_id(id);
-                let (left, right) = buf.text().slices();
-                file::save_slices(&path, buf.eol(), left, right).map_err(|e| e.to_string())
+                file::save_doc(Path::new(&path), buf.eol(), buf.text()).map_err(|e| e.to_string())
             };
             Event::Written { id, path, result }
         }
@@ -188,7 +188,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
             path,
             max_size,
         } => {
-            let result = file::read_raw(&path, max_size).map_err(|e| e.to_string());
+            let result = file::read_raw(Path::new(&path), max_size).map_err(|e| e.to_string());
             Event::FileRead {
                 target,
                 path,
@@ -197,24 +197,37 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
         }
         Effect::RemoveWal { target } => {
             match target {
-                WalTarget::Sibling(path) => wal::remove_wal(&path),
-                WalTarget::Slot(slot) => wal::remove_file(&slot),
+                WalTarget::Sibling(path) => wal::remove_wal(Path::new(&path)),
+                WalTarget::Slot(slot) => wal::remove_file(Path::new(&slot)),
             }
             Event::WalRemoved
         }
         Effect::FlushWal { entries } => {
             let guard = cell.borrow();
             let ed = guard.as_ref().expect("editor is in the cell (I-21)");
+            let allow_deltas = ed
+                .config()
+                .toggles
+                .contains(crate::core::Toggles::WAL_DELTAS);
             let writes = entries
                 .into_iter()
                 .map(|e| {
-                    let (left, right) = ed.buffer_by_id(e.id).text().slices();
+                    let buf = ed.buffer_by_id(e.id);
+                    let doc = buf.text();
                     let result = match &e.target {
                         WalTarget::Sibling(path) => {
-                            wal::write_wal_slices(path, e.disk, e.eol, left, right)
+                            let path = Path::new(path);
+                            if allow_deltas
+                                && matches!(e.disk, crate::core::DiskState::Known { .. })
+                                && let Some((base, deltas)) = buf.wal_deltas()
+                            {
+                                wal::write_wal_deltas(path, e.disk, e.eol, base, deltas)
+                            } else {
+                                wal::write_wal_doc(path, e.disk, e.eol, doc)
+                            }
                         }
                         WalTarget::Slot(slot) => {
-                            wal::write_scratch_slices(slot, e.eol, left, right)
+                            wal::write_scratch_doc(Path::new(slot), e.eol, doc)
                         }
                     };
                     WalWrite {
@@ -226,11 +239,17 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                 .collect();
             Event::WalFlushed(writes)
         }
-        Effect::ProbeWal { path, disk, line } => Event::WalProbed {
-            probe: wal::probe(&path, disk),
-            path,
-            line,
-        },
+        Effect::ProbeWal { path, disk, line } => {
+            let base = cell
+                .borrow()
+                .as_ref()
+                .and_then(|ed| ed.buffers().find_by_path(&path).map(|b| b.text().clone()));
+            Event::WalProbed {
+                probe: wal::probe_with_base(Path::new(&path), disk, base.as_ref()),
+                path,
+                line,
+            }
+        }
         Effect::RunShell { command, shell } => Event::ShellDone(run_shell(&command, &shell)),
         Effect::RunLua { name } => Event::LuaDone(run_lua(lua, &name)),
         // Reached from a Lua command, which runs inside the state that a reload would replace.
@@ -313,12 +332,12 @@ mod tests {
 
     #[test]
     fn effect_round_trip_yields_one_event_each() {
-        use crate::core::{Config, Text};
+        use crate::core::{Config, Doc};
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("f.txt");
+        let path = dir.path().join("f.txt").to_string_lossy().into_owned();
         let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(Text::from_bytes(b"hi")));
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"hi")));
         let id = ed.buffer().id();
         let cell = RefCell::new(Some(ed));
 

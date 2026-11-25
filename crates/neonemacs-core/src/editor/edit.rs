@@ -1,39 +1,49 @@
 //! The edit pipeline (§7, I-01, I-06, I-09, I-38). `apply` is the single edit point: every change
 //! to a buffer goes through it, so the read-only check, undo, and anchor moves stay in one place.
 
-use super::{Buffer, Editor, LastCommand, Window, snap, snap_end};
+use super::{Buffer, Editor, LastCommand, Window};
 use crate::config::Toggles;
 use crate::effect::Effects;
-use crate::undo::Edit;
+use crate::undo::{Edit, RecordedEdit};
 use crate::width::column;
+use alloc::borrow::ToOwned;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 impl Editor {
     /// Applies `edit` to the buffer of the selected window. Returns the new editor and
     /// the number of undo groups dropped to respect the limit, or `None` when refused.
     #[must_use]
-    pub fn apply(mut self, edit: Edit) -> (Self, Option<usize>) {
+    pub fn apply(self, edit: Edit) -> (Self, Option<usize>) {
+        self.apply_recorded(edit.into())
+    }
+
+    fn apply_recorded(mut self, edit: RecordedEdit) -> (Self, Option<usize>) {
         let id = self.window().buffer;
         if self.buffer_by_id(id).view_only() {
             return (self.set_message("Buffer is read-only"), None);
+        }
+
+        let span = edit.span;
+        let mut dropped_res = None;
+        let undo_limit = self.settings.config.undo_limit;
+        self.documents.buffers = self.documents.buffers.with_buffer(id, |buf| {
+            let (buf, dropped) = buf.apply_recorded(edit, |a| span.remap(a), undo_limit);
+            dropped_res = dropped;
+            buf
+        });
+        if dropped_res.is_none() {
+            return (self, None);
         }
 
         // The yank offsets describe the text before this edit, so the yank ends here (I-38).
         if matches!(self.interaction.last, LastCommand::Yank { .. }) {
             self.interaction.last = LastCommand::Other;
         }
-
-        let span = EditSpan::from_edit(&edit);
-        let mut dropped_res = None;
-        let undo_limit = self.settings.config.undo_limit;
         self.documents.edit_seq = self.documents.edit_seq.wrapping_add(1);
-        self.documents.buffers = self.documents.buffers.with_buffer(id, |buf| {
-            let (buf, dropped) = buf.apply_edit(edit, |a| remap_span(span, a), undo_limit);
-            dropped_res = Some(dropped);
-            buf
-        });
 
         let text = self.documents.buffers.get_by_id(id).text();
-        let anchor = |a| snap(text, remap_span(span, a));
+        let anchor = |a| text.floor_boundary(span.remap(a));
         self.documents.windows = self.documents.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
@@ -49,55 +59,43 @@ impl Editor {
         (self, dropped_res)
     }
 
-    /// Deletes `start..end`. Returns the editor and the removed bytes.
-    #[must_use]
-    pub fn delete_range(self, start: usize, end: usize) -> (Self, Vec<u8>) {
-        self.delete_range_inner(start, end, true)
-    }
-
     /// Deletes `start..end` without returning a copy of the removed bytes.
     #[must_use]
     pub fn delete_only(self, start: usize, end: usize) -> Self {
-        self.delete_range_inner(start, end, false).0
-    }
-
-    fn delete_range_inner(self, start: usize, end: usize, return_removed: bool) -> (Self, Vec<u8>) {
         let text = self.buffer().text();
-        let start = snap(text, start);
-        let end = snap_end(text, end);
+        let start = text.floor_boundary(start);
+        let end = text.ceil_boundary(end);
         if start >= end {
-            return (self, Vec::new());
+            return self;
         }
-        if self.buffer().view_only() {
-            let (ed, _) = self.apply(Edit::delete(0, Vec::new()));
-            return (ed, Vec::new());
-        }
-        let bytes = self.buffer().text().bytes(start..end);
-        let removed = if return_removed {
-            bytes.clone()
-        } else {
-            Vec::new()
-        };
-        let (ed, applied) = self.apply(Edit::delete(start, bytes));
-        debug_assert!(applied.is_some());
-        (ed, removed)
+        let (ed, _) = self.apply(Edit::delete(start, end - start));
+        ed
     }
 
-    /// Deletes `start..end` and pushes the removed bytes to the kill ring.
+    /// Deletes `start..end` and pushes the removed `Doc` slice to the kill ring.
     /// Consecutive kills append to one entry (I-09).
     #[must_use]
     pub fn kill_range(self, start: usize, end: usize) -> Self {
-        let (ed, bytes) = self.delete_range(start, end);
-        if bytes.is_empty() {
+        let text = self.buffer().text();
+        let start = text.floor_boundary(start);
+        let end = text.ceil_boundary(end);
+        if start >= end {
+            return self;
+        }
+        let Ok(killed) = text.slice(start..end) else {
+            return self;
+        };
+        let (ed, applied) = self.apply(Edit::delete(start, end - start));
+        if applied.is_none() || killed.total_bytes() == 0 {
             return ed;
         }
         let max = ed.config().kill_ring_max;
         let ed = if ed.interaction.prev == LastCommand::Kill
             || ed.interaction.last == LastCommand::Kill
         {
-            ed.with_kill_ring(|kr| kr.append_last(&bytes))
+            ed.with_kill_ring(|kr| kr.append_last(killed))
         } else {
-            ed.with_kill_ring(|kr| kr.push(bytes, max))
+            ed.with_kill_ring(|kr| kr.push(killed, max))
         };
         ed.set_last(LastCommand::Kill)
     }
@@ -105,7 +103,7 @@ impl Editor {
     /// Inserts `bytes` at `pos` and moves point after them.
     #[must_use]
     pub fn insert_at(self, pos: usize, bytes: &[u8]) -> Self {
-        let pos = snap(self.buffer().text(), pos);
+        let pos = self.buffer().text().floor_boundary(pos);
         let (ed, applied) = self.apply(Edit::insert(pos, bytes));
         if applied.is_some() {
             ed.move_point(pos + bytes.len())
@@ -152,7 +150,7 @@ impl Editor {
                 1
             }
         };
-        let at = snap(self.buffer().text(), self.window().point);
+        let at = self.buffer().text().floor_boundary(self.window().point);
         let bytes = if c == '\t' && self.settings.config.toggles.contains(Toggles::EXPAND_TABS) {
             let m = self.settings.config.metrics();
             let tab = m.tab;
@@ -191,13 +189,13 @@ impl Editor {
         };
         let (clean_epoch, inverses) = {
             let group = &ed.buffer_by_id(id).undo().groups()[idx];
-            let inverses: Vec<Edit> = group.edits().iter().rev().map(Edit::inverse).collect();
+            let inverses: Vec<_> = group.edits().iter().rev().cloned().collect();
             (group.clean_epoch(), inverses)
         };
         let mut dropped = 0;
         let mut complete = true;
         for inv in inverses {
-            let (next, applied) = ed.apply(inv);
+            let (next, applied) = ed.apply_recorded(inv);
             ed = next;
             if let Some(d) = applied {
                 dropped += d;
@@ -219,69 +217,25 @@ impl Editor {
     }
 }
 
-#[derive(Clone, Copy)]
-enum EditSpan {
-    Replace {
-        pos: usize,
-        removed: usize,
-        inserted: usize,
-    },
-    SetEol,
-}
-
-impl EditSpan {
-    const fn from_edit(edit: &Edit) -> Self {
-        match edit {
-            Edit::Replace {
-                pos,
-                removed,
-                inserted,
-            } => Self::Replace {
-                pos: *pos,
-                removed: removed.len(),
-                inserted: inserted.len(),
-            },
-            Edit::SetEol { .. } => Self::SetEol,
-        }
-    }
-}
-
-/// Where an anchor at `a` lands after `edit`.
 #[cfg(test)]
 fn remap(edit: &Edit, a: usize) -> usize {
-    remap_span(EditSpan::from_edit(edit), a)
-}
-
-const fn remap_span(span: EditSpan, a: usize) -> usize {
-    match span {
-        EditSpan::Replace {
-            pos,
-            removed,
-            inserted,
-        } => {
-            if a <= pos {
-                a
-            } else if a <= pos + removed {
-                pos
-            } else {
-                a - removed + inserted
-            }
-        }
-        EditSpan::SetEol => a,
-    }
+    RecordedEdit::from(edit.clone()).span.remap(a)
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+    use alloc::vec;
+
     use super::*;
     use crate::config::Config;
     use crate::keymap::{Code, Key};
     use crate::test_support::{press, run_command, text};
-    use crate::text::Text;
+    use crate::weave_tree::Doc;
 
     fn editor_with(s: &str) -> Editor {
         Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(s.as_bytes())))
     }
 
     fn type_char(ed: Editor, c: char) -> Editor {
@@ -293,19 +247,22 @@ mod tests {
     }
 
     #[test]
-    fn insert_at_and_delete_range_snap_to_unit_boundaries() {
+    fn insert_at_and_kill_range_snap_to_unit_boundaries() {
         // "가" is 3 bytes: 0..3
         let ed = editor_with("가");
-        assert_eq!(ed.buffer().text().len(), 3);
+        assert_eq!(ed.buffer().text().total_bytes(), 3);
 
         // insert_at pos 1 (mid-character) should snap to boundary (0)
         let ed_ins = ed.clone().insert_at(1, b"a");
         assert_eq!(text(&ed_ins), "a가");
 
-        // delete_range 1..2 should snap boundaries (0..3)
-        let (ed_del, removed) = ed.delete_range(1, 2);
+        // kill_range 1..2 should snap boundaries (0..3)
+        let ed_del = ed.kill_range(1, 2);
         assert_eq!(text(&ed_del), "");
-        assert_eq!(removed, "가".as_bytes());
+        assert_eq!(
+            ed_del.kill_ring().last(),
+            Some(&Doc::from_bytes("가".as_bytes()))
+        );
 
         // insert_at on view_only buffer must NOT move point (I-06)
         let ed_ro = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
@@ -376,12 +333,9 @@ mod tests {
         for pos in 0..6 {
             for removed in [0, 1, 3] {
                 for inserted in [0, 1, 4] {
-                    let replace = Edit::Replace {
-                        pos,
-                        removed: vec![b'r'; removed],
-                        inserted: vec![b'i'; inserted],
-                    };
-                    let del = Edit::delete(pos, vec![b'r'; removed]);
+                    let replace =
+                        Edit::replace(pos, removed, Doc::from_bytes(&vec![b'i'; inserted]));
+                    let del = Edit::delete(pos, removed);
                     let ins = Edit::insert(pos, vec![b'i'; inserted]);
                     for a in 0..14 {
                         assert_eq!(
@@ -398,11 +352,10 @@ mod tests {
     /// A file-backed buffer that was just saved with `saved` as its text.
     fn saved(saved: &str) -> Editor {
         use crate::file::{Backing, DiskState, FilePath};
-        use std::path::Path;
         Editor::new(Config::default()).with_current_buffer(|b| {
-            b.with_text(Text::from_bytes(saved.as_bytes()))
+            b.with_text(Doc::from_bytes(saved.as_bytes()))
                 .set_backing(Backing::file(
-                    FilePath::resolve(Path::new(""), Path::new("f.txt")),
+                    FilePath::resolve("", "f.txt"),
                     DiskState::Unknown,
                 ))
                 .record_saved(DiskState::Unknown)
@@ -425,7 +378,7 @@ mod tests {
         assert_eq!(
             fx,
             vec![crate::effect::Effect::RemoveWal {
-                target: crate::effect::WalTarget::Sibling(std::path::PathBuf::from("f.txt"))
+                target: crate::effect::WalTarget::Sibling("f.txt".to_owned())
             }]
         );
     }
@@ -447,10 +400,10 @@ mod tests {
     fn undoing_an_undo_returns_to_clean_through_the_original_group() {
         // Undoing to clean text drops the WAL of the file-backed buffer (I-41).
         let wal = crate::effect::Effect::RemoveWal {
-            target: crate::effect::WalTarget::Sibling(std::path::PathBuf::from("f.txt")),
+            target: crate::effect::WalTarget::Sibling("f.txt".to_owned()),
         };
         let (ed, fx) = undo_fx(type_char(saved(""), 'a'));
-        assert_eq!(fx, std::slice::from_ref(&wal));
+        assert_eq!(fx, core::slice::from_ref(&wal));
         assert!(!ed.buffer().modified());
         // A command in between breaks the undo chain, so this undo redoes "a".
         let ed = run_command(ed, |e, fx| (e.move_point(0), fx));
@@ -483,7 +436,7 @@ mod tests {
         });
         let ed = type_char(ed, 'a');
         let ed = run_command(ed, |e, fx| {
-            let (e, _) = e.apply(Edit::delete(0, b"a".to_vec()));
+            let (e, _) = e.apply(Edit::delete(0, 1));
             (e, fx)
         });
         assert_eq!(text(&ed), "");
@@ -492,9 +445,9 @@ mod tests {
 
     #[test]
     fn chained_undo_stays_on_the_right_group_when_the_log_is_trimmed() {
-        // Limit 3 holds a, b, c. Undoing c records its inverse (size 4) and drops the group of "a".
+        // Undoing c adds a 3-byte backing charge to the three 1-byte groups. The limit drops "a".
         let ed = editor_with("").set_config(Config {
-            undo_limit: 3,
+            undo_limit: 5,
             ..Config::default()
         });
         // A command in between closes each group, so every character is its own undo step.
@@ -521,13 +474,83 @@ mod tests {
     }
 
     #[test]
+    fn invalid_edit_leaves_editor_unchanged() {
+        let ed = editor_with("é")
+            .move_point(2)
+            .set_last(LastCommand::Yank { start: 0, end: 2 });
+        let seq = ed.edit_seq();
+        let (ed, applied) = ed.apply(Edit::delete(1, 1));
+        assert_eq!(applied, None);
+        assert_eq!(text(&ed), "é");
+        assert_eq!(ed.window().point, 2);
+        assert_eq!(ed.edit_seq(), seq);
+        assert_eq!(ed.interaction.last, LastCommand::Yank { start: 0, end: 2 });
+        assert!(!ed.buffer().modified());
+        assert!(ed.buffer().undo().groups().is_empty());
+    }
+
+    #[test]
+    fn undo_limit_charges_storage_needed_to_restore_utf8_seams() {
+        let original = Doc::from_bytes(&[0xC3, b'X', 0xA9]);
+        for limit in [2, 3] {
+            let ed = editor_with("")
+                .set_config(Config {
+                    undo_limit: limit,
+                    ..Config::default()
+                })
+                .with_current_buffer(|b| b.with_text(original.clone()))
+                .delete_only(1, 2)
+                .boundary();
+            assert_eq!(text(&ed), "é");
+            assert_eq!(ed.buffer().undo().groups().len(), usize::from(limit == 3));
+            if limit == 3 {
+                let (ed, _) = ed.undo(Vec::new());
+                assert_eq!(ed.buffer().text(), &original);
+            }
+        }
+    }
+
+    #[test]
+    fn undo_limit_evicts_replacements_that_retain_a_full_slice_each() {
+        let ed = editor_with(&"a".repeat(1024)).set_config(Config {
+            undo_limit: 2048,
+            ..Config::default()
+        });
+        let ed = [b"b", b"c", b"d"].into_iter().fold(ed, |ed, byte| {
+            ed.apply(Edit::replace(512, 1, Doc::from_bytes(byte)))
+                .0
+                .boundary()
+        });
+        assert_eq!(ed.buffer().undo().groups().len(), 2);
+        let (ed, _) = ed.undo(Vec::new());
+        assert_eq!(ed.buffer().text().byte_at(512), Some(b'c'));
+    }
+
+    #[test]
+    fn undo_and_undo_of_undo_remap_around_a_joined_utf8_unit() {
+        let original = [0xC3, b'X', 0xA9];
+        let ed = editor_with("")
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(&original)).set_mark(Some(3)))
+            .move_point(3);
+        let ed = ed.delete_only(1, 2).boundary();
+        assert_eq!(text(&ed), "é");
+        let (ed, _) = ed.undo(Vec::new());
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(&original));
+        assert_eq!(ed.window().point, 3);
+        assert_eq!(ed.buffer().mark(), Some(3));
+        let (ed, _) = ed
+            .set_last(LastCommand::Other)
+            .begin_command()
+            .undo(Vec::new());
+        assert_eq!(text(&ed), "é");
+        assert_eq!(ed.window().point, 2);
+        assert_eq!(ed.buffer().mark(), Some(2));
+    }
+
+    #[test]
     fn replace_undoes_in_one_step() {
         let ed = editor_with("hello world");
-        let (ed, _) = ed.apply(Edit::Replace {
-            pos: 6,
-            removed: b"world".to_vec(),
-            inserted: b"there".to_vec(),
-        });
+        let (ed, _) = ed.apply(Edit::replace(6, 5, Doc::from_bytes(b"there")));
         assert_eq!(text(&ed), "hello there");
         assert_eq!(ed.buffer().undo().groups().len(), 1);
         assert_eq!(ed.buffer().undo().groups()[0].edits().len(), 1);
@@ -544,10 +567,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_delete_range_on_view_only_is_a_noop() {
+    fn empty_delete_only_on_view_only_is_a_noop() {
         let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
-        let (ed, removed) = ed.delete_range(2, 2);
-        assert!(removed.is_empty());
+        let ed = ed.delete_only(2, 2);
+        assert_eq!(text(&ed), "hello");
         assert_eq!(ed.interaction.message, "");
     }
 
@@ -574,7 +597,7 @@ mod tests {
         let ed = Editor::new(Config::default());
         let (ed, id) = ed.add_buffer(
             "test",
-            crate::text::Text::from_bytes(b"hello wonderful world"),
+            Doc::from_bytes(b"hello wonderful world"),
             crate::editor::Backing::None,
         );
         let ed = ed.with_window(|w| Window {
@@ -585,13 +608,16 @@ mod tests {
 
         // Kill "hello "
         let ed = ed.kill_range(0, 6);
-        assert_eq!(ed.buffer().text().to_bytes(), b"wonderful world");
-        assert_eq!(ed.kill_ring().entries(), &[b"hello ".to_vec()]);
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"wonderful world"));
+        assert_eq!(ed.kill_ring().entries(), &[Doc::from_bytes(b"hello ")]);
 
         // Consecutive kill "wonderful " -> should append to the same kill ring entry (I-09)
         let ed = ed.kill_range(0, 10);
-        assert_eq!(ed.buffer().text().to_bytes(), b"world");
-        assert_eq!(ed.kill_ring().entries(), &[b"hello wonderful ".to_vec()]);
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"world"));
+        assert_eq!(
+            ed.kill_ring().entries(),
+            &[Doc::from_bytes(b"hello wonderful ")]
+        );
     }
 
     #[test]
@@ -602,9 +628,9 @@ mod tests {
         });
         let ed = crate::test_support::typ(ed, "abcde");
         let ed = crate::test_support::keys(ed, "C-/");
-        assert_eq!(ed.buffer().text().to_bytes(), b"abcd");
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"abcd"));
         let ed = crate::test_support::keys(ed, "C-/");
-        assert_eq!(ed.buffer().text().to_bytes(), b"ab");
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"ab"));
     }
 
     #[test]
@@ -613,11 +639,7 @@ mod tests {
             kill_ring_max: 1,
             ..Config::default()
         });
-        let (ed, id) = ed.add_buffer(
-            "test",
-            crate::text::Text::from_bytes(b"ab"),
-            crate::editor::Backing::None,
-        );
+        let (ed, id) = ed.add_buffer("test", Doc::from_bytes(b"ab"), crate::editor::Backing::None);
         let ed = ed.with_window(|w| Window {
             buffer: id,
             point: 0,
@@ -628,7 +650,7 @@ mod tests {
             .set_last(LastCommand::Other)
             .set_last(LastCommand::Other)
             .kill_range(0, 1);
-        assert_eq!(ed.kill_ring().entries(), &[b"b".to_vec()]);
+        assert_eq!(ed.kill_ring().entries(), &[Doc::from_bytes(b"b")]);
     }
 
     fn soft_tabs(s: &str) -> Editor {
@@ -636,7 +658,7 @@ mod tests {
             toggles: Toggles::DEFAULT.union(Toggles::EXPAND_TABS),
             ..Config::default()
         };
-        Editor::new(config).with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
+        Editor::new(config).with_current_buffer(|b| b.with_text(Doc::from_bytes(s.as_bytes())))
     }
 
     #[test]

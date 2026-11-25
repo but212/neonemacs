@@ -5,7 +5,9 @@
 use crate::buffer::BufferId;
 use crate::search::Pattern;
 use crate::width::Metrics;
-use std::path::PathBuf;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
 
 /// Kind of a command, for commands that chain (§6, §7, I-09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +120,7 @@ pub enum Confirm {
     /// `write-file` to `path`, where a file already exists (I-04).
     OverwriteFile {
         id: BufferId,
-        path: PathBuf,
+        path: String,
     },
     QuitUnsaved,
     KillModified(BufferId),

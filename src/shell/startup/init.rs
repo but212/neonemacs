@@ -58,6 +58,10 @@ pub fn init_source() -> InitSource {
 
 /// The editor and Lua state with only the bundled scripts applied.
 fn bundled(cwd: PathBuf) -> mlua::Result<(Editor, Lua)> {
+    let cwd = cwd
+        .into_os_string()
+        .into_string()
+        .map_err(|_| mlua::Error::external("working directory path is not valid UTF-8"))?;
     let lua = lua::new_state()?;
     let ed = lua::bootstrap(Editor::new(Config::default()).with_cwd(cwd), &lua);
     Ok((ed, lua))
@@ -295,7 +299,7 @@ mod tests {
         assert!(ed.message().contains("init.lua:2:"), "{}", ed.message());
         assert!(!ed.message().contains('\n'));
         let log = ed.buffers().find_by_name("*init-log*").unwrap();
-        let log = String::from_utf8(log.text().to_bytes()).unwrap();
+        let log = String::from_utf8(crate::test_support::doc_bytes(log.text())).unwrap();
         assert!(log.contains("init.lua:2:") && log.contains("boom"), "{log}");
         assert_eq!(ed.buffer().name(), "*scratch*");
 

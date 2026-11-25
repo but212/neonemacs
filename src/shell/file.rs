@@ -1,6 +1,6 @@
 //! File I/O for the shell: reads, atomic saves, and disk state (§8, A2, A12).
 
-use crate::core::{DiskState, Eol, RawFile, Read as FileRead};
+use crate::core::{DiskState, Doc, Eol, EolStreamDecoder, RawFile, Read as FileRead};
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
@@ -54,7 +54,9 @@ fn write_with_and_sync(
 fn state_of(meta: &fs::Metadata) -> DiskState {
     meta.modified()
         .map_or(DiskState::Unknown, |mtime| DiskState::Known {
-            mtime,
+            mtime: mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default(),
             size: meta.len(),
         })
 }
@@ -64,11 +66,12 @@ pub fn disk_state(path: &Path) -> DiskState {
     fs::metadata(path).map_or(DiskState::Unknown, |m| state_of(&m))
 }
 
-/// Reads `path` as bytes without decoding it. A missing file is `Read::Missing`.
-/// A file longer than `max_size` is not read: `bytes` is empty and `len` reports its size.
+/// Reads `path` in 64 KiB blocks directly into a `Doc` B-Tree without allocating a flat buffer.
+/// A missing file is `Read::Missing`. A file longer than `max_size` is not read: `doc` is empty
+/// and `len` reports its size.
 ///
 /// # Errors
-/// Returns `io::Error` if reading file metadata or bytes fails.
+/// Returns `io::Error` if reading file metadata or blocks, or allocating the document, fails.
 pub fn read_raw(path: &Path, max_size: u64) -> io::Result<FileRead> {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -76,26 +79,38 @@ pub fn read_raw(path: &Path, max_size: u64) -> io::Result<FileRead> {
         Err(e) => return Err(e),
     };
     let meta = file.metadata()?;
-    let bytes = if meta.len() > max_size {
-        Vec::new()
+    let (doc, eol) = if meta.len() > max_size {
+        (Doc::default(), None)
     } else {
-        read_capped(&mut file, meta.len())?
+        read_streamed(&mut file, meta.len())?
     };
     Ok(FileRead::Found(RawFile {
         len: meta.len(),
         disk: state_of(&meta),
-        bytes,
+        doc,
+        eol,
     }))
 }
 
-/// Reads `n` bytes, reporting allocation failure as an error (A12).
-fn read_capped(file: &mut File, n: u64) -> io::Result<Vec<u8>> {
-    let n = usize::try_from(n).map_err(|_| io::Error::other("file too large for this platform"))?;
-    let mut buf = Vec::new();
-    buf.try_reserve_exact(n)
-        .map_err(|_| io::Error::other("cannot allocate buffer for file"))?;
-    Read::by_ref(file).take(n as u64).read_to_end(&mut buf)?;
-    Ok(buf)
+/// Streams at most `n` bytes in 64 KiB chunks into a fallibly allocated document.
+fn read_streamed(file: &mut File, n: u64) -> io::Result<(Doc, Option<Eol>)> {
+    let mut limited = Read::by_ref(file).take(n);
+    let mut decoder = EolStreamDecoder::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let read = match limited.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        decoder = decoder
+            .try_push_chunk(&buf[..read])
+            .map_err(|_| io::ErrorKind::OutOfMemory)?;
+    }
+    decoder
+        .try_finish()
+        .map_err(|_| io::ErrorKind::OutOfMemory.into())
 }
 
 /// Writes `bytes` to a temporary file beside the target, then renames it over
@@ -104,31 +119,40 @@ fn read_capped(file: &mut File, n: u64) -> io::Result<Vec<u8>> {
 /// # Errors
 /// Returns `io::Error` if canonicalization or atomic file writing fails.
 pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
-    save_slices(path, Eol::Lf, bytes, &[])
+    save_doc(path, Eol::Lf, &crate::core::Doc::from_bytes(bytes))
 }
 
-/// Streams gap-buffer slices `left` and `right` to `path` atomically, encoding line endings
-/// according to `eol`. Symlinks are followed; permissions are kept (A2).
+/// Streams `doc` slices to `path` atomically, encoding line endings according to `eol`.
+/// Symlinks are followed; permissions are kept (A2).
 ///
 /// # Errors
 /// Returns `io::Error` if canonicalization or atomic file writing fails.
-pub fn save_slices(path: &Path, eol: Eol, left: &[u8], right: &[u8]) -> io::Result<DiskState> {
+pub fn save_doc(path: &Path, eol: Eol, doc: &crate::core::Doc) -> io::Result<DiskState> {
+    use std::ops::ControlFlow;
+
     let target = if fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) {
         fs::canonicalize(path)?
     } else {
         path.to_path_buf()
     };
     let permissions = fs::metadata(&target).ok().map(|m| m.permissions());
-    atomic_write_with(&target, ".", ".tmp", permissions, |f| match eol {
-        Eol::Lf => {
-            f.write_all(left)?;
-            f.write_all(right)
-        }
-        Eol::Crlf => {
-            let mut w = BufWriter::with_capacity(64 * 1024, f);
-            write_crlf_slice(&mut w, left)?;
-            write_crlf_slice(&mut w, right)?;
-            w.flush()
+    atomic_write_with(&target, ".", ".tmp", permissions, |f| {
+        let mut w = BufWriter::with_capacity(64 * 1024, f);
+        let flow = doc
+            .try_for_each_slice(0..doc.total_bytes(), |chunk| {
+                let result = match eol {
+                    Eol::Lf => w.write_all(chunk),
+                    Eol::Crlf => write_crlf_slice(&mut w, chunk),
+                };
+                match result {
+                    Ok(()) => ControlFlow::Continue(()),
+                    Err(e) => ControlFlow::Break(e),
+                }
+            })
+            .expect("full range is valid");
+        match flow {
+            ControlFlow::Continue(()) => w.flush(),
+            ControlFlow::Break(e) => Err(e),
         }
     })?;
     Ok(disk_state(&target))
@@ -161,14 +185,14 @@ mod tests {
 
         let read = read_raw(&path, 1 << 20).unwrap();
         let loaded = loaded_from(
-            &FilePath::resolve(Path::new(""), &path),
+            &FilePath::resolve("", path.to_str().unwrap()),
             read,
             1 << 20,
             Eol::Lf,
         )
         .unwrap();
-        assert_eq!(loaded.text.to_bytes(), bytes);
-        save(&path, &loaded.text.to_bytes()).unwrap();
+        assert_eq!(loaded.text, crate::core::Doc::from_bytes(&bytes));
+        save_doc(&path, Eol::Lf, &loaded.text).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
@@ -183,7 +207,7 @@ mod tests {
             panic!("expected Found");
         };
         assert_eq!(raw.len, 10);
-        assert_eq!(raw.bytes, [] as [u8; 0]);
+        assert_eq!(raw.doc, Doc::default());
     }
 
     #[test]
@@ -197,5 +221,28 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, vec!["f.txt"]);
+    }
+
+    #[test]
+    fn read_raw_preserves_multibyte_utf8_straddling_64k_boundary() {
+        use crate::core::Unit;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("utf8_64k.txt");
+        let mut bytes = vec![b'a'; 65_535];
+        bytes.extend_from_slice("é".as_bytes()); // bytes 65535..65537 straddle 65536
+        bytes.resize(131_070, b'b');
+        bytes.extend_from_slice("가".as_bytes()); // bytes 131070..131073 straddle 131072
+        fs::write(&path, &bytes).unwrap();
+
+        let FileRead::Found(raw) = read_raw(&path, 1 << 20).unwrap() else {
+            panic!("expected Found");
+        };
+        assert_eq!(raw.doc, Doc::from_bytes(&bytes));
+        assert_eq!(raw.doc.decode_at(65_535), Some((Unit::Char('é'), 2)));
+        assert!(!raw.doc.is_boundary(65_536));
+        assert_eq!(raw.doc.decode_at(131_070), Some((Unit::Char('가'), 3)));
+        assert!(!raw.doc.is_boundary(131_071));
+        assert!(!raw.doc.is_boundary(131_072));
     }
 }

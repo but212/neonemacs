@@ -15,11 +15,11 @@ This document establishes the conceptual architecture, domain models, boundary c
 The system partitions strictly into a pure functional core and an imperative shell communicating via a 1:1 `Effect`/`Event` contract (I-15).
 
 - **Core (`crates/neonemacs-core`, exposed as `neonemacs::core`)**:
-  - Pure state transition machine: `step(Editor, Event) -> (Editor, Effects)`.
-  - Zero I/O dependencies (I-14): never imports `mlua`, `crossterm`, `std::fs`, or `std::process`.
+  - `#![no_std]` + `alloc` pure state transition machine: `step(Editor, Event) -> (Editor, Effects)`.
+  - Zero `std` / I/O dependencies (I-14): never imports `std`, `mlua`, `crossterm`, `std::fs`, or `std::process`.
   - Zero `&mut` references in public and internal signatures (I-18); updates proceed via value ownership transfer (`Editor -> Editor`, `Buffer -> Buffer`, `WindowManager -> WindowManager`).
   - Built-in command signature: `Builtin = fn(Editor, Effects) -> (Editor, Effects)`.
-  - Module privacy: `lib.rs` curates the re-export surface; internal modules (`editor/`, `commands/`, `dispatch.rs`, `text.rs`, `width.rs`) remain private.
+  - Module privacy: `lib.rs` curates the re-export surface; internal modules (`editor/`, `commands/`, `dispatch.rs`, `width.rs`) remain private.
 - **Shell (`src/shell`)**:
   - Owns `Editor` within `RefCell<Option<Editor>>` and extracts it during `step` (I-21).
   - Terminal I/O: raw mode, alternate screen buffer, differential ANSI rendering (`session/screen.rs`).
@@ -49,7 +49,7 @@ The system partitions strictly into a pure functional core and an imperative she
 ### 2.1 Buffers, Windows, and Files
 
 - **`Buffer`**: Core text storage and metadata entity:
-  - `Text`: Gap buffer holding raw bytes interpreted as `Unit`s.
+  - `Doc` (`Weave Tree`): Summarized immutable CoW slice B-Tree (`MAX_FANOUT = 32`, `MIN_FANOUT = 16`, `CHUNK_CAP = 1024`, `MAX_SLICE_BYTES = 16384`) over shared byte slices interpreted as strict RFC 3629 `Unit`s. For $P$ slices, line/offset queries take $O(\log P)$, while edits using tree splits take $O(\log^2 P)$ worst case (`D-01`..`D-05`).
   - `saved_point`: Per-buffer cursor byte offset.
   - `Mark`: Optional anchor byte offset. Active mark forms the active region; inactive mark is preserved for position swapping (I-47).
   - `Eol`: Buffer line termination convention (`Lf` or `Crlf`).
@@ -63,9 +63,9 @@ The system partitions strictly into a pure functional core and an imperative she
   - Closing the last buffer spawns an empty `*scratch*`.
   - Closing any visited buffer retargets viewing windows to a surviving buffer (I-08).
   - Multiple windows can observe the same buffer with independent view cursors (`point`) and scroll tops (`top`).
-- **`Unit::Raw`**: Non-UTF-8 byte preserved byte-exact across open, edit, and save cycles.
-- **`DiskState`**: File metadata checkpoint: `Known { mtime, size }` (recorded on read/write) or `Unknown` (unopened file, scratch slot).
-- **`FilePath`**: Absolute, lexically folded path constructed exclusively through `FilePath::resolve(cwd, input)`. Drops `.`, folds `..`, rejects symlink traversal. Strictly one buffer per path (I-37).
+- **`Unit::Raw`**: Non-UTF-8 (overlong, surrogate, or incomplete) byte preserved byte-exact across open, edit, and save cycles (`D-01`).
+- **`DiskState`**: File metadata checkpoint: `Known { mtime: Duration, size: u64 }` (Unix epoch elapsed duration recorded on read/write) or `Unknown` (unopened file, scratch slot).
+- **`FilePath`**: UTF-8 absolute, lexically folded path constructed exclusively through `FilePath::resolve(cwd, input)`. Normalizes `/` and `\` separators while preserving drive/UNC prefixes, drops `.`, folds `..`, rejects symlink traversal. Non-UTF-8 paths are rejected at the shell boundary. Strictly one buffer per path (I-37).
 - **`StatTarget`**: Purpose of disk inspection: `Save(id)` (conflict check before write) or `SaveAs(id)` (overwrite check on existing target).
 - **`ReadTarget`**: Purpose of file load: `Open { line, show }` (new buffer creation) or `Revert(id)` (reloading existing buffer).
 - **`TooLarge`**: Boundary error when file size exceeds `max-file-size`; aborts buffer creation without partial reads (I-04).
@@ -74,27 +74,29 @@ The system partitions strictly into a pure functional core and an imperative she
 
 ### 2.2 Edit History and Anchors
 
-- **`Edit`**: Primitive buffer mutations: `Replace { pos, removed, inserted }` and `SetEol { from, to }`. Sole mutation path through `Editor::apply(Edit)` (I-31).
-- **Anchor snapping (`snap_anchors`)**: All cursor movements, mark placements, and edits clamp and snap `point` and `mark` within `0..=len` to valid UTF-8 boundaries (I-01).
+- **`Edit`**: Primitive buffer mutations: `Replace(weave_tree::Replace { offset, delete_len, insert: Doc })` and `SetEol { from, to }`. Sole mutation path through `Editor::apply(Edit)` (I-31).
+- **Anchor snapping (`snap_anchors`)**: All cursor movements, mark placements, and edits clamp and snap `point` and `mark` within `0..=total_bytes()` to valid UTF-8 boundaries (`Doc::floor_boundary`, `ceil_boundary`, I-01).
 - **`UndoLog` & `Group`**:
-  - In-memory Emacs-style undo (`C-/`, `C-_`) recording inverse edit transactions; no redo tree.
+  - In-memory Emacs-style undo (`C-/`, `C-_`) recording inverse edit transactions (`Doc::apply` returns `(next_doc, inverse_replace)` directly with CoW structural sharing); no redo tree.
   - Consecutive `self-insert` insertions amalgamate into a single group up to `amalgamating-undo-limit` (default 20 characters). Non-insert commands immediately seal the group.
   - Clean state restoration (I-41): undo groups opened while clean record save epoch. Undoing the full group restores clean status (`modified = false`) and removes WAL iff epoch matches.
   - Whole-buffer replacements (`Buffer::with_text`: revert, WAL restore, shell output) wipe undo history to prevent stale offset replay (I-34).
-  - Undo capacity is bounded by `Config.undo_limit`; `UndoLog` maintains no internal limit state (I-35). Closed groups exceeding a positive limit are evicted immediately on boundary.
-- **`KillRing`**: Ring buffer capped at `kill-ring-max` entries (default 120) per `push` (I-26). Consecutive kills (`kill-line`, `kill-word`, `C-w`) merge into the latest entry (I-09). `yank-pop` cycles entries strictly immediately after `LastCommand::Yank` (I-38).
+  - `Config.undo_limit` governs the undo byte budget (I-35). Undo compacts inverse inserts of at most `CHUNK_CAP` (1 KiB) when they would retain more than `CHUNK_CAP` backing bytes. Each text edit then charges the greater of its logical edit size and the full backing byte lengths retained by its inverse slices, conservatively counting shared allocations more than once. Closed groups exceeding a positive limit are evicted immediately on boundary.
+- **`KillRing`**: Ring buffer of CoW `Doc` slices (`Vec<Doc>`) capped at `kill-ring-max` entries (default 120) per `push` (I-26). `kill_range` and `kill_ring_save` extract slices in $O(\log^2 P)$ worst-case time via `Doc::slice`, consecutive kills (`kill-line`, `kill-word`, `C-w`) merge via `Doc::apply` (I-09), and `yank` / `yank-pop` insert `Doc` directly without UTF-8 re-parsing. `yank-pop` cycles entries strictly immediately after `LastCommand::Yank` (I-38). If the yank joined neighboring bytes into a UTF-8 unit, `yank-pop` leaves the text and ring unchanged.
 
 ### 2.3 Persistence and Crash Recovery (WAL)
 
-- **Write-Ahead Log (WAL)**: Sibling file `.<name>.wal` holding unsaved buffer text, flushed after 1.0s user idle delay. Both `Effect::FlushWal` and `Effect::WriteFile` stream `Text::slices()` directly from the shell without whole-buffer heap copies.
+- **Write-Ahead Log (WAL)**: Sibling file `.<name>.wal` holding unsaved edits, flushed after 1.0s user idle delay. Both `Effect::FlushWal` and `Effect::WriteFile` stream `Doc::try_for_each_slice` directly from the shell (`file::save_doc`, `wal::write_wal_deltas`, `wal::write_wal_doc`, `wal::write_scratch_doc`) without whole-buffer heap copies.
 - **`wal_dirty`**: Set on edit, cleared on flush. Managed only for `Backing::File` and `Backing::Scratch`; unbacked buffers never trigger disk writes.
-- **WAL wire format (`NEONWAL2`)**:
-  - Header: 8-byte magic `NEONWAL2`, target file size, modification timestamp (`mtime`), and EOL mode byte (`0` LF, `1` CRLF).
-  - Body: Raw UTF-8 bytes with embedded Latin-1 `Unit::Raw`.
-  - Legacy headers (`NEONWAL1`) or corrupted formats are treated as stale.
-- **Stale WAL (`.stale`)**: WAL conflicting with disk metadata, EOL, or header is renamed to `.<name>.wal.stale` (overwriting existing `.stale`) and never deleted automatically (I-44).
+- **WAL wire formats (`NEONWAL2` & `NEONWALD`)**:
+  - Shared 30-byte header: 8-byte magic (`NEONWAL2` or `NEONWALD`), EOL mode byte (`0` LF, `1` CRLF), `DiskState` tag (`0` `Unknown`, `1` `Known`), modification timestamp (`mtime`), and target file size.
+  - **`NEONWAL2` (full snapshot)**: Default write format, readable by older builds. After validating the header, recovery streams the payload verbatim into a `Doc`, without another pass of EOL normalization or an intermediate whole-payload buffer. Snapshots remain the fallback for `*scratch*`, unknown or non-replayable baselines, and over-budget delta logs.
+  - **`NEONWALD` (delta log)**: Tracking and writes require `set("wal-deltas", true)` in Lua; recovery accepts both formats regardless of this setting. Disabling tracking drops in-memory logs. Enabling it starts tracking only on the next open, save, or revert that establishes a replayable baseline. The shared header is followed by a 32-byte SHA-256 fingerprint of the normalized disk baseline and a 4-byte little-endian record count. Exactly that many `Replace` records (`offset`, `delete_len`, `insert_len`, insert bytes) must follow, then a 32-byte SHA-256 checksum of all preceding WAL bytes. No other trailing bytes are allowed. Zero records can carry an EOL-only change. The wire limits are 4,096 records and 4 MiB of record bytes. In memory, the editor charges each record header plus the insert's retained backing bytes, compacting small slices as in undo. Small documents may fall back to snapshots sooner.
+  - **Rollback after opting in**: Recover and save drafts with a delta-aware build before downgrading. If an older build has already renamed a delta WAL to `.stale`, close the old editor and move it back to the active WAL path without overwriting another draft. Reopen with a delta-aware build and the unchanged base file.
+  - Legacy headers (`NEONWAL1`), `NEONWALD` without a valid checksum or verifiable known disk baseline, and malformed or unapplicable logs are treated as stale.
+- **Stale WAL (`.stale`)**: WAL with a checksum mismatch, invalid header or EOL, mismatched disk metadata or baseline fingerprint, or failing delta replay against the loaded disk `Doc` is renamed to `.<name>.wal.stale` (overwriting existing `.stale`) and never deleted automatically (I-44).
 - **Scratch slot**: Persistent state slot at `$XDG_STATE_HOME/neonemacs/scratch.wal` (fallback `~/.local/state/neonemacs/scratch.wal`) for `*scratch*` (I-42, I-43). Cleared on clean undo, buffer kill, or confirmed quit.
-- **Unified recovery path (I-45)**: Buffer creation via file reading (`Effect::ReadFile { Open }`) is the sole path triggering `Effect::ProbeWal`. Valid WALs are restored atomically (`Editor::restore_buffer_content`), re-applying saved EOL mode and snapping view anchors.
+- **Unified recovery path (I-45)**: Buffer creation via file reading (`Effect::ReadFile { Open }`) is the sole path triggering `Effect::ProbeWal`. Valid `NEONWAL2` snapshots (`WalProbe::Valid`) restore atomically via `Editor::restore_buffer_content`, and `NEONWALD` delta logs are validated and replayed once against the loaded baseline. `WalProbe::ValidDelta` carries the resulting `Doc` and original records; `Editor::restore_buffer_deltas` installs the `Doc` and retains the records only when tracking is enabled and they fit the budget. Both paths restore the saved EOL mode and snap view anchors.
 
 ### 2.4 Keys, Input, and Modal Interaction
 
@@ -177,11 +179,12 @@ The system partitions strictly into a pure functional core and an imperative she
 - **1-second WAL debounce**: WAL writes occur after 1.0s continuous idle delay. Eliminates per-keystroke I/O bottlenecks and SSD wear, eliminating editing latency while capping crash data loss at 1 second.
 - **Stale WAL preservation**: Conflicting, outdated, or corrupted WALs are renamed to `.stale` and never automatically pruned (I-44). Prevents data destruction when external processes modify the base file, retaining manual forensic recovery.
 - **Scratch slot durability**: Unbacked `*scratch*` buffer has a dedicated state file slot (`Documents.scratch_slot`, I-42, I-43) persisting unsaved text across crashes with the same guarantees as file-backed buffers.
-- **Oversized file rejection upfront**: Files exceeding `max-file-size` (default 64 MiB) are rejected during read targets without loading partial bytes (I-04). Avoids opening truncated prefixes that risk destroying unread data on save.
+- **Oversized file rejection upfront**: Files exceeding `max-file-size` (default 512 MiB) are rejected during read targets without loading partial bytes (I-04). Avoids opening truncated prefixes that risk destroying unread data on save. For accepted files, streaming document allocation failures return an I/O error without publishing a partial buffer.
 - **Lexical path canonicalization**: Paths normalize strictly via lexical folding (`.` dropped, `..` folded) against working directory without resolving symlinks (I-37), ensuring deterministic buffer mapping without symlink loops or blocking.
 
 ### 4.3 Editing and Text Model
 
+- **Immutable CoW slice B-Tree (`Weave Tree`)**: `Doc` (`crates/neonemacs-core/src/weave_tree/`) replaces the gap buffer (`text.rs`). Keeps strict RFC 3629 `Unit` boundaries (`D-01`), O(log² P) worst-case split-based edits and O(log P) line-index queries (`D-02`, `D-03`), CoW sharing for `UndoLog` inverse `Replace` patches (`D-04`), and zero `&mut` signatures (`D-05`, I-18); the pure CoW baseline is active (`H1` `Arc::get_mut` and `H2` parameter sweeps deferred).
 - **Safe edit pipeline**: All text modifications and EOL conversions pass through `Editor::apply(Edit)` (I-31). Centralizes undo recording, modified flags, WAL dirtying, and view-only checks.
 - **Save epoch clean tracking**: Undo groups record save epoch if opened while clean. Undoing restores clean status and removes WAL iff current epoch matches (I-03, I-41), accurately clearing dirty flags without diffing.
 - **Undo log wiping on external replacement**: Wholesale buffer text replacements (`Buffer::with_text`) invalidate and wipe the undo log (I-34). Prevents replaying historical relative offsets against replaced content.
@@ -207,7 +210,7 @@ This table consolidates all operational and structural invariants governing `neo
 | ID | Invariant Definition | Enforcement Mechanism |
 | :--- | :--- | :--- |
 | **I-01** | Cursor (`point`), saved cursor (`saved_point`), and `mark` are strictly clamped within `0..=len` and snapped to valid UTF-8 character boundaries. | Runtime (`snap_anchors`, `Buffer` encapsulation) |
-| **I-02** | Gap buffer byte boundaries are strictly local and continuous. | Data structure (`crates/neonemacs-core/src/text.rs`) |
+| **I-02** | Document byte and `Unit` boundaries are strictly local, continuous, and never split across `ByteSlice` leaves (`D-01`). | Data structure (`crates/neonemacs-core/src/weave_tree/`) |
 | **I-03** | A buffer is clean (`modified = false`) iff its text matches the last read/saved disk baseline. Edits mark it modified; clean saves, reverts, `mark_clean`, and epoch-matched undos (I-41) clear it. | Runtime (`Buffer::apply_edit`, `record_saved`, `replace_from_disk`, `mark_clean`) |
 | **I-04** | Saving checks for external disk modification (including files created externally after open). `write-file` confirms existing target overwrite. Files exceeding `max-file-size` are rejected upfront without partial buffer creation. `WriteFile` is emitted only after validation/confirmation. | Type (`loaded_from` -> `Result`) + Runtime (`save_buffer`, `Confirm`) |
 | **I-05** | A successful disk write records fresh filesystem metadata (`DiskState::Known { mtime, size }`). | Type (`Event::Written`) |
@@ -226,9 +229,9 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-18** | Zero `&mut` references in any `neonemacs-core` function signatures, return types, or struct fields. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
 | **I-19** | Selected window index is strictly bounded: `selected < layout.leaf_count()`. | Runtime (`WindowTree`) |
 | **I-20** | Any buffer ID passed to `with_buffer` exists within the buffer pool. | Runtime (`BufferPool::with_buffer`) |
-| **I-21** | The shell's `RefCell<Option<Editor>>` is `None` strictly during `step`, and no borrow is held across Lua invocations; effect execution only holds a short immutable borrow scoped strictly to slice reads during `WriteFile` and `FlushWal`. | Runtime (`shell::step_in`, `perform_in`, `perform`, Lua `run`) |
+| **I-21** | The shell's `RefCell<Option<Editor>>` is `None` strictly during `step`, and no borrow is held across Lua invocations; effect execution only holds a short immutable borrow scoped strictly to slice reads during `WriteFile` and `FlushWal`, or cloning the baseline `Doc` during `ProbeWal`. | Runtime (`shell::step_in`, `perform_in`, `perform`, Lua `run`) |
 | **I-22** | Terminal ANSI escape sequences do not affect character display widths, coordinate mapping, or differential screen updates. | Type + Output render queue (`session/screen.rs`) |
-| **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. Header records EOL mode (`NEONWAL2`). | Runtime (`wal.rs`) |
+| **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. Header records EOL mode (`NEONWAL2` snapshot or `NEONWALD` delta log). | Runtime (`wal.rs`) |
 | **I-24** | Background shell execution is non-blocking with spinner animation; concurrent execution requests are rejected with busy notices. | Runtime + Worker thread channel (`mpsc`) |
 | **I-25** | Clean saves, reverts, buffer closes, and confirmed quits delete sibling WAL. `write-file` deletes old WAL strictly upon write success. | Runtime (`wal.rs`) |
 | **I-26** | `KillRing` is encapsulated, maintaining at most `kill-ring-max` entries per `push`. `from_entries` is test-only. | Data structure (`KillRing`) |
@@ -238,7 +241,7 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-32** | `Editor` internal groups (`Documents`, `Interaction`, `Settings`) are private to `editor`; cross-group interactions compose exclusively in `Editor` methods. | Module privacy (`crates/neonemacs-core/src/editor/`) |
 | **I-33** | *Retired*: Renumbered as I-31. | - |
 | **I-34** | Whole-buffer text replacements (`Buffer::with_text`) wipe undo history to prevent replaying stale offsets against replaced content. | Runtime (`Buffer::with_text`) |
-| **I-35** | Undo log memory cap is governed strictly by `Config.undo_limit`; `UndoLog` maintains no internal limit state, and `close_with_limit` evicts oversized closed groups when `limit > 0`. | Type (`UndoLog::record(edit, limit)`, `UndoLog::close_with_limit(limit)`) |
+| **I-35** | The undo byte budget, including inverse backing bytes, is governed strictly by `Config.undo_limit`; `UndoLog` maintains no internal limit state, and `close_with_limit` evicts oversized closed groups when `limit > 0`. | Type (`UndoLog::record(edit, limit)`, `UndoLog::close_with_limit(limit)`) |
 | **I-36** | `write-file` updates buffer path, name, and old WAL strictly upon `Event::Written` success. | Type (`Event::Written { id, path, result }`) |
 | **I-37** | `FilePath` is constructed exclusively through `FilePath::resolve` (lexical folding of `.` and `..`); strictly one buffer visits a given path. | Type (`FilePath`) + Runtime (`commands/file.rs`) |
 | **I-38** | `LastCommand::Yank` remains valid strictly until the immediately following command or edit. | Runtime (`Editor::apply`) |
@@ -263,6 +266,16 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-57** | Lua runtime accesses host filesystem and processes strictly via exposed editor APIs; sandbox restricts access to base, `string`, `table`, `math`, and `utf8` without `dofile` or `loadfile`. | Boundary (`lua::new_state`) |
 | **I-58** | Successful `reload-init` swaps configuration and Lua runtime while preserving buffers, windows, and kill ring. Rejected or Lua-invoked reloads preserve existing state. | Type (`Editor::adopt_settings`) + Runtime (`reload_init`) |
 | **I-59** | Core top-level crate module references are strictly acyclic, except the documented cycle between `commands` and `dispatch`. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
+
+### 5.1 Weave Tree Data Structure Invariants (`D-01`..`D-05`)
+
+| ID | Invariant Definition | Enforcement Mechanism |
+| :--- | :--- | :--- |
+| **D-01** | **Unit Boundary & Strict UTF-8 Integrity**: Every `ByteSlice` endpoint, split point, edit endpoint, and boundary-checked query endpoint lies on a valid `Unit` boundary. Edits, slice streams, and `offset_to_line` return `DocError::InvalidBoundary` for offsets inside a unit; raw byte reads (`byte_at`) may read inside a unit. Only RFC 3629 UTF-8 sequences decode as `Unit::Char`; all other bytes remain `Unit::Raw(u8)`. Adjacent `Unit::Raw` bytes (up to 3B) across edit seams are re-merged into `Unit::Char` (`k_left`/`k_right` 3-way and 2-way seam merge) without splitting any `Unit` across slice boundaries. | Boundary validation + `compute_seam_merge` (`weave_tree/utf8.rs`, `proptest`) |
+| **D-02** | **Tree Balance, Fanout & Chunk Bounds**: All leaves share equal depth; non-root nodes hold `[MIN_FANOUT, MAX_FANOUT]` children (`16..=32`), root `Leaf` holds `1..=MAX_FANOUT`, root `Internal` holds `2..=MAX_FANOUT`, empty `Doc` has `root == None`. Every `ByteSlice` satisfies `1 <= range.len() <= MAX_SLICE_BYTES` (`16384`). | `from_slices`, `split_at`, `join` (`weave_tree/tree.rs`, `assert_invariants`) |
+| **D-03** | **Summary Metadata Consistency**: `ByteSlice.line_breaks` equals `\n` count in `buf[range]`; `ChildEntry.(bytes, line_breaks)` equals the sum of its subtree. `total_bytes()` and `total_lines()` equal `(bytes, 1 + line_breaks)` of `root` (`(0, 1)` when empty). | `summarize_leaf`, `summarize_internal` (`weave_tree/tree.rs`, `assert_invariants`) |
+| **D-04** | **Operation Reversibility & Position Independence**: Every successful `apply`/`replace` returns an inverse `Replace` such that `next_doc.apply(inv)` succeeds and restores `doc' == doc`. `Replace` stores only logical offsets and an immutable `Doc`, eliminating dangling references across tree rebalancing. | `Doc::apply` + `weave_tree_proptest` |
+| **D-05** | **Observational Purity & Core Isolation**: `Doc` forbids `std::io` and `&mut` in all signatures, return types, and persistent struct fields (`I-18`), exposing bidirectional zero-copy streaming via `ControlFlow<B>` closures (`try_for_each_slice`, `try_for_each_slice_rev`). | `tests/purity.rs` (`I-14`, `I-18`) |
 
 ---
 

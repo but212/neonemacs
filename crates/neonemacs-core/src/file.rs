@@ -1,48 +1,120 @@
 //! Buffer backing, and the buffer that a file read produces. Pure: the bytes come from the shell.
 
-use crate::eol::Eol;
-use crate::text::Text;
-use std::path::{Component, Path, PathBuf};
-use std::time::SystemTime;
+use crate::eol::{Eol, EolStreamDecoder};
+use crate::weave_tree::Doc;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskState {
-    Known { mtime: SystemTime, size: u64 },
+    Known { mtime: Duration, size: u64 },
     Unknown,
 }
 
 /// The absolute path of a file. `resolve` is its only constructor, so two buffers visiting the
 /// same file hold equal values (I-37).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FilePath(PathBuf);
+pub struct FilePath(String);
+
+fn is_sep(b: u8) -> bool {
+    b == b'/' || b == b'\\'
+}
+
+/// Splits a path into `(prefix, has_root, rest)`.
+/// Recognizes Windows drive (`C:`) and UNC (`\\server\share` / `//server/share`) prefixes.
+fn split_prefix(path: &str) -> (&str, bool, &str) {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && is_sep(bytes[0]) && is_sep(bytes[1]) && !is_sep(bytes[2]) {
+        // UNC: `\\server\share` or `//server/share`
+        let after_slashes = &path[2..];
+        if let Some(s_end) = after_slashes.find(['/', '\\']) {
+            let after_server = &after_slashes[s_end + 1..];
+            let share_end = after_server.find(['/', '\\']).unwrap_or(after_server.len());
+            let prefix_len = 2 + s_end + 1 + share_end;
+            let rest = &path[prefix_len..];
+            let rest = rest.strip_prefix(['/', '\\']).unwrap_or(rest);
+            return (&path[..prefix_len], true, rest);
+        }
+        return (path, true, "");
+    }
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let rest = &path[2..];
+        let has_root = rest.as_bytes().first().is_some_and(|&b| is_sep(b));
+        let rest = if has_root { &rest[1..] } else { rest };
+        return (&path[..2], has_root, rest);
+    }
+    let has_root = bytes.first().is_some_and(|&b| is_sep(b));
+    let rest = if has_root { &path[1..] } else { path };
+    ("", has_root, rest)
+}
+
+fn push_segments<'a>(mut segments: Vec<&'a str>, rest: &'a str, anchored: bool) -> Vec<&'a str> {
+    for seg in rest.split(['/', '\\']) {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if segments.last().is_some_and(|&s| s != "..") {
+                    segments.pop();
+                } else if !anchored {
+                    segments.push("..");
+                }
+            }
+            s => segments.push(s),
+        }
+    }
+    segments
+}
 
 impl FilePath {
     /// Joins `input` onto `cwd` and folds the result lexically: `.` is dropped and `..` removes the
     /// component before it. A relative path keeps the `..` it cannot fold. No link is followed, so
     /// the function is pure (I-14).
     #[must_use]
-    pub fn resolve(cwd: &Path, input: &Path) -> Self {
-        let mut out = PathBuf::new();
-        for c in cwd.join(input).components() {
-            match c {
-                Component::CurDir => {}
-                Component::ParentDir => match out.components().next_back() {
-                    Some(Component::Normal(_)) => {
-                        out.pop();
-                    }
-                    Some(Component::RootDir | Component::Prefix(_)) => {}
-                    _ => out.push(".."),
-                },
-                c => out.push(c.as_os_str()),
+    pub fn resolve(cwd: &str, input: &str) -> Self {
+        let (cwd_prefix, cwd_root, cwd_rest) = split_prefix(cwd);
+        let (in_prefix, in_root, in_rest) = split_prefix(input);
+
+        let (prefix, has_root, combined_first, combined_second) = if !in_prefix.is_empty() {
+            (in_prefix, in_root, in_rest, "")
+        } else if in_root {
+            (cwd_prefix, true, in_rest, "")
+        } else {
+            (cwd_prefix, cwd_root, cwd_rest, in_rest)
+        };
+
+        let anchored = has_root || !prefix.is_empty();
+        let segments = push_segments(Vec::new(), combined_first, anchored);
+        let segments = push_segments(segments, combined_second, anchored);
+
+        let mut out = String::new();
+        out.push_str(prefix);
+        if has_root {
+            out.push('/');
+        }
+        for (i, seg) in segments.iter().enumerate() {
+            if i > 0 {
+                out.push('/');
             }
+            out.push_str(seg);
         }
         Self(out)
     }
 
     #[must_use]
-    pub fn as_path(&self) -> &Path {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// The last normal path segment of `path`, or `None` when it has none (e.g. `/` or `\\server\share`).
+#[must_use]
+pub(crate) fn file_name(path: &str) -> Option<&str> {
+    let (_, _, rest) = split_prefix(path);
+    rest.rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .filter(|&s| s != "." && s != "..")
 }
 
 /// What a file read found.
@@ -54,11 +126,26 @@ pub enum Read {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawFile {
-    /// Length on disk, which can exceed `bytes.len()`.
+    /// Length on disk, which can exceed `doc.total_bytes()`.
     pub len: u64,
     pub disk: DiskState,
-    /// The whole file, or empty when `len` exceeds `max_size`.
-    pub bytes: Vec<u8>,
+    /// Normalized document tree, or empty when `len` exceeds `max_size`.
+    pub doc: Doc,
+    /// Detected line ending mode (`None` if no `\n` was seen).
+    pub eol: Option<Eol>,
+}
+
+impl RawFile {
+    #[must_use]
+    pub fn from_bytes(len: u64, disk: DiskState, raw: &[u8]) -> Self {
+        let (doc, eol) = EolStreamDecoder::new().push_chunk(raw).finish();
+        Self {
+            len,
+            disk,
+            doc,
+            eol,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,9 +185,9 @@ impl Backing {
     }
 
     #[must_use]
-    pub fn path(&self) -> Option<&Path> {
+    pub fn path(&self) -> Option<&str> {
         match self {
-            Self::File { path, .. } => Some(path.as_path()),
+            Self::File { path, .. } => Some(path.as_str()),
             Self::None | Self::Scratch { .. } => None,
         }
     }
@@ -150,7 +237,7 @@ impl Backing {
 }
 
 pub struct Loaded {
-    pub text: Text,
+    pub text: Doc,
     pub backing: Backing,
     pub eol: Eol,
 }
@@ -186,7 +273,7 @@ pub fn loaded_from(
 ) -> Result<Loaded, TooLarge> {
     match read {
         Read::Missing => Ok(Loaded {
-            text: Text::default(),
+            text: Doc::default(),
             backing: Backing::file(path.clone(), DiskState::Unknown),
             eol: default_eol,
         }),
@@ -197,9 +284,9 @@ pub fn loaded_from(
                     max: max_size,
                 });
             }
-            let (eol, text) = Eol::from_raw(raw.bytes, default_eol);
+            let eol = raw.eol.unwrap_or(default_eol);
             Ok(Loaded {
-                text: Text::from_vec(text),
+                text: raw.doc,
                 backing: Backing::file(path.clone(), raw.disk),
                 eol,
             })
@@ -214,21 +301,11 @@ mod tests {
     use super::*;
 
     fn found(len: u64, bytes: &[u8]) -> Read {
-        Read::Found(RawFile {
-            len,
-            disk: DiskState::Unknown,
-            bytes: bytes.to_vec(),
-        })
+        Read::Found(RawFile::from_bytes(len, DiskState::Unknown, bytes))
     }
 
     fn load(read: Read, max_size: u64) -> Loaded {
-        loaded_from(
-            &FilePath::resolve(Path::new(""), Path::new("f")),
-            read,
-            max_size,
-            Eol::Lf,
-        )
-        .unwrap()
+        loaded_from(&FilePath::resolve("", "f"), read, max_size, Eol::Lf).unwrap()
     }
 
     #[test]
@@ -247,57 +324,65 @@ mod tests {
 
     #[test]
     fn resolve_folds_parent() {
-        let cwd = Path::new("/w");
-        let expected = Path::new("/w/a.txt");
-        assert_eq!(
-            FilePath::resolve(cwd, Path::new("./a.txt")).as_path(),
-            expected
-        );
-        assert_eq!(
-            FilePath::resolve(cwd, Path::new("a.txt")).as_path(),
-            expected
-        );
-        assert_eq!(
-            FilePath::resolve(cwd, Path::new("/w/./a.txt")).as_path(),
-            expected
-        );
-        assert_eq!(
-            FilePath::resolve(cwd, Path::new("../w/a.txt")).as_path(),
-            expected
-        );
-        assert_eq!(
-            FilePath::resolve(cwd, Path::new("a/../b.txt")).as_path(),
-            Path::new("/w/b.txt")
-        );
-        assert_eq!(
-            FilePath::resolve(cwd, Path::new("/..")).as_path(),
-            Path::new("/")
-        );
+        let cwd = "/w";
+        let expected = "/w/a.txt";
+        assert_eq!(FilePath::resolve(cwd, "./a.txt").as_str(), expected);
+        assert_eq!(FilePath::resolve(cwd, "a.txt").as_str(), expected);
+        assert_eq!(FilePath::resolve(cwd, "/w/./a.txt").as_str(), expected);
+        assert_eq!(FilePath::resolve(cwd, "../w/a.txt").as_str(), expected);
+        assert_eq!(FilePath::resolve(cwd, "a/../b.txt").as_str(), "/w/b.txt");
+        assert_eq!(FilePath::resolve(cwd, "/..").as_str(), "/");
     }
 
     #[test]
     fn resolve_keeps_leading_parent_of_relative_path() {
-        let cwd = Path::new("");
+        let cwd = "";
+        assert_eq!(FilePath::resolve(cwd, "../x").as_str(), "../x");
+        assert_eq!(FilePath::resolve(cwd, "a/../../x").as_str(), "../x");
+    }
+
+    #[test]
+    fn resolve_handles_windows_prefixes_and_separators() {
         assert_eq!(
-            FilePath::resolve(cwd, Path::new("../x")).as_path(),
-            Path::new("../x")
+            FilePath::resolve(r"C:\work\proj", r"..\other\a.txt").as_str(),
+            "C:/work/other/a.txt"
         );
         assert_eq!(
-            FilePath::resolve(cwd, Path::new("a/../../x")).as_path(),
-            Path::new("../x")
+            FilePath::resolve(r"C:\work", r"C:\..\root.txt").as_str(),
+            "C:/root.txt"
+        );
+        assert_eq!(
+            FilePath::resolve(r"\\server\share\dir", r"..\file.txt").as_str(),
+            r"\\server\share/file.txt"
+        );
+        assert_eq!(
+            FilePath::resolve(r"\\server\share", "file.txt").as_str(),
+            r"\\server\share/file.txt"
+        );
+        assert_eq!(
+            FilePath::resolve("", r"\\server\share"),
+            FilePath::resolve("", r"\\server\share\a\..")
+        );
+        assert_eq!(FilePath::resolve("/w", "///w/a.txt").as_str(), "/w/a.txt");
+        assert_eq!(FilePath::resolve("", "///a/b/../..").as_str(), "/");
+        assert_eq!(file_name(FilePath::resolve("", "/").as_str()), None);
+        assert_eq!(file_name(r"\\server\share"), None);
+        assert_eq!(
+            file_name(FilePath::resolve("/w", "a.txt").as_str()),
+            Some("a.txt")
         );
     }
 
     #[test]
     fn a_missing_file_takes_the_default_eol() {
-        let path = FilePath::resolve(Path::new(""), Path::new("new.txt"));
+        let path = FilePath::resolve("", "new.txt");
         let loaded = loaded_from(&path, Read::Missing, 4, Eol::Crlf).unwrap();
         assert_eq!(loaded.eol, Eol::Crlf);
     }
 
     #[test]
     fn oversized_file_is_refused() {
-        let big = FilePath::resolve(Path::new(""), Path::new("big.txt"));
+        let big = FilePath::resolve("", "big.txt");
         let err = loaded_from(&big, found(10, b"0123"), 4, Eol::Lf).err();
         assert_eq!(err, Some(TooLarge { len: 10, max: 4 }));
     }
@@ -305,7 +390,7 @@ mod tests {
     #[test]
     fn file_at_size_limit_is_loaded_whole() {
         let loaded = load(found(4, b"0123"), 4);
-        assert_eq!(loaded.text.to_bytes(), b"0123");
+        assert_eq!(loaded.text, Doc::from_bytes(b"0123"));
     }
 
     #[test]
@@ -317,7 +402,7 @@ mod tests {
     #[test]
     fn missing_file_has_unknown_disk_state() {
         let loaded = load(Read::Missing, 1 << 20);
-        assert_eq!(loaded.text.len(), 0);
+        assert_eq!(loaded.text.total_bytes(), 0);
         assert!(matches!(
             loaded.backing,
             Backing::File {
@@ -331,7 +416,7 @@ mod tests {
     fn crlf_file_loads_as_normalized_text() {
         let loaded = load(found(6, b"a\r\nb\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
     }
 
     #[test]
@@ -344,57 +429,53 @@ mod tests {
     fn mixed_file_is_normalized_with_majority_mode() {
         let loaded = load(found(5, b"a\r\nb\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
     }
 
     #[test]
     fn lone_cr_is_not_a_line_ending() {
         let loaded = load(found(3, b"a\rb"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text.to_bytes(), b"a\rb");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\rb"));
     }
 
     #[test]
     fn crlf_only_file_becomes_one_newline() {
         let loaded = load(found(2, b"\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"\n"));
     }
 
     #[test]
     fn double_cr_before_lf_keeps_one_cr_in_text() {
         let loaded = load(found(4, b"a\r\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\r\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\r\n"));
     }
 
     #[test]
     fn empty_file_is_lf_and_empty() {
         let loaded = load(found(0, b""), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
-        assert!(loaded.text.is_empty());
+        assert_eq!(loaded.text.total_bytes(), 0);
     }
 
     #[test]
     fn crlf_at_size_limit_is_loaded_and_normalized() {
         let loaded = load(found(6, b"a\r\nb\r\n"), 6);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
     }
 
     #[test]
     fn disk_size_is_raw_size_not_normalized_length() {
         let disk = DiskState::Known {
-            mtime: SystemTime::UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 3,
         };
-        let read = Read::Found(RawFile {
-            len: 3,
-            disk,
-            bytes: b"a\r\n".to_vec(),
-        });
+        let read = Read::Found(RawFile::from_bytes(3, disk, b"a\r\n"));
         let loaded = load(read, 1 << 20);
-        assert_eq!(loaded.text.len(), 2);
+        assert_eq!(loaded.text.total_bytes(), 2);
         assert!(matches!(
             loaded.backing,
             Backing::File { disk: d, .. } if d == disk
@@ -418,7 +499,7 @@ mod tests {
                 }
                 let loaded = load(found(raw.len() as u64, &raw), 1 << 20);
                 assert_eq!(
-                    loaded.eol.encode(&loaded.text.to_bytes()),
+                    crate::test_support::doc_encode_eol(&loaded.text, loaded.eol),
                     raw,
                     "raw={raw:?}"
                 );

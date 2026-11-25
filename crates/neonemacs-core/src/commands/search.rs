@@ -10,6 +10,10 @@ use crate::effect::Effects;
 use crate::keymap::{Code, Key};
 use crate::search::{self, Pattern};
 use crate::undo::Edit;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 pub(crate) fn isearch_forward(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (
@@ -109,7 +113,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
     let fold = ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH);
     let mut wrapped = false;
     let text = ed.buffer().text();
-    let mut found = if !wrap && s.direction == Direction::Backward && from <= text.len() {
+    let mut found = if !wrap && s.direction == Direction::Backward && from <= text.total_bytes() {
         pattern
             .match_at(text, from, fold)
             .map(|end| (from, end))
@@ -121,7 +125,7 @@ fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor,
         let other_end = if s.direction == Direction::Forward {
             0
         } else {
-            ed.buffer().text().len()
+            ed.buffer().text().total_bytes()
         };
         found = find_in_direction(&ed, &pattern, s.direction, other_end, fold);
         wrapped = found.is_some();
@@ -199,7 +203,7 @@ pub fn start_query_replace(
 }
 
 fn next_match(ed: &Editor, pattern: &Pattern, fold: bool, from: usize) -> Option<(usize, usize)> {
-    if from > ed.buffer().text().len() {
+    if from > ed.buffer().text().total_bytes() {
         return None;
     }
     search::find_forward(ed.buffer().text(), pattern, from, fold)
@@ -257,17 +261,23 @@ fn replace_match(
     start: usize,
     end: usize,
 ) -> (Editor, Option<usize>) {
-    let matched = ed.buffer().text().bytes(start..end);
     let replacement = match q.kind {
-        MatchKind::Regex => search::expand_replacement(&q.replacement, &matched),
+        MatchKind::Regex => {
+            let mut matched = Vec::with_capacity(end.saturating_sub(start));
+            let _ = ed.buffer().text().try_for_each_slice(start..end, |chunk| {
+                matched.extend_from_slice(chunk);
+                core::ops::ControlFlow::<()>::Continue(())
+            });
+            search::expand_replacement(&q.replacement, &matched)
+        }
         MatchKind::Literal => q.replacement.as_bytes().to_vec(),
     };
     let after = start + replacement.len();
-    let (ed, applied) = ed.apply(Edit::Replace {
-        pos: start,
-        removed: matched,
-        inserted: replacement,
-    });
+    let (ed, applied) = ed.apply(Edit::replace(
+        start,
+        end - start,
+        crate::weave_tree::Doc::from_bytes(&replacement),
+    ));
     if applied.is_none() {
         return (ed, None);
     }
@@ -281,10 +291,11 @@ fn replace_match(
 fn resume(ed: &Editor, after: usize, matched_empty: bool) -> usize {
     let text = ed.buffer().text();
     if !matched_empty {
-        after
-    } else if after >= text.len() {
+        // An edit can join raw bytes into a unit that straddles `after`.
+        text.ceil_boundary(after)
+    } else if after >= text.total_bytes() {
         // Past the end: no later match can start, so the search finishes.
-        text.len() + 1
+        text.total_bytes() + 1
     } else {
         text.next_boundary(after)
     }
@@ -331,6 +342,8 @@ pub(crate) fn query_replace_regexp_cmd(ed: Editor, fx: Effects) -> (Editor, Effe
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::test_support::{editor, keys, point, run_command, text, typ};
 
@@ -545,6 +558,45 @@ mod tests {
         });
         let ed = keys(ed, "!");
         assert_eq!(text(&ed), "-a-b-");
+    }
+
+    #[test]
+    fn bulk_query_replace_keeps_small_inverses_undoable() {
+        use crate::config::Config;
+        use crate::weave_tree::{Doc, MAX_SLICE_BYTES};
+
+        const MATCHES: usize = 257;
+        let mut bytes = vec![b'a'; MATCHES * MAX_SLICE_BYTES];
+        for chunk in bytes.as_chunks_mut::<MAX_SLICE_BYTES>().0 {
+            chunk[MAX_SLICE_BYTES / 2] = b'X';
+        }
+        let original = Doc::from_bytes(&bytes);
+        let ed = editor()
+            .set_config(Config {
+                toggles: Toggles::empty(),
+                ..Config::default()
+            })
+            .with_current_buffer(|b| b.with_text(original.clone()));
+        let ed = keys(start_query(ed, "X", "Y", MatchKind::Literal), "!");
+        assert_eq!(ed.message(), "Replaced 257 occurrence(s)");
+        assert_eq!(ed.buffer().text().byte_at(MAX_SLICE_BYTES / 2), Some(b'Y'));
+        let ed = keys(ed, "C-/");
+        assert_eq!(ed.buffer().text(), &original);
+    }
+
+    #[test]
+    fn query_replace_continues_after_joining_utf8_bytes() {
+        let ed = editor()
+            .with_current_buffer(|b| {
+                b.with_text(crate::weave_tree::Doc::from_bytes(&[
+                    0xC3, b'X', 0xA9, b'X',
+                ]))
+            })
+            .move_point(1);
+        let ed = start_query(ed, "X*", "", MatchKind::Regex);
+        let ed = keys(ed, "!");
+        assert_eq!(text(&ed), "é");
+        assert_eq!(ed.message(), "Replaced 3 occurrence(s)");
     }
 
     #[test]

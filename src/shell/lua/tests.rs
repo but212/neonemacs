@@ -86,7 +86,7 @@ fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let ed = ed.with_current_buffer(|b| {
         b.set_name("test.rs")
-            .with_text(crate::core::Text::from_bytes(b"hello\nworld \xff tail\n"))
+            .with_text(crate::core::Doc::from_bytes(b"hello\nworld \xff tail\n"))
     });
 
     // M-f from pos 0
@@ -113,7 +113,7 @@ fn word_and_comment_commands_preserve_raw_non_utf8_bytes() {
         ed.message()
     );
     assert!(
-        ed.buffer().text().to_bytes().contains(&0xff),
+        crate::test_support::doc_bytes(ed.buffer().text()).contains(&0xff),
         "Raw byte 0xff was lost or corrupted!"
     );
 }
@@ -124,7 +124,7 @@ fn text_fill_paragraph_in_lua() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test",
-        crate::core::Text::from_bytes(b"  hello world foo bar"),
+        crate::core::Doc::from_bytes(b"  hello world foo bar"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -139,8 +139,8 @@ fn text_fill_paragraph_in_lua() {
     let (ed, res) = script(&lua, ed, r#"run("fill-paragraph")"#);
     res.unwrap();
     assert_eq!(
-        ed.buffer().text().to_bytes(),
-        b"  hello\n  world foo\n  bar"
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b"  hello\n  world foo\n  bar")
     );
 }
 
@@ -150,7 +150,7 @@ fn text_word_and_buffer_motion() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test",
-        crate::core::Text::from_bytes(b"hello world neon"),
+        crate::core::Doc::from_bytes(b"hello world neon"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -190,7 +190,7 @@ fn text_kill_word_and_backward() {
 
     let (ed, id) = ed.add_buffer(
         "test_kill",
-        crate::core::Text::from_bytes(b"hello world and neon"),
+        crate::core::Doc::from_bytes(b"hello world and neon"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -202,16 +202,22 @@ fn text_kill_word_and_backward() {
     // kill-word from point 0
     let (ed, res) = script(&lua, ed, r#"run("kill-word")"#);
     res.unwrap();
-    assert_eq!(ed.buffer().text().to_bytes(), b" world and neon");
+    assert_eq!(
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b" world and neon")
+    );
     assert_eq!(ed.window().point, 0);
 
     // move to end and backward-kill-word
-    let len = ed.buffer().text().len();
+    let len = ed.buffer().text().total_bytes();
     let ed = ed.move_point(len);
     let (ed, res) = script(&lua, ed, r#"run("backward-kill-word")"#);
     res.unwrap();
-    assert_eq!(ed.buffer().text().to_bytes(), b" world and ");
-    assert_eq!(ed.window().point, ed.buffer().text().len());
+    assert_eq!(
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b" world and ")
+    );
+    assert_eq!(ed.window().point, ed.buffer().text().total_bytes());
 }
 
 #[test]
@@ -220,7 +226,7 @@ fn text_word_backward_stops_at_line_start() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test_multiline",
-        crate::core::Text::from_bytes(b"hello\nworld"),
+        crate::core::Doc::from_bytes(b"hello\nworld"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -241,7 +247,7 @@ fn text_kill_word_backward_at_line_start() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test_kill_multiline",
-        crate::core::Text::from_bytes(b"hello\nworld"),
+        crate::core::Doc::from_bytes(b"hello\nworld"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -253,7 +259,10 @@ fn text_kill_word_backward_at_line_start() {
     // backward-kill-word: should kill only "world", leaving "hello\n"
     let (ed, res) = script(&lua, ed, r#"run("backward-kill-word")"#);
     res.unwrap();
-    assert_eq!(ed.buffer().text().to_bytes(), b"hello\n");
+    assert_eq!(
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b"hello\n")
+    );
     assert_eq!(ed.window().point, 6);
 }
 
@@ -263,7 +272,7 @@ fn text_word_forward_across_empty_lines() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test_empty_lines",
-        crate::core::Text::from_bytes(b"hello\n\n\nworld"),
+        crate::core::Doc::from_bytes(b"hello\n\n\nworld"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -286,7 +295,7 @@ fn text_word_multibyte_backward_at_line_start() {
     let len = text_bytes.len();
     let (ed, id) = ed.add_buffer(
         "test_multibyte",
-        crate::core::Text::from_bytes(text_bytes),
+        crate::core::Doc::from_bytes(text_bytes),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -308,7 +317,7 @@ fn test_comment_dwim_integration() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test.rs",
-        crate::core::Text::from_bytes(b"    let x = 1;\n    let y = 2;"),
+        crate::core::Doc::from_bytes(b"    let x = 1;\n    let y = 2;"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -321,41 +330,41 @@ fn test_comment_dwim_integration() {
     let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
     res.unwrap();
     assert_eq!(
-        ed.buffer().text().to_bytes(),
-        b"    // let x = 1;\n    let y = 2;"
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b"    // let x = 1;\n    let y = 2;")
     );
 
     // Uncommenting single line with comment-dwim
     let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
     res.unwrap();
     assert_eq!(
-        ed.buffer().text().to_bytes(),
-        b"    let x = 1;\n    let y = 2;"
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b"    let x = 1;\n    let y = 2;")
     );
 
     // Region multi-line comment
     let ed = ed.with_current_buffer(|b| b.set_mark(Some(0)));
-    let len = ed.buffer().text().len();
+    let len = ed.buffer().text().total_bytes();
     let ed = ed.move_point(len);
     let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
     res.unwrap();
     assert_eq!(
-        ed.buffer().text().to_bytes(),
-        b"    // let x = 1;\n    // let y = 2;"
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b"    // let x = 1;\n    // let y = 2;")
     );
 
     // Region multi-line uncomment
     let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
     res.unwrap();
     assert_eq!(
-        ed.buffer().text().to_bytes(),
-        b"    let x = 1;\n    let y = 2;"
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b"    let x = 1;\n    let y = 2;")
     );
 
     // Missing syntax error message
     let (ed, id2) = ed.add_buffer(
         "notes.md",
-        crate::core::Text::from_bytes(b"plain markdown text"),
+        crate::core::Doc::from_bytes(b"plain markdown text"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -365,7 +374,10 @@ fn test_comment_dwim_integration() {
     });
     let (ed, res) = script(&lua, ed, r#"run("comment-dwim")"#);
     res.unwrap();
-    assert_eq!(ed.buffer().text().to_bytes(), b"plain markdown text");
+    assert_eq!(
+        *ed.buffer().text(),
+        crate::core::Doc::from_bytes(b"plain markdown text")
+    );
     assert_eq!(ed.message(), "No comment syntax defined for buffer");
 }
 
@@ -375,7 +387,7 @@ fn comment_dwim_preserves_remapped_mark_across_lines() {
     let ed = bootstrap(Editor::new(Config::default()), &lua);
     let (ed, id) = ed.add_buffer(
         "test.rs",
-        crate::core::Text::from_bytes(b"aaa\nbbb\nccc\n"),
+        crate::core::Doc::from_bytes(b"aaa\nbbb\nccc\n"),
         crate::core::Backing::None,
     );
     let ed = crate::core::switch_to(ed, id);
@@ -399,7 +411,7 @@ fn test_mark_whole_buffer() {
     // Multi-line non-empty buffer
     let (ed, id) = ed.add_buffer(
         "test.txt",
-        crate::core::Text::from_bytes(b"hello world\nline 2"),
+        crate::core::Doc::from_bytes(b"hello world\nline 2"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -417,7 +429,7 @@ fn test_mark_whole_buffer() {
     // Empty buffer
     let (ed, empty_id) = ed.add_buffer(
         "empty.txt",
-        crate::core::Text::from_bytes(b""),
+        crate::core::Doc::from_bytes(b""),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -436,16 +448,16 @@ fn test_mark_whole_buffer() {
 fn edit_after_yank_invalidates_yank_pop() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);
-    let ed = ed.with_kill_ring(|kr| kr.push(b"hello".to_vec(), 120));
+    let ed = ed.with_kill_ring(|kr| kr.push(crate::core::Doc::from_bytes(b"hello"), 120));
     let ed = handle(ed, Some(&lua), Event::Run("yank".to_owned()));
 
     // An edit after the yank means the yank is no longer the last command (I-38).
     let (ed, result) = script(&lua, ed, r#"buffer.insert(0, "  ")"#);
     result.unwrap();
-    let before = ed.buffer().text().to_bytes();
+    let before = ed.buffer().text().clone();
 
     let ed = handle(ed, Some(&lua), Event::Run("yank-pop".to_owned()));
-    assert_eq!(ed.buffer().text().to_bytes(), before);
+    assert_eq!(*ed.buffer().text(), before);
     assert_eq!(ed.message(), "Previous command was not a yank");
 }
 
@@ -457,7 +469,7 @@ fn test_kill_line_lua_command() {
     // 1. Mid-line kill and consecutive kills merge (I-09)
     let (ed, id) = ed.add_buffer(
         "test.txt",
-        crate::core::Text::from_bytes(b"one\ntwo"),
+        crate::core::Doc::from_bytes(b"one\ntwo"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {
@@ -469,32 +481,38 @@ fn test_kill_line_lua_command() {
     // First kill-line: kills "one" up to newline
     let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
     res.unwrap();
-    assert_eq!(ed.buffer().text().to_bytes(), b"\ntwo");
+    assert_eq!(*ed.buffer().text(), crate::core::Doc::from_bytes(b"\ntwo"));
     assert_eq!(ed.window().point, 0);
 
     // Second kill-line: kills "\n"
     let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
     res.unwrap();
-    assert_eq!(ed.buffer().text().to_bytes(), b"two");
+    assert_eq!(*ed.buffer().text(), crate::core::Doc::from_bytes(b"two"));
     assert_eq!(ed.window().point, 0);
 
     // Consecutive kills must append into a single kill ring entry (I-09)
-    assert_eq!(ed.kill_ring().entries(), &[b"one\n".to_vec()]);
+    assert_eq!(
+        ed.kill_ring().entries(),
+        &[crate::core::Doc::from_bytes(b"one\n")]
+    );
 
     // 2. View-only protection (I-06)
     let ed = ed.with_current_buffer(|b| b.set_view_only(true));
     let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
     res.unwrap();
     assert_eq!(ed.message(), "Buffer is read-only");
-    assert_eq!(ed.buffer().text().to_bytes(), b"two");
-    assert_eq!(ed.kill_ring().entries(), &[b"one\n".to_vec()]);
+    assert_eq!(*ed.buffer().text(), crate::core::Doc::from_bytes(b"two"));
+    assert_eq!(
+        ed.kill_ring().entries(),
+        &[crate::core::Doc::from_bytes(b"one\n")]
+    );
 
     // 3. Boundary & empty buffer
     let ed = ed.with_current_buffer(|b| b.set_view_only(false));
     let ed = ed.with_window(|w| crate::core::Window { point: 9999, ..w });
     let (ed, res) = script(&lua, ed, r#"run("kill-line")"#);
     res.unwrap();
-    assert_eq!(ed.buffer().text().to_bytes(), b"two");
+    assert_eq!(*ed.buffer().text(), crate::core::Doc::from_bytes(b"two"));
 }
 
 #[test]
@@ -505,7 +523,7 @@ fn test_exchange_point_and_mark_lua_command() {
     // 1. Without mark set: reports message
     let (ed, id) = ed.add_buffer(
         "test.txt",
-        crate::core::Text::from_bytes(b"hello world"),
+        crate::core::Doc::from_bytes(b"hello world"),
         crate::core::Backing::None,
     );
     let ed = ed.with_window(|w| crate::core::Window {

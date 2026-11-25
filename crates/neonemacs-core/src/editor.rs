@@ -4,19 +4,21 @@
 //! flag (I-06), records undo (§7), and moves every anchor to a boundary (I-01).
 //! Every transition takes the editor by value and returns the new one.
 
+use alloc::borrow::ToOwned;
+use alloc::string::String;
 mod documents;
 mod edit;
 mod interaction;
 mod settings;
 
-use crate::buffer::BufferPool;
-use crate::config::Config;
+use crate::buffer::{BufferPool, RecoveredDelta};
+use crate::config::{Config, Toggles};
 use crate::effect::{Effect, WalTarget};
 use crate::eol::Eol;
 use crate::file::{Backing, FilePath};
 use crate::keymap::{KeyAliases, Keymap};
 use crate::syntax::SyntaxRegistry;
-use crate::text::Text;
+use crate::weave_tree::Doc;
 use crate::window::WindowManager;
 use documents::Documents;
 pub use documents::KillRing;
@@ -27,26 +29,13 @@ pub use interaction::{
 };
 pub use settings::CommandRegistry;
 use settings::Settings;
-use std::path::{Path, PathBuf};
 
 pub use crate::buffer::{Buffer, BufferId};
-pub use crate::text::snap_point as snap;
 pub use crate::window::{Dir, Layout, Window};
 
 /// The echo-area message that cancelling (`C-g`, `Esc`) leaves. The shell reads it to tell that nothing
 /// else has replaced the spinner.
 pub const CANCEL_MESSAGE: &str = "Quit";
-
-/// Snaps an end-of-range offset to a unit boundary (moves to end of unit if mid-unit).
-#[must_use]
-pub fn snap_end(text: &Text, a: usize) -> usize {
-    let a = a.min(text.len());
-    if text.is_boundary(a) {
-        a
-    } else {
-        text.next_boundary(a)
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Editor {
@@ -90,13 +79,13 @@ impl Editor {
 
     /// Keeps the unsaved text of the scratch buffer in `slot`. `None` keeps it in memory only (I-43).
     #[must_use]
-    pub fn with_scratch_slot(mut self, slot: Option<PathBuf>) -> Self {
+    pub fn with_scratch_slot(mut self, slot: Option<String>) -> Self {
         self.documents.scratch_slot = slot;
         self
     }
 
     #[must_use]
-    pub fn scratch_slot(&self) -> Option<&Path> {
+    pub fn scratch_slot(&self) -> Option<&str> {
         self.documents.scratch_slot.as_deref()
     }
 
@@ -104,10 +93,8 @@ impl Editor {
     #[must_use]
     pub fn wal_target(&self, id: BufferId) -> Option<WalTarget> {
         match self.buffer_by_id(id).backing() {
-            Backing::File { path, .. } => Some(WalTarget::Sibling(path.as_path().to_path_buf())),
-            Backing::Scratch { .. } => self
-                .scratch_slot()
-                .map(|s| WalTarget::Slot(s.to_path_buf())),
+            Backing::File { path, .. } => Some(WalTarget::Sibling(path.as_str().to_owned())),
+            Backing::Scratch { .. } => self.scratch_slot().map(|s| WalTarget::Slot(s.to_owned())),
             Backing::None => None,
         }
     }
@@ -193,34 +180,45 @@ impl Editor {
     }
 
     #[must_use]
-    pub fn set_config(mut self, config: Config) -> Self {
-        self.settings.config = config;
+    pub fn set_config(self, config: Config) -> Self {
+        self.update_settings(|settings| Settings { config, ..settings })
+    }
+
+    pub(crate) fn tracks_wal_deltas(&self) -> bool {
+        self.config().toggles.contains(Toggles::WAL_DELTAS)
+    }
+
+    fn update_settings(mut self, f: impl FnOnce(Settings) -> Settings) -> Self {
+        let tracked = self.tracks_wal_deltas();
+        self.settings = f(self.settings);
+        if tracked && !self.tracks_wal_deltas() {
+            self.documents.buffers = self.documents.buffers.clear_wal_deltas();
+        }
         self
     }
 
     /// Sets the directory that relative file paths resolve against (I-37).
     #[must_use]
-    pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
+    pub fn with_cwd(mut self, cwd: String) -> Self {
         self.settings.cwd = cwd;
         self
     }
 
     #[must_use]
-    pub fn cwd(&self) -> &Path {
+    pub fn cwd(&self) -> &str {
         &self.settings.cwd
     }
 
     /// Takes the settings of `from` and keeps everything else: buffers, windows, kill ring, and
     /// the interaction state (I-58).
     #[must_use]
-    pub fn adopt_settings(mut self, from: Self) -> Self {
-        self.settings = from.settings;
-        self
+    pub fn adopt_settings(self, from: Self) -> Self {
+        self.update_settings(|_| from.settings)
     }
 
     /// The absolute path that `input` names, resolved against the working directory (I-37).
     #[must_use]
-    pub fn resolve_path(&self, input: &Path) -> FilePath {
+    pub fn resolve_path(&self, input: &str) -> FilePath {
         FilePath::resolve(&self.settings.cwd, input)
     }
 
@@ -331,8 +329,8 @@ impl Editor {
         let w = f(*self.window());
         let text = self.buffer_by_id(w.buffer).text();
         let w = Window {
-            point: snap(text, w.point),
-            top: snap(text, w.top),
+            point: text.floor_boundary(w.point),
+            top: text.floor_boundary(w.top),
             ..w
         };
         let sel = self.documents.windows.selected();
@@ -367,7 +365,7 @@ impl Editor {
     /// Replaces the text of buffer `id` outside `apply`. The undo history restarts (I-34), and the
     /// windows showing it are snapped to the new text (I-01).
     #[must_use]
-    pub fn replace_text(self, id: BufferId, text: Text) -> Self {
+    pub fn replace_text(self, id: BufferId, text: Doc) -> Self {
         self.with_buffer(id, |b| b.with_text(text))
             .snap_windows_for_buffer(id)
     }
@@ -384,7 +382,7 @@ impl Editor {
         self.documents.windows = self.documents.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
-                    point: snap(text, point(&w)),
+                    point: text.floor_boundary(point(&w)),
                     top: 0,
                     ..w
                 }
@@ -395,20 +393,34 @@ impl Editor {
         self
     }
 
-    /// Restores the content of the buffer visiting `path` from WAL bytes and EOL (I-23).
+    /// Restores the content of the buffer visiting `path` from a WAL snapshot (I-23).
     #[must_use]
     pub fn restore_buffer_content(
         mut self,
-        path: &std::path::Path,
-        bytes: &[u8],
+        path: &str,
+        doc: Doc,
         eol: Eol,
         line: Option<usize>,
     ) -> Self {
-        let (buffers, id) = self
-            .documents
-            .buffers
-            .restore_content(path, bytes, eol, line);
+        let (buffers, id) = self.documents.buffers.restore_content(path, doc, eol, line);
         self.documents.buffers = buffers;
+        self.snap_recovered_windows(id, line)
+    }
+
+    /// Installs the replayed delta WAL for a buffer visiting `path` (I-23).
+    #[must_use]
+    pub(crate) fn restore_buffer_deltas(
+        mut self,
+        path: &str,
+        delta: RecoveredDelta,
+        line: Option<usize>,
+    ) -> Self {
+        let (buffers, id) = self.documents.buffers.restore_deltas(path, delta, line);
+        self.documents.buffers = buffers;
+        self.snap_recovered_windows(id, line)
+    }
+
+    fn snap_recovered_windows(self, id: Option<BufferId>, line: Option<usize>) -> Self {
         match id {
             Some(id) if line.is_some() => {
                 let target = self.documents.buffers.get_by_id(id).saved_point();
@@ -421,7 +433,7 @@ impl Editor {
 
     /// Puts the text of a recovered scratch WAL into the scratch buffer, as unsaved text (I-23).
     #[must_use]
-    pub fn restore_scratch(self, bytes: &[u8], eol: Eol) -> Self {
+    pub fn restore_scratch(self, doc: Doc, eol: Eol) -> Self {
         let Some(id) = self
             .documents
             .buffers
@@ -432,7 +444,7 @@ impl Editor {
             return self;
         };
         self.with_buffer(id, |b| {
-            b.with_text(Text::from_bytes(bytes))
+            b.with_text(doc)
                 .set_eol(eol)
                 .mark_modified()
                 .clear_wal_dirty()
@@ -442,11 +454,12 @@ impl Editor {
 
     /// Adds a buffer and returns its id. Ids are never reused.
     #[must_use]
-    pub fn add_buffer(mut self, name: &str, text: Text, backing: Backing) -> (Self, BufferId) {
+    pub fn add_buffer(mut self, name: &str, text: Doc, backing: Backing) -> (Self, BufferId) {
         let (buffers, id) = self.documents.buffers.add(name, text, backing);
         self.documents.buffers = buffers;
         let eol = self.settings.config.default_eol;
-        let ed = self.with_buffer(id, |b| b.set_eol(eol));
+        let track = self.tracks_wal_deltas();
+        let ed = self.with_buffer(id, |b| b.set_eol(eol).track_wal_baseline(track));
         (ed, id)
     }
 
@@ -470,7 +483,7 @@ mod tests {
 
     fn editor_with(s: &str) -> Editor {
         Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(Text::from_bytes(s.as_bytes())))
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(s.as_bytes())))
     }
 
     #[test]
@@ -504,7 +517,7 @@ mod tests {
     #[test]
     fn with_buffer_updates_only_target() {
         let (ed, b2) =
-            editor_with("first").add_buffer("b2", Text::from_bytes(b"second"), Backing::None);
+            editor_with("first").add_buffer("b2", Doc::from_bytes(b"second"), Backing::None);
         let ed = ed.with_buffer(b2, Buffer::mark_modified);
         assert!(!ed.buffer_by_id(BufferId(0)).modified());
         assert!(ed.buffer_by_id(b2).modified());
@@ -516,7 +529,7 @@ mod tests {
             default_eol: Eol::Crlf,
             ..Config::default()
         });
-        let (ed, id) = ed.add_buffer("n", Text::default(), Backing::None);
+        let (ed, id) = ed.add_buffer("n", Doc::default(), Backing::None);
         assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
     }
 
@@ -527,20 +540,20 @@ mod tests {
         assert_eq!(kr.len(), 0);
         assert_eq!(kr.last(), None);
 
-        let kr = kr.push(b"hello".to_vec(), 120);
+        let kr = kr.push(Doc::from_bytes(b"hello"), 120);
         assert_eq!(kr.len(), 1);
-        assert_eq!(kr.last(), Some(&b"hello"[..]));
+        assert_eq!(kr.last(), Some(&Doc::from_bytes(b"hello")));
 
-        let kr = kr.append_last(b" world");
+        let kr = kr.append_last(Doc::from_bytes(b" world"));
         assert_eq!(kr.len(), 1);
-        assert_eq!(kr.last(), Some(&b"hello world"[..]));
+        assert_eq!(kr.last(), Some(&Doc::from_bytes(b"hello world")));
 
-        let kr = kr.push(b"second".to_vec(), 120);
+        let kr = kr.push(Doc::from_bytes(b"second"), 120);
         assert_eq!(kr.len(), 2);
-        assert_eq!(kr.last(), Some(&b"second"[..]));
+        assert_eq!(kr.last(), Some(&Doc::from_bytes(b"second")));
 
         let kr = kr.rotate_right(1);
-        assert_eq!(kr.last(), Some(&b"hello world"[..]));
+        assert_eq!(kr.last(), Some(&Doc::from_bytes(b"hello world")));
     }
 
     #[test]
@@ -557,8 +570,8 @@ mod tests {
         let ed = ed.set_quit(true);
         assert!(ed.quit());
 
-        let ed = ed.with_kill_ring(|kr| kr.push(b"sample".to_vec(), 120));
-        assert_eq!(ed.kill_ring().last(), Some(&b"sample"[..]));
+        let ed = ed.with_kill_ring(|kr| kr.push(Doc::from_bytes(b"sample"), 120));
+        assert_eq!(ed.kill_ring().last(), Some(&Doc::from_bytes(b"sample")));
 
         let ed = ed.with_keymap(|km| km.bind_str("C-x 2", "split-window-below").unwrap());
         let key = crate::keymap::parse_key_seq("C-x 2").unwrap();
@@ -582,12 +595,12 @@ mod tests {
             fill_column: 85,
             ..Config::default()
         })
-        .with_cwd(PathBuf::from("elsewhere"))
+        .with_cwd("elsewhere".to_owned())
         .with_keymap(|km| km.bind_str("C-x 9", "forward-char").unwrap())
-        .with_current_buffer(|b| b.with_text(Text::from_bytes(b"dropped")));
+        .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"dropped")));
         let ed = ed.adopt_settings(from);
         assert_eq!(ed.config().fill_column, 85);
-        assert_eq!(ed.cwd(), Path::new("elsewhere"));
+        assert_eq!(ed.cwd(), "elsewhere");
         let key = crate::keymap::parse_key_seq("C-x 9").unwrap();
         assert_eq!(ed.keymap().lookup(&key), Some("forward-char"));
         assert_eq!(text(&ed), "kept");
@@ -597,7 +610,7 @@ mod tests {
     #[test]
     fn with_windows_and_snap_windows_for_buffer() {
         let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(Text::from_bytes("가나다라".as_bytes())))
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes("가나다라".as_bytes())))
             .with_window(|w| Window {
                 point: 9,
                 top: 6,
@@ -606,7 +619,7 @@ mod tests {
             .with_windows(|wm| wm.split(Dir::Below));
         let id = ed.window().buffer;
         let ed = ed
-            .with_buffer(id, |b| b.with_text(Text::from_bytes("가".as_bytes())))
+            .with_buffer(id, |b| b.with_text(Doc::from_bytes("가".as_bytes())))
             .snap_windows_for_buffer(id);
         assert_eq!(ed.window().point, 3);
         assert_eq!(ed.window().top, 0);

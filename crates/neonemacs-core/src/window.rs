@@ -2,6 +2,9 @@
 //! Enforces I-19: selected < `layout.leaf_count()` at all times.
 
 use crate::buffer::BufferId;
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {

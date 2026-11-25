@@ -4,8 +4,8 @@
 use crate::config::Config;
 use crate::keymap::{KeyAliases, Keymap};
 use crate::syntax::SyntaxRegistry;
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use alloc::collections::BTreeSet;
+use alloc::string::String;
 
 /// Set of registered extension commands available for dispatch and M-x completion (§4, §12).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -48,7 +48,7 @@ pub struct Settings {
     pub(super) syntax_registry: SyntaxRegistry,
     pub(super) commands: CommandRegistry,
     /// Directory that relative file paths resolve against (I-37). Empty until the shell sets it.
-    pub(super) cwd: PathBuf,
+    pub(super) cwd: String,
 }
 
 impl Settings {
@@ -59,13 +59,16 @@ impl Settings {
             key_aliases: KeyAliases::default(),
             syntax_registry: SyntaxRegistry::new(),
             commands: CommandRegistry::new(),
-            cwd: PathBuf::new(),
+            cwd: String::new(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]

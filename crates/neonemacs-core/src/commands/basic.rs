@@ -2,7 +2,7 @@
 
 use crate::editor::{Buffer, BufferId, Confirm, Dir, Editor, LastCommand, Window};
 use crate::effect::Effects;
-use crate::text::Text;
+use crate::weave_tree::Doc;
 use crate::width::{column, pos_at_column};
 use crate::window::WindowManager;
 
@@ -30,14 +30,24 @@ pub(crate) fn backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn move_beginning_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
-    let start = ed.buffer().text().line_start(p);
+    let text = ed.buffer().text();
+    let p = text.floor_boundary(ed.window().point);
+    let line = text.offset_to_line(p).expect("floor_boundary is valid");
+    let start = text.line_to_offset(line).expect("line < total_lines");
     (ed.move_point(start), fx)
 }
 
 pub(crate) fn move_end_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let p = ed.window().point;
-    let end = ed.buffer().text().line_end(p);
+    let text = ed.buffer().text();
+    let p = text.floor_boundary(ed.window().point);
+    let line = text.offset_to_line(p).expect("floor_boundary is valid");
+    let end = if line + 1 < text.total_lines() {
+        text.line_to_offset(line + 1)
+            .expect("line + 1 < total_lines")
+            - 1
+    } else {
+        text.total_bytes()
+    };
     (ed.move_point(end), fx)
 }
 
@@ -52,18 +62,23 @@ pub(crate) fn previous_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
 /// Moves to the goal column on the next or previous line.
 fn vertical(ed: Editor, down: bool) -> Editor {
     let m = ed.config().metrics();
-    let p = ed.window().point;
     let text = ed.buffer().text();
+    let p = text.floor_boundary(ed.window().point);
     let goal = match ed.prev() {
         LastCommand::Vertical { col } => col,
         _ => column(text, p, m),
     };
-    let line = text.line_start(p);
+    let line = text.offset_to_line(p).expect("floor_boundary is valid");
     let target = if down {
-        let nl = text.line_end(p);
-        (nl < text.len()).then_some(nl + 1)
+        (line + 1 < text.total_lines()).then(|| {
+            text.line_to_offset(line + 1)
+                .expect("line + 1 < total_lines")
+        })
     } else {
-        (line > 0).then(|| text.line_start(line - 1))
+        (line > 0).then(|| {
+            text.line_to_offset(line - 1)
+                .expect("line - 1 < total_lines")
+        })
     };
     let target_pos = target.map(|start| pos_at_column(text, start, goal, m));
     let ed = if let Some(pos) = target_pos {
@@ -80,15 +95,11 @@ fn vertical(ed: Editor, down: bool) -> Editor {
 }
 
 /// Start of the line `n` lines before the line holding `start`; stops at the first line.
-fn lines_back(text: &Text, start: usize, n: usize) -> usize {
-    let mut s = text.line_start(start);
-    for _ in 0..n {
-        if s == 0 {
-            break;
-        }
-        s = text.line_start(s - 1);
-    }
-    s
+fn lines_back(text: &Doc, start: usize, n: usize) -> usize {
+    let b = text.floor_boundary(start.min(text.total_bytes()));
+    let line = text.offset_to_line(b).expect("floor_boundary is valid");
+    text.line_to_offset(line.saturating_sub(n))
+        .expect("line < total_lines")
 }
 
 /// `recenter` (C-l): puts the line holding point on the middle row. Text and point are unchanged.
@@ -119,7 +130,7 @@ pub(crate) fn delete_backward_char(ed: Editor, fx: Effects) -> (Editor, Effects)
 pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let p = ed.window().point;
     let text = ed.buffer().text();
-    if p >= text.len() {
+    if p >= text.total_bytes() {
         return (ed, fx);
     }
     let end = text.next_boundary(p);
@@ -142,24 +153,32 @@ pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let Some((start, end)) = region(&ed) else {
         return (ed.set_message("The mark is not set now"), fx);
     };
-    let bytes = ed.buffer().text().bytes(start..end);
+    let text = ed.buffer().text();
+    let start = text.floor_boundary(start);
+    let end = text.floor_boundary(end);
+    let doc = text.slice(start..end).unwrap_or_default();
     let max = ed.config().kill_ring_max;
     let ed = ed
-        .with_kill_ring(|kr| kr.push(bytes, max))
+        .with_kill_ring(|kr| kr.push(doc, max))
         .with_current_buffer(Buffer::deactivate_mark);
     (ed, fx)
 }
 
 pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let Some(bytes) = ed.kill_ring().last().map(<[u8]>::to_vec) else {
+    let Some(doc) = ed.kill_ring().last().cloned() else {
         return (ed.set_message("Kill ring is empty"), fx);
     };
-    let p = ed.window().point;
-    let ed = ed.insert_at(p, &bytes);
-    let ed = ed.set_last(LastCommand::Yank {
-        start: p,
-        end: p + bytes.len(),
-    });
+    let p = ed.buffer().text().floor_boundary(ed.window().point);
+    let len = doc.total_bytes();
+    let (ed, applied) = ed.apply(crate::undo::Edit::replace(p, 0, doc));
+    let ed = if applied.is_some() {
+        ed.move_point(p + len).set_last(LastCommand::Yank {
+            start: p,
+            end: p + len,
+        })
+    } else {
+        ed
+    };
     (ed, fx)
 }
 
@@ -168,18 +187,31 @@ pub(crate) fn yank_pop(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let LastCommand::Yank { start, end } = ed.prev() else {
         return (ed.set_message("Previous command was not a yank"), fx);
     };
-    let ed = ed.delete_only(start, end);
-    let ed = ed.with_kill_ring(|kr| kr.rotate_right(1));
-    let bytes = ed
-        .kill_ring()
-        .last()
-        .map(<[u8]>::to_vec)
-        .unwrap_or_default();
-    let ed = ed.insert_at(start, &bytes);
-    let ed = ed.set_last(LastCommand::Yank {
-        start,
-        end: start + bytes.len(),
-    });
+    let text = ed.buffer().text();
+    if start > end || !text.is_boundary(start) || !text.is_boundary(end) {
+        return (
+            ed.set_message("Yank merged with neighboring UTF-8 bytes"),
+            fx,
+        );
+    }
+    let entries = ed.kill_ring().entries();
+    let next_doc = match entries.len() {
+        0 => Doc::default(),
+        1 => entries[0].clone(),
+        n => entries[n - 2].clone(),
+    };
+    let len = next_doc.total_bytes();
+    let (ed, applied) = ed.apply(crate::undo::Edit::replace(start, end - start, next_doc));
+    let ed = if applied.is_some() {
+        ed.with_kill_ring(|kr| kr.rotate_right(1))
+            .move_point(start + len)
+            .set_last(LastCommand::Yank {
+                start,
+                end: start + len,
+            })
+    } else {
+        ed
+    };
     (ed, fx)
 }
 
@@ -248,11 +280,15 @@ pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use super::*;
     use crate::editor::{KillRing, Mode};
     use crate::file::Backing;
     use crate::test_support::{editor, keys, point, run_command, set_mark, text, typ};
-    use crate::text::Text;
+    use crate::weave_tree::Doc;
 
     #[test]
     fn the_mark_is_active_until_an_edit_cancel_or_copy() {
@@ -310,7 +346,7 @@ mod tests {
     }
 
     fn numbered(n: usize) -> String {
-        use std::fmt::Write;
+        use core::fmt::Write;
         let mut s = String::new();
         for i in 0..n {
             writeln!(s, "l{i}").unwrap();
@@ -337,7 +373,9 @@ mod tests {
         assert_eq!(ed.window().height, 0);
         let ed = run_command(ed, recenter);
         // With no known height the point's own line becomes the top.
-        assert_eq!(top(&ed), ed.buffer().text().line_start(point(&ed)));
+        let t = ed.buffer().text();
+        let line = t.offset_to_line(t.floor_boundary(point(&ed))).unwrap();
+        assert_eq!(top(&ed), t.line_to_offset(line).unwrap());
     }
 
     #[test]
@@ -349,11 +387,11 @@ mod tests {
             ..w
         });
         let ed = ed.with_window(|w| Window { point: ls(20), ..w });
-        let before = ed.buffer().text().len();
+        let before = ed.buffer().text().total_bytes();
         let ed = run_command(ed, recenter);
         assert_eq!(top(&ed), ls(15));
         assert_eq!(point(&ed), ls(20));
-        assert_eq!(ed.buffer().text().len(), before);
+        assert_eq!(ed.buffer().text().total_bytes(), before);
     }
 
     #[test]
@@ -367,7 +405,7 @@ mod tests {
     #[test]
     fn insert_hangul_saves_utf8() {
         let ed = typ(editor(), "한");
-        assert_eq!(ed.buffer().text().to_bytes(), "한".as_bytes());
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes("한".as_bytes()));
     }
 
     #[test]
@@ -395,14 +433,69 @@ mod tests {
 
     #[test]
     fn kill_ring_yank_pop_cycles() {
-        let ed =
-            editor().with_kill_ring(|_| KillRing::from_entries(vec![b"A".to_vec(), b"B".to_vec()]));
+        let ed = editor().with_kill_ring(|_| {
+            KillRing::from_entries(vec![Doc::from_bytes(b"A"), Doc::from_bytes(b"B")])
+        });
         let ed = keys(ed, "C-y");
         assert_eq!(text(&ed), "B");
         let ed = run_command(ed, yank_pop);
         assert_eq!(text(&ed), "A");
         let ed = run_command(ed, yank_pop);
         assert_eq!(text(&ed), "B");
+    }
+
+    #[test]
+    fn yank_pop_refuses_to_delete_bytes_outside_the_yank() {
+        for (original, pos, inserted) in [(&[0xC3][..], 1, 0xA9), (&[0xA9][..], 0, 0xC3)] {
+            let entries = vec![Doc::from_bytes(b"hello"), Doc::from_bytes(&[inserted])];
+            let ed = editor()
+                .with_current_buffer(|b| b.with_text(Doc::from_bytes(original)))
+                .move_point(pos)
+                .with_kill_ring(|_| KillRing::from_entries(entries.clone()));
+            let ed = run_command(ed, yank);
+            assert_eq!(text(&ed), "é");
+            let yank_point = point(&ed);
+            let seq = ed.edit_seq();
+            let ed = run_command(ed, yank_pop);
+            assert_eq!(text(&ed), "é");
+            assert_eq!(point(&ed), yank_point);
+            assert_eq!(ed.edit_seq(), seq);
+            assert_eq!(ed.kill_ring().entries(), &entries);
+            assert_eq!(ed.message(), "Yank merged with neighboring UTF-8 bytes");
+        }
+    }
+
+    #[test]
+    fn yank_and_yank_pop_on_view_only_leave_kill_ring_and_last_unmutated() {
+        let initial_ring = [Doc::from_bytes(b"A"), Doc::from_bytes(b"B")];
+        let ed = editor()
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"abc")).set_view_only(true))
+            .with_kill_ring(|_| KillRing::from_entries(initial_ring.to_vec()));
+
+        let ed = run_command(ed, yank);
+        assert_eq!(text(&ed), "abc");
+        assert_eq!(point(&ed), 0);
+        assert_eq!(ed.message(), "Buffer is read-only");
+        assert_eq!(ed.last(), LastCommand::Other);
+        assert_eq!(ed.kill_ring().entries(), &initial_ring);
+
+        let ed = run_command(ed, yank_pop);
+        assert_eq!(text(&ed), "abc");
+        assert_eq!(ed.message(), "Previous command was not a yank");
+        assert_eq!(ed.last(), LastCommand::Other);
+        assert_eq!(ed.kill_ring().entries(), &initial_ring);
+
+        // Even if buffer becomes read-only right after a successful yank, yank-pop must not rotate.
+        let ed = editor()
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"abc")))
+            .with_kill_ring(|_| KillRing::from_entries(initial_ring.to_vec()));
+        let ed = run_command(ed, yank).with_current_buffer(|b| b.set_view_only(true));
+        assert_eq!(text(&ed), "Babc");
+        let ed = run_command(ed, yank_pop);
+        assert_eq!(text(&ed), "Babc");
+        assert_eq!(ed.message(), "Buffer is read-only");
+        assert_eq!(ed.last(), LastCommand::Other);
+        assert_eq!(ed.kill_ring().entries(), &initial_ring);
     }
 
     #[test]
@@ -421,7 +514,7 @@ mod tests {
     #[test]
     fn buffers_remember_point_and_kill_falls_back() {
         let (ed, other) =
-            typ(editor(), "hi").add_buffer("b2", Text::from_bytes(b"xyz"), Backing::None);
+            typ(editor(), "hi").add_buffer("b2", Doc::from_bytes(b"xyz"), Backing::None);
         let ed = switch_to(ed, other);
         assert_eq!(point(&ed), 0);
         let ed = keys(ed, "C-e");
@@ -448,7 +541,7 @@ mod tests {
 
     #[test]
     fn kill_modified_buffer_asks() {
-        let (ed, other) = editor().add_buffer("b2", Text::default(), Backing::None);
+        let (ed, other) = editor().add_buffer("b2", Doc::default(), Backing::None);
         let ed = switch_to(ed, other);
         let ed = typ(ed, "x");
         let ed = switch_to(ed, BufferId(0));

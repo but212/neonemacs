@@ -3,6 +3,9 @@
 
 use crate::eol::Eol;
 use crate::width::Metrics;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
 use neobit::neobit;
 
 neobit! {
@@ -18,6 +21,8 @@ neobit! {
         const ECHO_PREFIX = 1 << 4;
         /// East Asian ambiguous characters take 2 columns (Lua `ambiguous-width` 2) instead of 1.
         const CJK_AMBIGUOUS = 1 << 5;
+        /// Permit delta WAL writes where a replayable baseline is available.
+        const WAL_DELTAS = 1 << 6;
     }
 }
 
@@ -74,7 +79,7 @@ impl Config {
             fill_column: 70,
             tab_width: 8,
             toggles: Toggles::DEFAULT,
-            max_file_size: 64 << 20,
+            max_file_size: 512 << 20,
             undo_limit: 4 << 20,
             kill_ring_max: 120,
             amalgamating_undo_limit: 20,
@@ -117,6 +122,7 @@ pub enum Setting {
     ShellFileName,
     ShellCommandSwitch,
     AmbiguousWidth,
+    WalDeltas,
 }
 
 impl Setting {
@@ -136,6 +142,7 @@ impl Setting {
         Self::ShellFileName,
         Self::ShellCommandSwitch,
         Self::AmbiguousWidth,
+        Self::WalDeltas,
     ];
 
     /// Parses a setting name coming from Lua.
@@ -168,6 +175,7 @@ impl Setting {
             Self::ShellFileName => "shell-file-name",
             Self::ShellCommandSwitch => "shell-command-switch",
             Self::AmbiguousWidth => "ambiguous-width",
+            Self::WalDeltas => "wal-deltas",
         }
     }
 }
@@ -215,6 +223,7 @@ impl Config {
             }
             Setting::IsearchWrap => Value::Bool(self.toggles.contains(Toggles::ISEARCH_WRAP)),
             Setting::EchoPrefix => Value::Bool(self.toggles.contains(Toggles::ECHO_PREFIX)),
+            Setting::WalDeltas => Value::Bool(self.toggles.contains(Toggles::WAL_DELTAS)),
             Setting::DefaultEol => Value::Str(
                 match self.default_eol {
                     Eol::Lf => "lf",
@@ -265,6 +274,7 @@ impl Config {
             }
             (Setting::IsearchWrap, Value::Bool(b)) => next.toggles.set(Toggles::ISEARCH_WRAP, b),
             (Setting::EchoPrefix, Value::Bool(b)) => next.toggles.set(Toggles::ECHO_PREFIX, b),
+            (Setting::WalDeltas, Value::Bool(b)) => next.toggles.set(Toggles::WAL_DELTAS, b),
             (Setting::AmbiguousWidth, Value::Int(n)) => {
                 let wide = bounded::<u8>(name, n, 1, 2)? == 2;
                 next.toggles.set(Toggles::CJK_AMBIGUOUS, wide);
@@ -287,7 +297,8 @@ impl Config {
                 | Setting::CaseFoldSearch
                 | Setting::SyntaxHighlight
                 | Setting::IsearchWrap
-                | Setting::EchoPrefix,
+                | Setting::EchoPrefix
+                | Setting::WalDeltas,
                 _,
             ) => {
                 return Err(format!("{name} takes a boolean"));
@@ -317,6 +328,8 @@ fn bounded<T: TryFrom<i64>>(name: &str, n: i64, min: i64, max: i64) -> Result<T,
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]
@@ -365,10 +378,11 @@ mod tests {
                 Setting::ShellFileName => 12,
                 Setting::ShellCommandSwitch => 13,
                 Setting::AmbiguousWidth => 14,
+                Setting::WalDeltas => 15,
             }
         }
         let indexes: Vec<usize> = Setting::ALL.iter().map(|&s| index(s)).collect();
-        assert_eq!(indexes, (0..15).collect::<Vec<_>>());
+        assert_eq!(indexes, (0..16).collect::<Vec<_>>());
     }
 
     #[test]

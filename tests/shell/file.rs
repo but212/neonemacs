@@ -14,8 +14,14 @@ use neonemacs::test_support::{editor, keys, point, text, typ};
 use std::fs;
 use std::path::Path;
 
+fn core_path(path: &Path) -> String {
+    FilePath::resolve("", path.to_str().unwrap())
+        .as_str()
+        .to_owned()
+}
+
 fn visit(ed: Editor, path: &Path) -> Editor {
-    let fx = request_open(&ed, path, None, true, Vec::new());
+    let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     ed.with_window(|w| Window { point: 0, ..w })
 }
@@ -232,7 +238,7 @@ fn save_requests_disk_stat_first() {
         fx,
         vec![Effect::StatDisk {
             target: StatTarget::Save(id),
-            path: path.clone()
+            path: core_path(&path)
         }]
     );
     assert_eq!(fs::read(&path).unwrap(), b"abc");
@@ -242,6 +248,7 @@ fn save_requests_disk_stat_first() {
 fn written_records_disk_and_reports_wrote() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.txt");
+    let cp = core_path(&path);
     fs::write(&path, b"abc").unwrap();
     let ed = visit(editor(), &path);
     let id = ed.window().buffer;
@@ -253,7 +260,7 @@ fn written_records_disk_and_reports_wrote() {
         ed,
         Event::Written {
             id,
-            path: path.clone(),
+            path: cp.clone(),
             result: Ok(disk),
         },
     );
@@ -261,16 +268,16 @@ fn written_records_disk_and_reports_wrote() {
     assert!(!buf.modified());
     assert_eq!(
         *buf.backing(),
-        Backing::file(FilePath::resolve(Path::new(""), &path), disk)
+        Backing::file(FilePath::resolve("", path.to_str().unwrap()), disk)
     );
     // The save made the WAL obsolete, so the core asks for its removal (I-25).
     assert_eq!(
         fx,
         vec![Effect::RemoveWal {
-            target: WalTarget::Sibling(path.clone())
+            target: WalTarget::Sibling(cp.clone())
         }]
     );
-    assert_eq!(ed.message(), format!("Wrote {}", path.display()));
+    assert_eq!(ed.message(), format!("Wrote {cp}"));
 }
 
 #[test]
@@ -286,7 +293,7 @@ fn write_failure_keeps_buffer_modified() {
         ed,
         Event::Written {
             id,
-            path,
+            path: core_path(&path),
             result: Err("disk full".to_owned()),
         },
     );
@@ -306,7 +313,13 @@ fn confirmed_external_writes_without_recheck() {
     fs::write(&path, b"external").unwrap();
 
     let (_, fx) = confirmed(ed, Confirm::SaveExternal(id), Vec::new());
-    assert_eq!(fx, vec![Effect::WriteFile { id, path }]);
+    assert_eq!(
+        fx,
+        vec![Effect::WriteFile {
+            id,
+            path: core_path(&path)
+        }]
+    );
 }
 
 #[test]
