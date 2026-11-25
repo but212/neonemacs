@@ -25,7 +25,7 @@ fn try_summarize_node<T, S: Summary>(
 fn try_summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> Result<ChildEntry<S>, AllocError> {
     try_summarize_node(
         slices,
-        |s| (s.range.len(), s.buf.len(), &s.summary),
+        |s| (s.len(), s.buf.len(), &s.summary),
         |slices| SliceNode::Leaf { slices },
     )
 }
@@ -112,28 +112,25 @@ fn non_empty_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> Option<ChildEntry<S>
 }
 
 fn can_merge_slices<S: Summary>(a: &ByteSlice<S>, b: &ByteSlice<S>) -> bool {
-    let combined = a.range.len() + b.range.len();
-    (Arc::ptr_eq(&a.buf, &b.buf) && a.range.end == b.range.start && combined <= MAX_SLICE_BYTES)
+    let combined = a.len() + b.len();
+    (Arc::ptr_eq(&a.buf, &b.buf) && a.end == b.start && combined <= MAX_SLICE_BYTES)
         || combined <= CHUNK_CAP
 }
 
 fn merge_two_slices<S: Summary>(a: ByteSlice<S>, b: ByteSlice<S>) -> ByteSlice<S> {
-    let combined = a.range.len() + b.range.len();
-    if Arc::ptr_eq(&a.buf, &b.buf) && a.range.end == b.range.start && combined <= MAX_SLICE_BYTES {
+    let combined = a.len() + b.len();
+    if Arc::ptr_eq(&a.buf, &b.buf) && a.end == b.start && combined <= MAX_SLICE_BYTES {
         return ByteSlice {
             buf: a.buf,
-            range: a.range.start..b.range.end,
             summary: a.summary.combine(&b.summary),
+            start: a.start,
+            end: b.end,
         };
     }
     let mut buf = Vec::with_capacity(combined);
-    buf.extend_from_slice(&a.buf[a.range]);
-    buf.extend_from_slice(&b.buf[b.range]);
-    ByteSlice {
-        buf: Arc::new(buf),
-        range: 0..combined,
-        summary: a.summary.combine(&b.summary),
-    }
+    buf.extend_from_slice(a.bytes());
+    buf.extend_from_slice(b.bytes());
+    ByteSlice::new(Arc::new(buf), 0..combined, a.summary.combine(&b.summary))
 }
 
 fn edge_slice<S: Summary>(entry: &ChildEntry<S>, from_right: bool) -> &ByteSlice<S> {
@@ -368,24 +365,18 @@ fn split_byte_slice<S: Summary>(
     slice: &ByteSlice<S>,
     local: usize,
 ) -> (ByteSlice<S>, ByteSlice<S>) {
-    let split_pt = slice.range.start + local;
-    let left_range = slice.range.start..split_pt;
-    let right_range = split_pt..slice.range.end;
+    let start = usize::from(slice.start);
+    let end = usize::from(slice.end);
+    let split_pt = start + local;
+    let left_range = start..split_pt;
+    let right_range = split_pt..end;
     let (ls, rs) = slice.summary.split_pair(
         &slice.buf[left_range.clone()],
         &slice.buf[right_range.clone()],
     );
     (
-        ByteSlice {
-            buf: Arc::clone(&slice.buf),
-            range: left_range,
-            summary: ls,
-        },
-        ByteSlice {
-            buf: Arc::clone(&slice.buf),
-            range: right_range,
-            summary: rs,
-        },
+        ByteSlice::new(Arc::clone(&slice.buf), left_range, ls),
+        ByteSlice::new(Arc::clone(&slice.buf), right_range, rs),
     )
 }
 
@@ -459,7 +450,7 @@ pub(crate) fn split_at<S: Summary>(
             SliceNode::Leaf { slices } => {
                 let mut acc = 0usize;
                 for (idx, slice) in slices.iter().enumerate() {
-                    let len = slice.range.len();
+                    let len = slice.len();
                     if rem == acc {
                         left_leaf = non_empty_leaf(slices[..idx].to_vec());
                         right_leaf = non_empty_leaf(slices[idx..].to_vec());
@@ -576,7 +567,7 @@ fn mutate_internal_child<S: Summary, R>(
 fn with_refreshed_leaf_entry<S: Summary>(mut entry: ChildEntry<S>) -> ChildEntry<S> {
     if let SliceNode::Leaf { slices } = entry.node.as_ref() {
         let (total_bytes, total_backing, total_summary) =
-            recompute_summary(slices, |s| (s.range.len(), s.buf.len(), &s.summary));
+            recompute_summary(slices, |s| (s.len(), s.buf.len(), &s.summary));
         entry.bytes = total_bytes;
         entry.backing_bytes = total_backing;
         entry.summary = total_summary;
@@ -600,16 +591,16 @@ pub(crate) fn try_insert_in_place<S: Summary>(
     };
     let mut acc = 0usize;
     for slice in slices.iter_mut() {
-        let len = slice.range.len();
+        let len = slice.len();
         if offset <= acc + len {
             let local = offset - acc;
             if local == len
                 && len + bytes.len() <= MAX_SLICE_BYTES
                 && let Some(buf) = Arc::get_mut(&mut slice.buf)
             {
-                buf.truncate(slice.range.end);
+                buf.truncate(usize::from(slice.end));
                 buf.extend_from_slice(bytes);
-                slice.range.end += bytes.len();
+                slice.end += u16::try_from(bytes.len()).expect("slice end fits in u16");
                 slice.summary = slice.summary.combine(&S::from_slice(bytes));
                 return Ok(with_refreshed_leaf_entry(entry));
             }
@@ -635,26 +626,29 @@ pub(crate) fn try_delete_in_place<S: Summary>(
     };
     let mut acc = 0usize;
     for slice in slices.iter_mut() {
-        let len = slice.range.len();
+        let len = slice.len();
         if offset < acc + len {
             let local_start = offset - acc;
             let local_end = local_start + delete_len;
             if local_end <= len && delete_len < len && (local_end == len || local_start == 0) {
-                let abs_start = slice.range.start + local_start;
-                let abs_end = slice.range.start + local_end;
+                let start = usize::from(slice.start);
+                let end = usize::from(slice.end);
+                let abs_start = start + local_start;
+                let abs_end = start + local_end;
                 let deleted = slice.buf[abs_start..abs_end].to_vec();
+                let delta = u16::try_from(delete_len).expect("delete_len fits in u16");
                 if local_end == len {
-                    let kept_range = slice.range.start..abs_start;
+                    let kept_range = start..abs_start;
                     let (kept_s, _) = slice.summary.split_pair(&slice.buf[kept_range], &deleted);
-                    slice.range.end -= delete_len;
+                    slice.end -= delta;
                     if let Some(buf) = Arc::get_mut(&mut slice.buf) {
-                        buf.truncate(slice.range.end);
+                        buf.truncate(usize::from(slice.end));
                     }
                     slice.summary = kept_s;
                 } else {
-                    let kept_range = abs_end..slice.range.end;
+                    let kept_range = abs_end..end;
                     let (_, kept_s) = slice.summary.split_pair(&deleted, &slice.buf[kept_range]);
-                    slice.range.start += delete_len;
+                    slice.start += delta;
                     slice.summary = kept_s;
                 }
                 return Ok((with_refreshed_leaf_entry(entry), deleted));

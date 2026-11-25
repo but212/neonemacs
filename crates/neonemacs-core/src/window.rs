@@ -19,8 +19,10 @@ pub struct Window {
     pub top: usize,
     pub left_col: usize,
     /// Body rows at the last layout. 0 until the first render.
-    pub height: usize,
+    pub height: u32,
 }
+
+const _: () = assert!(core::mem::size_of::<Window>() <= 32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Layout {

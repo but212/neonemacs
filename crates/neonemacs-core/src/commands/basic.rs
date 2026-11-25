@@ -79,7 +79,7 @@ fn vertical(ed: Editor, down: bool) -> Editor {
 
 /// `recenter` (C-l): puts the line holding point on the middle row. Text and point are unchanged.
 pub(crate) fn recenter(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let half = ed.window().height / 2;
+    let half = (ed.window().height as usize) / 2;
     let text = ed.buffer().text();
     let line = crate::line_at(text, ed.window().point);
     let top = line_to_offset(text, line.saturating_sub(half)).expect("line < total_lines");
@@ -340,7 +340,7 @@ mod tests {
         if i < 10 { 3 * i } else { 30 + 4 * (i - 10) }
     }
 
-    fn with_height(ed: Editor, height: usize) -> Editor {
+    fn with_height(ed: Editor, height: u32) -> Editor {
         ed.with_window(|w| Window { height, ..w })
     }
 

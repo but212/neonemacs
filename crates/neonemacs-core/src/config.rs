@@ -195,7 +195,7 @@ impl Config {
     #[must_use]
     pub fn metrics(&self) -> Metrics {
         Metrics {
-            tab: usize::from(self.tab_width),
+            tab: self.tab_width,
             cjk: self.toggles.contains(Toggles::CJK_AMBIGUOUS),
         }
     }

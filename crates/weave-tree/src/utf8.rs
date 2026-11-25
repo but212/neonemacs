@@ -125,11 +125,7 @@ pub(crate) fn try_append_slices<S: Summary>(
         v.extend_from_slice(chunk);
         let buf = Arc::try_new(v)?;
         let summary = S::from_slice(chunk);
-        slices.push(ByteSlice {
-            buf,
-            range: 0..chunk.len(),
-            summary,
-        });
+        slices.push(ByteSlice::new(buf, 0..chunk.len(), summary));
         start = end;
     }
     Ok(slices)
@@ -138,13 +134,13 @@ pub(crate) fn try_append_slices<S: Summary>(
 /// Result of pre-mutation UTF-8 seam analysis around an edit site (D-01).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SeamMerge {
-    pub(crate) k_left: usize,
-    pub(crate) k_right: usize,
-    pub(crate) abs_insert_left: usize,
-    pub(crate) abs_insert_right: usize,
     left_merged: [u8; 4],
-    left_merged_len: u8,
     right_merged: [u8; 4],
+    pub(crate) k_left: u8,
+    pub(crate) k_right: u8,
+    pub(crate) abs_insert_left: u8,
+    pub(crate) abs_insert_right: u8,
+    left_merged_len: u8,
     right_merged_len: u8,
 }
 
@@ -191,9 +187,9 @@ pub(crate) fn compute_seam_merge(
                     &right_raw[..kr],
                 ]) {
                     return SeamMerge {
-                        k_left: kl,
-                        k_right: kr,
-                        abs_insert_left: insert_total,
+                        k_left: kl as u8,
+                        k_right: kr as u8,
+                        abs_insert_left: insert_total as u8,
                         abs_insert_right: 0,
                         left_merged: cand,
                         left_merged_len: len,
@@ -205,8 +201,8 @@ pub(crate) fn compute_seam_merge(
         }
     }
 
-    let mut k_left = 0;
-    let mut abs_insert_left = 0;
+    let mut k_left = 0u8;
+    let mut abs_insert_left = 0u8;
     let mut left_merged = [0u8; 4];
     let mut left_merged_len = 0u8;
     if !left_raw.is_empty() && insert_total > 0 {
@@ -216,8 +212,8 @@ pub(crate) fn compute_seam_merge(
                 if let Some((cand, len)) =
                     try_assemble_char(&[&left_raw[left_raw.len() - kl..], &insert_head[..ai]])
                 {
-                    k_left = kl;
-                    abs_insert_left = ai;
+                    k_left = kl as u8;
+                    abs_insert_left = ai as u8;
                     left_merged = cand;
                     left_merged_len = len;
                     break 'left_search;
@@ -226,9 +222,9 @@ pub(crate) fn compute_seam_merge(
         }
     }
 
-    let rem_insert = insert_total - abs_insert_left;
-    let mut k_right = 0;
-    let mut abs_insert_right = 0;
+    let rem_insert = insert_total - usize::from(abs_insert_left);
+    let mut k_right = 0u8;
+    let mut abs_insert_right = 0u8;
     let mut right_merged = [0u8; 4];
     let mut right_merged_len = 0u8;
     if rem_insert > 0 && !right_raw.is_empty() {
@@ -240,8 +236,8 @@ pub(crate) fn compute_seam_merge(
                 if let Some((cand, len)) =
                     try_assemble_char(&[&tail_slice[avail_tail - ar..], &right_raw[..kr]])
                 {
-                    k_right = kr;
-                    abs_insert_right = ar;
+                    k_right = kr as u8;
+                    abs_insert_right = ar as u8;
                     right_merged = cand;
                     right_merged_len = len;
                     break 'right_search;

@@ -30,7 +30,7 @@
 
 ```rust
 use core::ops::Range;
-use triomphe::{Arc, HeaderSlice};
+use triomphe::Arc;
 
 /// B-Tree 노드 팬아웃 및 슬라이스 크기 상수 (H2 벤치마크 스윕 대상)
 pub const MAX_FANOUT: usize = 32;
@@ -48,34 +48,34 @@ pub enum Unit {
 
 /// 불변 슬라이스 리프 조각 (단일 백킹 할당; 비교는 try_for_each_slice 또는 Eq 사용)
 #[derive(Clone, Debug)]
-pub(crate) struct ByteSlice {
+pub(crate) struct ByteSlice<S: Summary> {
     pub(crate) buf: Arc<Vec<u8>>,              // 최대 MAX_SLICE_BYTES 단위 독립 할당 (H1 Arc::get_mut 지원)
     pub(crate) range: Range<usize>,            // 항상 !range.is_empty()
-    pub(crate) line_breaks: usize,             // buf[range] 내 '\n' 개수
+    pub(crate) summary: S,                     // buf[range] 요약 메타데이터 (예: LineBreaks)
 }
 
 /// 내부 노드 및 루트의 자식 참조 + 인라인 요약 (단일 진실 원천)
 #[derive(Clone, Debug)]
-pub(crate) struct ChildEntry {
-    pub(crate) node: Arc<SliceNode>,
+pub(crate) struct ChildEntry<S: Summary> {
+    pub(crate) node: Arc<SliceNode<S>>,
     pub(crate) bytes: usize,
     pub(crate) backing_bytes: usize,
-    pub(crate) line_breaks: usize,
+    pub(crate) summary: S,
 }
 
 /// 요약된 불변 슬라이스 B-Tree 노드 (ChildEntry가 요약을 소유)
 #[derive(Clone, Debug)]
-pub(crate) enum SliceNode {
-    Internal { children: Vec<ChildEntry> },
-    Leaf { slices: Vec<ByteSlice> },
+pub(crate) enum SliceNode<S: Summary> {
+    Internal { children: Vec<ChildEntry<S>> },
+    Leaf { slices: Vec<ByteSlice<S>> },
 }
 
-/// 순수 값 전달 기반 통합 문서 코어 (SliceTree)
+/// 순수 값 전달 기반 통합 문서 코어 (WeaveTree<S>; neonemacs-core에서 Doc = WeaveTree<LineBreaks> 별칭)
 /// 청크 경계와 무관하게 total_bytes() 및 바이트 스트림 동등성을 비교하는 수동 PartialEq/Eq 구현.
 /// 메서드 내부 지역 커서 루프로 순회하며, 동일 바이트 오프셋에서 Arc::ptr_eq(&a.node, &b.node)인 서브트리는 O(1) 스킵.
 #[derive(Clone, Debug, Default)]
-pub struct Doc {
-    root: Option<ChildEntry>,
+pub struct WeaveTree<S: Summary> {
+    root: Option<ChildEntry<S>>,
 }
 ```
 
@@ -112,7 +112,7 @@ pub enum DocError {
 | :--- | :--- | :--- |
 | **D-01** | **단위 경계 및 정규 UTF-8 무결성** | 모든 `ByteSlice` 양 끝(`range`)과 분할·삽입·삭제·질의 구간은 유효 `Unit` 경계여야 하며(위반 시 `DocError::InvalidBoundary`, 단일 `Unit`은 `ByteSlice` 경계를 넘지 않음), RFC 3629 UTF-8만 `Unit::Char`로 인정한다(그 외 `Unit::Raw(u8)`). 편집 후 경계 인접 `Unit::Raw`(최대 3B)가 유효 UTF-8을 형성한 채 방치되거나(`k_left`/`k_right` 재병합 필수) 이음새를 쪼개는 부분 병합은 금지된다. |
 | **D-02** | **트리 균형·팬아웃 및 청크 상한** | ① 모든 리프는 동일 깊이. ② 원소 수는 비루트 `[MIN_FANOUT, MAX_FANOUT]`, 루트 `Leaf` `1..=MAX_FANOUT`, 루트 `Internal` `2..=MAX_FANOUT`, 빈 문서는 `doc.root == None`. ③ 모든 `ByteSlice`는 `1 <= range.len() <= MAX_SLICE_BYTES`. |
-| **D-03** | **요약 메타데이터 정합성** | `ByteSlice.line_breaks`는 `buf.slice[range]` 내 `'\n'` 개수와 일치하고 `ChildEntry.(bytes, line_breaks)`는 하위 서브트리 합과 일치한다. `backing_bytes`는 서브트리의 각 슬라이스에 대해 `buf.slice.len()`을 더한 포화 합이다. `total_bytes(doc)`·`total_lines(doc)`는 `doc.root`의 `(bytes, 1 + line_breaks)`와 같다(빈 문서: `0`, `1`). |
+| **D-03** | **요약 메타데이터 정합성** | `ByteSlice.summary`는 `Summary::from_slice(&buf[range])`와 일치하고 `ChildEntry.(bytes, summary)`는 하위 서브트리 합과 일치한다. `backing_bytes`는 서브트리의 각 슬라이스에 대해 `buf.len()`을 더한 포화 합이다. `total_bytes`·`total_lines`는 `root`의 `(bytes, 1 + total_metric())`과 같다(빈 문서: `0`, `1`). |
 | **D-04** | **연산 가역성 및 상태 비의존성** | 성공한 `apply`/`replace`가 반환한 `inv: Replace`를 `next_doc.apply(inv)`에 적용하면 반드시 성공해 원문과 `doc' == doc`을 복원한다. `Replace`는 논리 오프셋과 불변 `Doc`만 보유해 트리 재구조화 후 댕글링 참조가 없다. |
 | **D-05** | **관측적 순수성 및 코어 격리** | `Doc`은 `std::io` 및 공개·비공개 시그니처, 반환 타입, 영속 구조체(`Doc`·`SliceNode`·`ChildEntry`·`ByteSlice`) 필드 내 `&mut`를 전면 배제한다(`I-18` 정합; 본문 내부 `let mut` 루프와 시그니처상 `&mut` 토큰 없는 `impl FnMut(&[u8]) -> ControlFlow<B>`만 허용). `H1`의 `Arc::get_mut` 최적화 시에도 `strong_count == 1` 조건으로 외부 관측 동작이 불변이어야 한다. |
 
@@ -160,22 +160,24 @@ pub enum DocError {
 ## 6. 인터페이스 명세 (Core API)
 
 ```rust
-impl Doc {
+impl<S: Summary> WeaveTree<S> {
     /// 바이트 스트림 입력 경계 (빈 입력: root: None, 대용량: MAX_SLICE_BYTES 단위 독립 백킹 할당)
     pub fn from_bytes(bytes: &[u8]) -> Self;
 
-    /// 구조적 순수 전이: Doc 소비 후 새 Doc과 역연산 Replace 반환 (실패 시 원본 Doc과 DocError 반환)
-    pub fn apply(self, edit: Replace) -> Result<(Self, Replace), (Self, DocError)>;
+    /// 구조적 순수 전이: WeaveTree 소비 후 새 트리와 역연산 Replace 반환 (실패 시 원본과 DocError 반환)
+    pub fn apply(self, edit: Replace<S>) -> Result<(Self, Replace<S>), (Self, DocError)>;
 
-    /// 순차 바이트 편집 경계 어댑터 (사전 Doc 할당 없이 &[u8] 전달; 실패 시 원본 Doc 반환)
-    pub fn replace(self, offset: usize, delete_len: usize, insert: &[u8]) -> Result<(Self, Replace), (Self, DocError)>;
+    /// 순차 바이트 편집 경계 어댑터 (사전 트리 할당 없이 &[u8] 전달; 실패 시 원본 반환)
+    pub fn replace(self, offset: usize, delete_len: usize, insert: &[u8]) -> Result<(Self, Replace<S>), (Self, DocError)>;
 
     /// 최악 O(log P) CoW 부분 문서 추출 (OutOfBounds / InvalidBoundary)
     pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError>;
 
-    /// 0-based 줄 번호 <-> 바이트 오프셋 (OutOfBounds / InvalidBoundary)
-    pub fn line_to_offset(&self, line: usize) -> Result<usize, DocError>;
-    pub fn offset_to_line(&self, offset: usize) -> Result<usize, DocError>;
+    /// 요약 메트릭 총량 및 좌표 변환 (OutOfBounds / InvalidBoundary)
+    /// (`neonemacs-core`의 `Doc = WeaveTree<LineBreaks>`는 자유 함수 `total_lines`, `line_to_offset`, `offset_to_line`으로 노출)
+    pub fn total_metric(&self) -> usize;
+    pub fn metric_to_byte(&self, pos: usize) -> Result<usize, DocError>;
+    pub fn byte_to_metric(&self, offset: usize) -> Result<usize, DocError>;
 
     /// 지정 범위 순/역방향 제로카피 스트리밍 출력 경계 (OutOfBounds / InvalidBoundary; D-05 준수)
     pub fn try_for_each_slice<B>(
@@ -204,7 +206,6 @@ impl Doc {
     /// 원시 바이트·총량·경계 질의
     pub fn byte_at(&self, offset: usize) -> Option<u8>;
     pub fn total_bytes(&self) -> usize;
-    pub fn total_lines(&self) -> usize;
     pub fn is_boundary(&self, offset: usize) -> bool;
 }
 ```

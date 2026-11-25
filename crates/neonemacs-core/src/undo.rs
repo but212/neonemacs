@@ -132,7 +132,7 @@ pub struct RecordedEdit {
 }
 
 impl RecordedEdit {
-    fn size(&self) -> u128 {
+    fn size(&self) -> u64 {
         match (&self.edit, self.span) {
             (
                 Edit::Replace(patch),
@@ -141,9 +141,10 @@ impl RecordedEdit {
                 },
             ) => {
                 // Preserve the logical charge for cheap inverses, but do not undercount CoW storage.
-                (removed as u128 + inserted as u128).max(patch.insert.backing_bytes() as u128)
+                let logical = (removed as u64).saturating_add(inserted as u64);
+                logical.max(patch.insert.backing_bytes() as u64)
             }
-            (Edit::InsertInline { data, .. }, _) => data.len() as u128,
+            (Edit::InsertInline { data, .. }, _) => data.len() as u64,
             _ => 0,
         }
     }
@@ -189,7 +190,7 @@ impl Group {
         self.clean_epoch
     }
 
-    fn size(&self) -> u128 {
+    fn size(&self) -> u64 {
         self.edits.iter().map(RecordedEdit::size).sum()
     }
 }
@@ -199,8 +200,10 @@ impl Group {
 pub struct UndoLog {
     groups: Vec<Group>,
     open: bool,
-    size: u128,
+    size: u64,
 }
+
+const _: () = assert!(core::mem::size_of::<UndoLog>() <= 40);
 
 impl UndoLog {
     #[must_use]
@@ -270,7 +273,7 @@ impl UndoLog {
         let keep_open = usize::from(self.open);
         let max_drop = self.groups.len().saturating_sub(keep_open);
         let mut dropped = 0;
-        while self.size > limit as u128 && dropped < max_drop {
+        while self.size > limit as u64 && dropped < max_drop {
             self.size -= self.groups[dropped].size();
             dropped += 1;
         }

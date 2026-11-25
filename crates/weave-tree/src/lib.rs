@@ -27,6 +27,7 @@ pub(crate) const MIN_FANOUT: usize = MAX_FANOUT / 2;
 pub const CHUNK_CAP: usize = 4096;
 /// Maximum size of a single `ByteSlice` (bounds leaf scan and buffer retention).
 pub const MAX_SLICE_BYTES: usize = 16 * 1024;
+const _: () = assert!(MAX_SLICE_BYTES * 2 <= u16::MAX as usize);
 
 /// Logical minimum unit of text (non-UTF-8 bytes are preserved as `Unit::Raw`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,8 +39,34 @@ pub enum Unit {
 #[derive(Clone, Debug)]
 pub(crate) struct ByteSlice<S: Summary> {
     pub(crate) buf: Arc<Vec<u8>>,
-    pub(crate) range: Range<usize>,
     pub(crate) summary: S,
+    pub(crate) start: u16,
+    pub(crate) end: u16,
+}
+
+const _: () = assert!(core::mem::size_of::<ByteSlice<LineBreaks>>() <= 24);
+
+impl<S: Summary> ByteSlice<S> {
+    pub(crate) fn new(buf: Arc<Vec<u8>>, range: Range<usize>, summary: S) -> Self {
+        Self {
+            buf,
+            summary,
+            start: u16::try_from(range.start).expect("slice start fits in u16"),
+            end: u16::try_from(range.end).expect("slice end fits in u16"),
+        }
+    }
+
+    pub(crate) fn range(&self) -> Range<usize> {
+        usize::from(self.start)..usize::from(self.end)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        usize::from(self.end - self.start)
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.buf[self.range()]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -387,10 +414,12 @@ impl<S: Summary> WeaveTree<S> {
         seam: self::utf8::SeamMerge,
     ) -> (Self, Replace<S>) {
         let insert_len = insert.len();
+        let k_left = usize::from(seam.k_left);
+        let k_right = usize::from(seam.k_right);
 
-        let (left_root, rest) = split_at(self.root, offset - seam.k_left);
-        let (k_left_root, rest) = if seam.k_left > 0 {
-            split_at(rest, seam.k_left)
+        let (left_root, rest) = split_at(self.root, offset - k_left);
+        let (k_left_root, rest) = if k_left > 0 {
+            split_at(rest, k_left)
         } else {
             (None, rest)
         };
@@ -399,21 +428,24 @@ impl<S: Summary> WeaveTree<S> {
         } else {
             (None, rest)
         };
-        let (k_right_root, right_root) = if seam.k_right > 0 {
-            split_at(rest, seam.k_right)
+        let (k_right_root, right_root) = if k_right > 0 {
+            split_at(rest, k_right)
         } else {
             (None, rest)
         };
 
         let left_seam_root = Self::from_bytes(seam.left_bytes()).root;
         let right_seam_root = Self::from_bytes(seam.right_bytes()).root;
-        let trimmed_insert = insert.into_trimmed_root(seam.abs_insert_left, seam.abs_insert_right);
+        let trimmed_insert = insert.into_trimmed_root(
+            usize::from(seam.abs_insert_left),
+            usize::from(seam.abs_insert_right),
+        );
         let mid_root = join(left_seam_root, join(trimmed_insert, right_seam_root));
 
         let next_root = join(left_root, join(mid_root, right_root));
         let next_doc = Self { root: next_root };
 
-        let inv = if seam.k_left == 0 && seam.k_right == 0 {
+        let inv = if k_left == 0 && k_right == 0 {
             Replace {
                 offset,
                 delete_len: insert_len,
@@ -421,8 +453,8 @@ impl<S: Summary> WeaveTree<S> {
             }
         } else {
             Replace {
-                offset: offset - seam.k_left,
-                delete_len: insert_len + seam.k_left + seam.k_right,
+                offset: offset - k_left,
+                delete_len: insert_len + k_left + k_right,
                 insert: Self {
                     root: join(k_left_root, join(deleted_root, k_right_root)),
                 },
@@ -506,11 +538,10 @@ impl<S: Summary> WeaveTree<S> {
                     for slice in slices {
                         let sm = slice.summary.measure();
                         if rem <= sm {
-                            let bytes = &slice.buf[slice.range.clone()];
-                            return Ok(byte_acc + S::to_byte_offset(bytes, rem));
+                            return Ok(byte_acc + S::to_byte_offset(slice.bytes(), rem));
                         }
                         rem -= sm;
-                        byte_acc += slice.range.len();
+                        byte_acc += slice.len();
                     }
                     unreachable!("Summary invariant guarantees match");
                 }
@@ -538,8 +569,7 @@ impl<S: Summary> WeaveTree<S> {
             return Ok(root.summary.measure());
         }
         let (slice, slice_start, metric_acc) = self.descend_to_byte(offset);
-        let bytes = &slice.buf[slice.range.clone()];
-        Ok(metric_acc + S::from_byte_offset(bytes, offset - slice_start))
+        Ok(metric_acc + S::from_byte_offset(slice.bytes(), offset - slice_start))
     }
 
     /// Zero-copy forward streaming over `range` (`ControlFlow`-based, `D-05` compatible).
@@ -625,12 +655,12 @@ impl<S: Summary> WeaveTree<S> {
                 if REV {
                     let mut cur_end = base + entry.bytes;
                     for slice in slices.iter().rev() {
-                        let len = slice.range.len();
+                        let len = slice.len();
                         let slice_start = cur_end - len;
                         if cur_end > range.start && slice_start < range.end {
                             let lo = range.start.saturating_sub(slice_start);
                             let hi = (range.end - slice_start).min(len);
-                            let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
+                            let sub = &slice.bytes()[lo..hi];
                             if let ControlFlow::Break(b) = f(sub) {
                                 return (ControlFlow::Break(b), f);
                             }
@@ -643,12 +673,12 @@ impl<S: Summary> WeaveTree<S> {
                 } else {
                     let mut cur_base = base;
                     for slice in slices {
-                        let len = slice.range.len();
+                        let len = slice.len();
                         let slice_end = cur_base + len;
                         if slice_end > range.start && cur_base < range.end {
                             let lo = range.start.saturating_sub(cur_base);
                             let hi = (range.end - cur_base).min(len);
-                            let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
+                            let sub = &slice.bytes()[lo..hi];
                             if let ControlFlow::Break(b) = f(sub) {
                                 return (ControlFlow::Break(b), f);
                             }
@@ -672,7 +702,7 @@ impl<S: Summary> WeaveTree<S> {
             return p;
         }
         let (slice, slice_start) = self.locate_slice(p);
-        slice_start + floor_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
+        slice_start + floor_in_slice(slice.bytes(), p - slice_start)
     }
 
     #[must_use]
@@ -685,7 +715,7 @@ impl<S: Summary> WeaveTree<S> {
             return 0;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        slice_start + ceil_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        slice_start + ceil_in_slice(slice.bytes(), offset - slice_start)
     }
 
     #[must_use]
@@ -696,7 +726,7 @@ impl<S: Summary> WeaveTree<S> {
             return 0;
         }
         let (slice, slice_start) = self.locate_slice(p - 1);
-        slice_start + prev_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
+        slice_start + prev_in_slice(slice.bytes(), p - slice_start)
     }
 
     #[must_use]
@@ -706,7 +736,7 @@ impl<S: Summary> WeaveTree<S> {
             return total;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        slice_start + next_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        slice_start + next_in_slice(slice.bytes(), offset - slice_start)
     }
 
     #[must_use]
@@ -715,7 +745,7 @@ impl<S: Summary> WeaveTree<S> {
             return None;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        decode_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        decode_in_slice(slice.bytes(), offset - slice_start)
     }
 
     #[must_use]
@@ -724,7 +754,7 @@ impl<S: Summary> WeaveTree<S> {
             return None;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        Some(slice.buf[slice.range.start + (offset - slice_start)])
+        Some(slice.bytes()[offset - slice_start])
     }
 
     #[must_use]
@@ -753,7 +783,7 @@ impl<S: Summary> WeaveTree<S> {
             return true;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        is_boundary_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        is_boundary_in_slice(slice.bytes(), offset - slice_start)
     }
 
     fn locate_slice(&self, offset: usize) -> (&ByteSlice<S>, usize) {
@@ -781,7 +811,7 @@ impl<S: Summary> WeaveTree<S> {
                 }
                 SliceNode::Leaf { slices } => {
                     for slice in slices {
-                        let len = slice.range.len();
+                        let len = slice.len();
                         if rem < len {
                             return (slice, base, metric_acc);
                         }
@@ -911,11 +941,12 @@ impl<S: Summary> WeaveTree<S> {
                 let mut sum_backing = 0usize;
                 let mut sum_summary = S::default();
                 for slice in slices {
-                    assert!(!slice.range.is_empty());
-                    assert!(slice.range.len() <= MAX_SLICE_BYTES);
-                    let raw = &slice.buf[slice.range.clone()];
+                    let len = slice.len();
+                    assert!(len > 0);
+                    assert!(len <= MAX_SLICE_BYTES);
+                    let raw = slice.bytes();
                     assert!(slice.summary == S::from_slice(raw));
-                    sum_bytes += slice.range.len();
+                    sum_bytes += len;
                     sum_backing = sum_backing.saturating_add(slice.buf.len());
                     sum_summary = sum_summary.combine(&slice.summary);
                 }
@@ -1044,7 +1075,7 @@ fn advance_eq_cursor<S: Summary>(
         return stack;
     };
     *in_slice += bytes_consumed;
-    if *in_slice < slices[*idx].range.len() {
+    if *in_slice < slices[*idx].len() {
         return stack;
     }
     *idx += 1;
@@ -1133,11 +1164,11 @@ fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
         };
         let sa_slice = &la[*ia];
         let sb_slice = &lb[*ib];
-        let rem_a = sa_slice.range.len() - *oa;
-        let rem_b = sb_slice.range.len() - *ob;
+        let rem_a = sa_slice.len() - *oa;
+        let rem_b = sb_slice.len() - *ob;
         let take = rem_a.min(rem_b);
-        let bytes_a = &sa_slice.buf[sa_slice.range.start + *oa..sa_slice.range.start + *oa + take];
-        let bytes_b = &sb_slice.buf[sb_slice.range.start + *ob..sb_slice.range.start + *ob + take];
+        let bytes_a = &sa_slice.bytes()[*oa..*oa + take];
+        let bytes_b = &sb_slice.bytes()[*ob..*ob + take];
         if bytes_a != bytes_b {
             return false;
         }

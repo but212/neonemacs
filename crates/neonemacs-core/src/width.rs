@@ -11,9 +11,11 @@ use weave_tree::utf8::decode_in_slice;
 /// characters take two columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Metrics {
-    pub tab: usize,
+    pub tab: u8,
     pub cjk: bool,
 }
+
+const _: () = assert!(core::mem::size_of::<Metrics>() <= 2);
 
 impl Metrics {
     /// Columns occupied by `c`.
@@ -124,7 +126,10 @@ pub(crate) fn pos_and_column(text: &Doc, line: usize, col: usize, tab: Metrics) 
 #[must_use]
 pub fn unit_width(unit: Unit, col: usize, m: Metrics) -> usize {
     match unit {
-        Unit::Char('\t') => m.tab - col % m.tab,
+        Unit::Char('\t') => {
+            let tab = usize::from(m.tab);
+            tab - col % tab
+        }
         _ => m.char(crate::unit_char(unit)),
     }
 }

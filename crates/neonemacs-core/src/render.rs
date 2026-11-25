@@ -150,7 +150,7 @@ pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
 
 fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
     let height = area.h.saturating_sub(1).max(1);
-    w.height = height;
+    w.height = u32::try_from(height).unwrap_or(u32::MAX);
     let width = area.w.max(1);
     let total = text.total_bytes();
     let p = text.floor_boundary(w.point.min(total));
