@@ -443,6 +443,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn non_utf8_names_get_distinct_wal_paths() {
+        use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
         let dir = Path::new("d");
         let a = dir.join(OsStr::from_bytes(b"a\xFF"));
