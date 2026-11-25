@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use neonemacs_core::weave_tree::{Doc, DocError, MAX_SLICE_BYTES, Replace, Unit};
+use neonemacs_core::weave_tree::{Doc, DocBuilder, DocError, MAX_SLICE_BYTES, Replace, Unit};
 use proptest::prelude::*;
 
 fn collect_bytes(doc: &Doc) -> Vec<u8> {
@@ -73,6 +73,35 @@ fn empty_doc_contracts() {
     assert_eq!(doc.ceil_boundary(10), 0);
     assert_eq!(doc.prev_boundary(10), 0);
     assert_eq!(doc.next_boundary(10), 0);
+}
+
+#[test]
+fn shared_replacements_reject_unrepresentable_lengths() {
+    let mut doc = Doc::from_bytes(&[b'x'; MAX_SLICE_BYTES]);
+    while doc.total_bytes() <= usize::MAX / 2 {
+        let insert = doc.clone();
+        let offset = doc.total_bytes();
+        (doc, _) = doc
+            .apply(Replace {
+                offset,
+                delete_len: 0,
+                insert,
+            })
+            .unwrap();
+    }
+    let n = doc.total_bytes();
+    // Neither `usize::MAX` bytes (no room for one-past-end) nor an overflowing sum is valid.
+    for insert in [doc.slice(0..n - 1).unwrap(), doc.clone()] {
+        let result = doc.clone().apply(Replace {
+            offset: n,
+            delete_len: 0,
+            insert,
+        });
+        assert_eq!(
+            result.unwrap_err(),
+            (doc.clone(), DocError::DocumentTooLarge)
+        );
+    }
 }
 
 #[test]
@@ -189,8 +218,85 @@ fn multi_level_tree_height_3_and_split_join() {
     assert_eq!(doc3, doc);
 }
 
+#[test]
+fn doc_builder_preserves_multibyte_utf8_across_chunk_boundaries() {
+    // 2-byte 'é' split across 2 chunks
+    let doc = DocBuilder::new()
+        .push_bytes(&[0xC3])
+        .push_bytes(&[0xA9])
+        .finish();
+    #[cfg(debug_assertions)]
+    doc.assert_invariants();
+    assert_eq!(doc.decode_at(0), Some((Unit::Char('é'), 2)));
+    assert!(!doc.is_boundary(1));
+    assert_eq!(
+        doc.clone().replace(1, 0, b"x").expect_err("mid-char"),
+        (doc, DocError::InvalidBoundary { offset: 1 })
+    );
+
+    // 4-byte '😀' split 1 byte at a time
+    let emoji = DocBuilder::new()
+        .push_bytes(&[0xF0])
+        .push_bytes(&[0x9F])
+        .push_bytes(&[0x98])
+        .push_bytes(&[0x80])
+        .finish();
+    #[cfg(debug_assertions)]
+    emoji.assert_invariants();
+    assert_eq!(emoji.decode_at(0), Some((Unit::Char('😀'), 4)));
+    assert!(!emoji.is_boundary(1));
+    assert!(!emoji.is_boundary(2));
+    assert!(!emoji.is_boundary(3));
+
+    // Trailing incomplete prefix at EOF + invalid prefix followed by valid UTF-8
+    let mixed = DocBuilder::new()
+        .push_bytes(&[0xF0, 0x9F])
+        .push_bytes(&[0xC3, 0xA9, 0xEA])
+        .finish();
+    #[cfg(debug_assertions)]
+    mixed.assert_invariants();
+    assert_eq!(mixed.decode_at(0), Some((Unit::Raw(0xF0), 1)));
+    assert_eq!(mixed.decode_at(1), Some((Unit::Raw(0x9F), 1)));
+    assert_eq!(mixed.decode_at(2), Some((Unit::Char('é'), 2)));
+    assert_eq!(mixed.decode_at(4), Some((Unit::Raw(0xEA), 1)));
+
+    // 64 KiB chunk split inside 3-byte Hangul '가'
+    let hangul = "가".repeat(22_000);
+    let raw = hangul.as_bytes();
+    let mut b = DocBuilder::new();
+    for chunk in raw.chunks(64 * 1024) {
+        b = b.push_bytes(chunk);
+    }
+    let built = b.finish();
+    #[cfg(debug_assertions)]
+    built.assert_invariants();
+    assert_eq!(built.decode_at(65_535), Some((Unit::Char('가'), 3)));
+    assert!(!built.is_boundary(65_536));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn prop_doc_builder_matches_from_bytes_across_arbitrary_chunks(
+        chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..32), 0..48),
+    ) {
+        let mut flat = Vec::new();
+        let mut builder = DocBuilder::new();
+        for c in &chunks {
+            flat.extend_from_slice(c);
+            builder = builder.push_bytes(c);
+        }
+        let built = builder.finish();
+        #[cfg(debug_assertions)]
+        built.assert_invariants();
+        let expected = Doc::from_bytes(&flat);
+        prop_assert_eq!(&built, &expected);
+        for off in 0..=flat.len() {
+            prop_assert_eq!(built.is_boundary(off), expected.is_boundary(off));
+            prop_assert_eq!(built.decode_at(off), expected.decode_at(off));
+        }
+    }
 
     #[test]
     fn prop_random_edits_and_undo_and_queries(
@@ -275,10 +381,14 @@ proptest! {
         expected.splice(pos..pos + del, d2_bytes);
 
         let (merged, inv) = d1.clone().apply(Replace { offset: pos, delete_len: del, insert: d2 }).expect("apply");
+        #[cfg(debug_assertions)]
+        merged.assert_invariants();
         prop_assert_eq!(collect_bytes(&merged), expected.clone());
         prop_assert_eq!(&merged, &Doc::from_bytes(&expected));
 
         let (restored, _) = merged.apply(inv).expect("undo");
+        #[cfg(debug_assertions)]
+        restored.assert_invariants();
         prop_assert_eq!(restored, d1);
     }
 }

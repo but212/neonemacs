@@ -11,7 +11,7 @@ use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prompt, Purpose};
 use crate::effect::Effects;
 use crate::file::Backing;
 use crate::keymap::{Code, Key};
-use crate::text::Text;
+use crate::weave_tree::Doc;
 
 pub(crate) fn execute_extended_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx)
@@ -217,7 +217,7 @@ fn switch_to_named(ed: Editor, name: &str) -> Editor {
         } else {
             Backing::None
         };
-        let (ed, id) = ed.add_buffer(name, Text::default(), backing);
+        let (ed, id) = ed.add_buffer(name, Doc::default(), backing);
         switch_to(ed, id)
     }
 }
@@ -238,7 +238,9 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
     let Ok(n) = input.trim().parse::<usize>() else {
         return ed.set_message(format!("Not a line number: {input}"));
     };
-    let pos = ed.buffer().text().nth_line_start(n);
+    let text = ed.buffer().text();
+    let line = n.saturating_sub(1).min(text.total_lines() - 1);
+    let pos = text.line_to_offset(line).expect("line < total_lines");
     ed.move_point(pos)
 }
 
@@ -316,8 +318,8 @@ mod tests {
         assert_eq!(note_none.as_deref(), Some("No match"));
 
         // Buffer candidates completion
-        let (ed, _) = ed.add_buffer("alpha_1", Text::default(), Backing::None);
-        let (ed, _) = ed.add_buffer("alpha_2", Text::default(), Backing::None);
+        let (ed, _) = ed.add_buffer("alpha_1", Doc::default(), Backing::None);
+        let (ed, _) = ed.add_buffer("alpha_2", Doc::default(), Backing::None);
         let p_buf = Prompt {
             label: "Switch to buffer: ".into(),
             before: "alph".into(),
@@ -405,7 +407,7 @@ mod tests {
     #[test]
     fn switching_to_a_missing_scratch_makes_the_protected_one() {
         // I-42: the user cannot end up with an unprotected buffer named *scratch*.
-        let (ed, id) = editor().add_buffer("other", Text::default(), Backing::None);
+        let (ed, id) = editor().add_buffer("other", Doc::default(), Backing::None);
         let ed = switch_to_named(ed, "other");
         let (ed, _) = kill_named(ed, "*scratch*", Vec::new());
         let ed = switch_to_named(ed, "*scratch*");
@@ -422,13 +424,13 @@ mod tests {
         let path = FilePath::resolve(Path::new(""), Path::new("*init-log*"));
         let (ed, file) = editor().add_buffer(
             "*init-log*",
-            Text::default(),
+            Doc::default(),
             Backing::file(path, DiskState::Unknown),
         );
         let ed = switch_to_named(ed, "*init-log*");
         assert_eq!(ed.window().buffer, file);
 
-        let (ed, log) = ed.add_buffer("*init-log*", Text::default(), Backing::None);
+        let (ed, log) = ed.add_buffer("*init-log*", Doc::default(), Backing::None);
         let ed = switch_to_named(ed, "*init-log*");
         assert_eq!(ed.window().buffer, log);
 

@@ -4,20 +4,20 @@
 use neonemacs::core::Backing;
 use neonemacs::core::BufferId;
 use neonemacs::core::Config;
+use neonemacs::core::Doc;
 use neonemacs::core::Edit;
-use neonemacs::core::Text;
 use neonemacs::core::{Code, Key};
 use neonemacs::core::{Confirm, Editor, LastCommand, Mode, Prefix, Window};
 use neonemacs::test_support::{editor, keys, press, run_command, text, typ};
 
 #[derive(Debug, PartialEq)]
 struct Snapshot {
-    buffers: Vec<(BufferId, Vec<u8>, bool)>,
+    buffers: Vec<(BufferId, neonemacs::core::Doc, bool)>,
     windows: Vec<Window>,
     current: Window,
     mode: Mode,
     message: String,
-    kill_ring: Vec<Vec<u8>>,
+    kill_ring: Vec<neonemacs::core::Doc>,
     last: LastCommand,
     prev: LastCommand,
     quit: bool,
@@ -30,7 +30,7 @@ fn snapshot(ed: &Editor) -> Snapshot {
         buffers: ed
             .buffers()
             .iter()
-            .map(|b| (b.id(), b.text().to_bytes(), b.modified()))
+            .map(|b| (b.id(), b.text().clone(), b.modified()))
             .collect(),
         windows: ed.windows().windows().into_iter().copied().collect(),
         current: *ed.window(),
@@ -89,7 +89,10 @@ fn kill_chain_across_commands() {
 
     let ed = run_command(ed, |e, fx| (e.kill_range(0, 4), fx));
     let ed = run_command(ed, |e, fx| (e.kill_range(0, 4), fx));
-    assert_eq!(snapshot(&ed).kill_ring, vec![b"aaa bbb ".to_vec()]);
+    assert_eq!(
+        snapshot(&ed).kill_ring,
+        vec![neonemacs::core::Doc::from_bytes(b"aaa bbb ")]
+    );
     assert_eq!(text(&ed), "ccc");
 
     let ed = run_command(ed, |e, fx| (e.self_insert('x'), fx));
@@ -98,7 +101,10 @@ fn kill_chain_across_commands() {
     let ed = run_command(ed, |e, fx| (e.kill_range(1, 4), fx));
     let kill_ring = snapshot(&ed).kill_ring;
     assert_eq!(kill_ring.len(), 2);
-    assert_eq!(kill_ring.last(), Some(&b"ccc".to_vec()));
+    assert_eq!(
+        kill_ring.last(),
+        Some(&neonemacs::core::Doc::from_bytes(b"ccc"))
+    );
     assert_eq!(text(&ed), "x");
 }
 
@@ -117,7 +123,7 @@ fn edit_seq_counts_accepted_edits() {
 #[test]
 fn kill_retargets_windows() {
     // C-04: a window showing a killed buffer moves to another; killing the last buffer leaves *scratch*.
-    let (ed, b2) = editor().add_buffer("b2", Text::from_bytes(b"x"), Backing::None);
+    let (ed, b2) = editor().add_buffer("b2", Doc::from_bytes(b"x"), Backing::None);
     let ed = ed.with_window(|w| Window { buffer: b2, ..w });
     let ed = ed.kill_buffer_id(b2);
     assert_ne!(ed.window().buffer, b2);

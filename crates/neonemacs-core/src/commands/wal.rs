@@ -24,7 +24,7 @@ pub fn idle(ed: Editor, mut fx: Effects) -> (Editor, Effects) {
     }
     let ed = memory_only
         .into_iter()
-        .fold(ed, |ed, id| ed.clear_wal_dirty(id));
+        .fold(ed, super::super::editor::Editor::clear_wal_dirty);
     if !entries.is_empty() {
         fx.push(Effect::FlushWal { entries });
     }

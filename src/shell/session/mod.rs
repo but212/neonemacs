@@ -49,6 +49,7 @@ impl ActiveShell {
     }
 
     /// The command's result, once it has one. A worker that vanished without a result is an error.
+    #[must_use]
     pub fn poll(&self) -> Option<Result<String, String>> {
         match self.task.receiver.try_recv() {
             Ok(result) => Some(result),

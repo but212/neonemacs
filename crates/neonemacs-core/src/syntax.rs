@@ -166,22 +166,62 @@ impl SyntaxRegistry {
     }
 }
 
-/// Tokenizes a single line of text into per-character `TokenKind` array.
-/// Returns a `Vec<TokenKind>` whose length matches `line.chars().count()`.
-pub fn highlight_line(syntax: Option<&SyntaxDef>, line: impl AsRef<[u8]>) -> Vec<TokenKind> {
-    let bytes = line.as_ref();
-    if bytes.is_empty() {
+use std::ops::{ControlFlow, Range};
+
+use crate::weave_tree::Doc;
+
+/// Returns one token per byte of `range` after clamping to the document length.
+/// Reads complete units at the range edges without returning their extra tokens.
+/// The lexer borrows the input bytes when they reside within a single `ByteSlice`.
+#[must_use]
+pub fn highlight_line(
+    syntax: Option<&SyntaxDef>,
+    doc: &Doc,
+    range: Range<usize>,
+) -> Vec<TokenKind> {
+    let total = doc.total_bytes();
+    let start = range.start.min(total);
+    let end = range.end.min(total);
+    if start >= end {
         return Vec::new();
     }
+    let len = end - start;
     let Some(syntax) = syntax else {
-        return vec![TokenKind::Normal; bytes.len()];
+        return vec![TokenKind::Normal; len];
     };
 
-    if let Some(prefix) = &syntax.heading_prefix {
-        return highlight_heading(bytes, prefix.as_bytes());
+    let aligned_start = doc.floor_boundary(start);
+    let aligned_end = doc.ceil_boundary(end);
+    let mut tokens = highlight_aligned(syntax, doc, aligned_start..aligned_end);
+    if start != aligned_start {
+        let skip = start - aligned_start;
+        tokens.copy_within(skip..skip + len, 0);
     }
+    tokens.truncate(len);
+    tokens
+}
 
-    LineLexer::new(syntax, bytes).tokenize()
+fn highlight_aligned(syntax: &SyntaxDef, doc: &Doc, range: Range<usize>) -> Vec<TokenKind> {
+    if let Some(prefix) = &syntax.heading_prefix {
+        return highlight_heading(doc, range, prefix.as_bytes());
+    }
+    let len = range.len();
+
+    let mut single_slice_tokens: Option<Vec<TokenKind>> = None;
+    let mut multi_buf: Vec<u8> = Vec::new();
+    let _ = doc.try_for_each_slice(range, |chunk| {
+        if multi_buf.is_empty() && chunk.len() == len {
+            single_slice_tokens = Some(LineLexer::new(syntax, chunk).tokenize());
+            return ControlFlow::Break(());
+        }
+        if multi_buf.is_empty() {
+            multi_buf.reserve(len);
+        }
+        multi_buf.extend_from_slice(chunk);
+        ControlFlow::Continue(())
+    });
+
+    single_slice_tokens.unwrap_or_else(|| LineLexer::new(syntax, &multi_buf).tokenize())
 }
 
 /// Single-line stateless lexer encapsulating tokenization rules (I-51).
@@ -328,13 +368,31 @@ impl<'a> LineLexer<'a> {
     }
 }
 
-fn highlight_heading(bytes: &[u8], prefix: &[u8]) -> Vec<TokenKind> {
-    let kind = if bytes.starts_with(prefix) {
+fn highlight_heading(doc: &Doc, range: Range<usize>, prefix: &[u8]) -> Vec<TokenKind> {
+    let len = range.end - range.start;
+    let mut matched = 0usize;
+    let mut is_heading = prefix.is_empty();
+    if !is_heading && len >= prefix.len() {
+        let _ = doc.try_for_each_slice(range, |chunk| {
+            let need = prefix.len() - matched;
+            let take = chunk.len().min(need);
+            if chunk[..take] != prefix[matched..matched + take] {
+                return ControlFlow::Break(());
+            }
+            matched += take;
+            if matched == prefix.len() {
+                is_heading = true;
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        });
+    }
+    let kind = if is_heading {
         TokenKind::Keyword
     } else {
         TokenKind::Normal
     };
-    vec![kind; bytes.len()]
+    vec![kind; len]
 }
 
 const fn is_ident_start_byte(b: u8) -> bool {
@@ -426,7 +484,7 @@ mod tests {
             false,
         );
         let line = "let mut x: i32 = 42;";
-        let tokens = highlight_line(Some(&def), line);
+        let tokens = highlight_line(Some(&def), &Doc::from_bytes(line.as_bytes()), 0..line.len());
         // "let" -> Keyword
         assert_eq!(tokens[0], TokenKind::Keyword);
         assert_eq!(tokens[2], TokenKind::Keyword);
@@ -453,7 +511,7 @@ mod tests {
             true,
         );
         let line = "SELECT col FROM t WHERE id: INT;";
-        let tokens = highlight_line(Some(&def), line);
+        let tokens = highlight_line(Some(&def), &Doc::from_bytes(line.as_bytes()), 0..line.len());
         // "SELECT" -> Keyword
         assert_eq!(tokens[0], TokenKind::Keyword);
         assert_eq!(tokens[5], TokenKind::Keyword);
@@ -479,7 +537,7 @@ mod tests {
         let reg = SyntaxRegistry::new().register(def);
         let syntax = reg.find_by_filename("x.xyz");
         let line = "hello 123; # comment";
-        let tokens = highlight_line(syntax, line);
+        let tokens = highlight_line(syntax, &Doc::from_bytes(line.as_bytes()), 0..line.len());
         assert_eq!(tokens[0], TokenKind::Keyword); // "hello"
         assert_eq!(tokens[6], TokenKind::Number); // "123"
         assert_eq!(tokens[11], TokenKind::Comment); // "# comment"
@@ -520,7 +578,7 @@ mod tests {
             false,
         );
         let line = "let s = \"hello 123\"; let n = 42;";
-        let tokens = highlight_line(Some(&def), line);
+        let tokens = highlight_line(Some(&def), &Doc::from_bytes(line.as_bytes()), 0..line.len());
         let str_start = line.find('"').unwrap();
         let str_end = line.rfind('"').unwrap();
         assert_eq!(tokens[str_start], TokenKind::String);
@@ -529,6 +587,22 @@ mod tests {
         let num_start = line.find("42").unwrap();
         assert_eq!(tokens[num_start], TokenKind::Number);
         assert_eq!(tokens[num_start + 1], TokenKind::Number);
+    }
+
+    #[test]
+    fn highlight_returns_only_requested_bytes_inside_utf8_units() {
+        let doc = Doc::from_bytes("é".as_bytes());
+        assert_eq!(highlight_line(None, &doc, 1..2), [TokenKind::Normal]);
+
+        let def = heading_def("notes", None);
+        let doc = Doc::from_bytes("é\"x\"".as_bytes());
+        let all = highlight_line(Some(&def), &doc, 0..doc.total_bytes());
+        for range in [0..1, 1..4, 1..9] {
+            assert_eq!(
+                highlight_line(Some(&def), &doc, range.clone()),
+                all[range.start..range.end.min(doc.total_bytes())]
+            );
+        }
     }
 
     fn heading_def(name: &str, prefix: Option<&str>) -> SyntaxDef {
@@ -547,18 +621,18 @@ mod tests {
     #[test]
     fn heading_prefix_colors_the_whole_line_and_nothing_else() {
         let def = heading_def("notes", Some("#"));
-        let heading = highlight_line(Some(&def), "# let");
+        let heading = highlight_line(Some(&def), &Doc::from_bytes(b"# let"), 0..5);
         assert!(heading.iter().all(|t| *t == TokenKind::Keyword));
-        let other = highlight_line(Some(&def), "x # let");
+        let other = highlight_line(Some(&def), &Doc::from_bytes(b"x # let"), 0..7);
         assert!(other.iter().all(|t| *t == TokenKind::Normal));
     }
 
     #[test]
     fn a_syntax_named_markdown_has_no_special_case_without_heading_prefix() {
         let def = heading_def("markdown", None);
-        let heading = highlight_line(Some(&def), "# x");
+        let heading = highlight_line(Some(&def), &Doc::from_bytes(b"# x"), 0..3);
         assert!(heading.iter().all(|t| *t == TokenKind::Normal));
-        let kw = highlight_line(Some(&def), "let");
+        let kw = highlight_line(Some(&def), &Doc::from_bytes(b"let"), 0..3);
         assert!(kw.iter().all(|t| *t == TokenKind::Keyword));
     }
 
@@ -574,6 +648,16 @@ mod tests {
             Vec::new(),
             false,
         );
+    }
+
+    #[test]
+    fn empty_or_inverted_range_inside_multibyte_char_returns_empty() {
+        let def = heading_def("notes", Some("#"));
+        let doc = Doc::from_bytes("가".as_bytes());
+        assert!(highlight_line(None, &doc, 1..1).is_empty());
+        assert!(highlight_line(Some(&def), &doc, 1..1).is_empty());
+        assert!(highlight_line(None, &doc, Range { start: 2, end: 1 }).is_empty());
+        assert!(highlight_line(Some(&def), &doc, Range { start: 2, end: 1 }).is_empty());
     }
 
     #[test]

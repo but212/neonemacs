@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 memchr = "2"
 neobit = "1.1.0"
+sha2 = "0.10"
+triomphe = { version = "0.1", default-features = false, features = ["std"] }
 unicode-width = "0.2"
 
 [dev-dependencies]

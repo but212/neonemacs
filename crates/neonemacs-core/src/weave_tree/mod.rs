@@ -4,15 +4,16 @@ mod tree;
 mod utf8;
 
 use std::ops::{ControlFlow, Range};
-use std::sync::Arc;
 
 use memchr::memchr_iter;
+use triomphe::{AllocError, Arc, HeaderSlice};
 
-use self::tree::{from_slices, join, split_at};
+use self::tree::{from_slices, join, split_at, try_from_slices};
 use self::utf8::{
-    ceil_in_slice, chunk_bytes_to_slices, compute_seam_merge, count_line_breaks, decode_in_slice,
-    floor_in_slice, is_boundary_in_slice, next_in_slice, prev_in_slice,
+    ceil_in_slice, chunk_bytes_to_slices, compute_seam_merge, count_line_breaks, floor_in_slice,
+    is_boundary_in_slice, next_in_slice, try_append_slices,
 };
+pub(crate) use self::utf8::{decode_in_slice, decode_unit_raw, prev_in_slice};
 
 /// B-Tree node fanout and slice size constants.
 pub const MAX_FANOUT: usize = 32;
@@ -30,7 +31,7 @@ pub enum Unit {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ByteSlice {
-    pub(crate) buf: Arc<[u8]>,
+    pub(crate) buf: Arc<HeaderSlice<(), [u8]>>,
     pub(crate) range: Range<usize>,
     pub(crate) line_breaks: usize,
 }
@@ -39,6 +40,7 @@ pub(crate) struct ByteSlice {
 pub(crate) struct ChildEntry {
     pub(crate) node: Arc<SliceNode>,
     pub(crate) bytes: usize,
+    pub(crate) backing_bytes: usize,
     pub(crate) line_breaks: usize,
 }
 
@@ -74,6 +76,8 @@ pub enum DocError {
     },
     /// Line index exceeds total lines in document.
     LineOutOfBounds { line: usize, total_lines: usize },
+    /// The edit would produce too many bytes to represent all document offsets and counts.
+    DocumentTooLarge,
 }
 
 enum InsertSource<'a> {
@@ -125,15 +129,106 @@ impl InsertSource<'_> {
     }
 }
 
+/// Returns the number of trailing bytes (`0..=3`) in `bytes` that form an incomplete
+/// RFC 3629 UTF-8 lead/continuation prefix and could complete a `Unit::Char` with following bytes.
+fn trailing_utf8_prefix_len(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    let mut cont = 0usize;
+    while cont < 3 && cont < len && (bytes[len - 1 - cont] & 0xC0) == 0x80 {
+        cont += 1;
+    }
+    if cont == len || cont == 3 {
+        return 0;
+    }
+    let lead_idx = len - 1 - cont;
+    let expected = match bytes[lead_idx] {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return 0,
+    };
+    let prefix_len = cont + 1;
+    if prefix_len < expected { prefix_len } else { 0 }
+}
+
+/// Incrementally collects 16 KiB `ByteSlice`s and builds a `Doc` bottom-up via `from_slices`.
+#[derive(Debug, Default)]
+pub struct DocBuilder {
+    slices: Vec<ByteSlice>,
+    pending: [u8; 3],
+    pending_len: usize,
+}
+
+impl DocBuilder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends `bytes` as 16 KiB `ByteSlice`s without flattening the whole document,
+    /// carrying up to 3 trailing incomplete UTF-8 prefix bytes across chunk boundaries (D-01).
+    #[must_use]
+    pub fn push_bytes(self, bytes: &[u8]) -> Self {
+        self.try_push_bytes(bytes)
+            .expect("cannot allocate document slices")
+    }
+
+    /// Appends bytes, returning an error if slice storage cannot be allocated.
+    pub fn try_push_bytes(mut self, bytes: &[u8]) -> Result<Self, AllocError> {
+        if bytes.is_empty() {
+            return Ok(self);
+        }
+        let mut rest = bytes;
+        if self.pending_len > 0 {
+            let cont = rest
+                .iter()
+                .take(3)
+                .take_while(|&&b| (b & 0xC0) == 0x80)
+                .count();
+            let mut bridge = [0u8; 6];
+            bridge[..self.pending_len].copy_from_slice(&self.pending[..self.pending_len]);
+            bridge[self.pending_len..self.pending_len + cont].copy_from_slice(&rest[..cont]);
+            let bridge_len = self.pending_len + cont;
+            rest = &rest[cont..];
+            if rest.is_empty() {
+                let keep = trailing_utf8_prefix_len(&bridge[..bridge_len]);
+                let emit_len = bridge_len - keep;
+                self.slices = try_append_slices(self.slices, &bridge[..emit_len])?;
+                self.pending_len = keep;
+                self.pending[..keep].copy_from_slice(&bridge[emit_len..bridge_len]);
+                return Ok(self);
+            }
+            self.slices = try_append_slices(self.slices, &bridge[..bridge_len])?;
+        }
+        let keep = trailing_utf8_prefix_len(rest);
+        let emit_len = rest.len() - keep;
+        self.slices = try_append_slices(self.slices, &rest[..emit_len])?;
+        self.pending_len = keep;
+        self.pending[..keep].copy_from_slice(&rest[emit_len..]);
+        Ok(self)
+    }
+
+    /// Builds the balanced B-Tree in $O(N)$ bottom-up, flushing any incomplete trailing prefix.
+    #[must_use]
+    pub fn finish(self) -> Doc {
+        self.try_finish().expect("cannot allocate document tree")
+    }
+
+    /// Finalizes the tree, returning an error if slice or node storage cannot be allocated.
+    pub fn try_finish(self) -> Result<Doc, AllocError> {
+        let slices = try_append_slices(self.slices, &self.pending[..self.pending_len])?;
+        Ok(Doc {
+            root: try_from_slices(slices)?,
+        })
+    }
+}
+
 impl Doc {
     /// Constructs a `Doc` from a raw byte slice (`root: None` if empty).
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let root = from_slices(chunk_bytes_to_slices(bytes));
-        let doc = Self { root };
-        #[cfg(any(test, debug_assertions))]
-        doc.assert_invariants();
-        doc
+        Self { root }
     }
 
     /// Pure structural transition: consumes `self` and returns `(next_doc, inverse_edit)`.
@@ -190,6 +285,10 @@ impl Doc {
         }
 
         let insert_len = insert.len();
+        // Leave room for a past-end offset and for one more line than newline bytes.
+        if insert_len >= usize::MAX - (total - delete_len) {
+            return Err((self, DocError::DocumentTooLarge));
+        }
         if delete_len == 0 && insert_len == 0 {
             return Ok((
                 self,
@@ -259,13 +358,38 @@ impl Doc {
             }
         };
 
-        #[cfg(any(test, debug_assertions))]
-        {
-            next_doc.assert_invariants();
-            inv.insert.assert_invariants();
-        }
-
         Ok((next_doc, inv))
+    }
+
+    fn validate_range(&self, range: &Range<usize>) -> Result<(), DocError> {
+        let total = self.total_bytes();
+        if range.start > range.end || range.end > total {
+            return Err(DocError::OutOfBounds {
+                offset: range.start,
+                len: range.end.saturating_sub(range.start),
+                total,
+            });
+        }
+        if !self.is_boundary(range.start) {
+            return Err(DocError::InvalidBoundary {
+                offset: range.start,
+            });
+        }
+        if !self.is_boundary(range.end) {
+            return Err(DocError::InvalidBoundary { offset: range.end });
+        }
+        Ok(())
+    }
+
+    /// Extracts a `CoW` subdocument in O(log² P) worst-case time for P slices.
+    pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError> {
+        self.validate_range(&range)?;
+        if range.start == range.end {
+            return Ok(Self::default());
+        }
+        let (_, rest) = split_at(self.root.clone(), range.start);
+        let (mid, _) = split_at(rest, range.end - range.start);
+        Ok(Self { root: mid })
     }
 
     /// Maps a 0-based line index to its starting byte offset.
@@ -277,9 +401,10 @@ impl Doc {
         if line == 0 {
             return Ok(0);
         }
-        let Some(root) = &self.root else {
-            return Ok(0);
-        };
+        let root = self
+            .root
+            .as_ref()
+            .expect("line >= 1 implies total_lines > 1");
         let mut cur = root;
         let mut rem_lines = line;
         let mut byte_acc = 0usize;
@@ -298,7 +423,7 @@ impl Doc {
                 SliceNode::Leaf { slices } => {
                     for slice in slices {
                         if rem_lines <= slice.line_breaks {
-                            let bytes = &slice.buf[slice.range.clone()];
+                            let bytes = &slice.buf.slice[slice.range.clone()];
                             let mut seen = 0usize;
                             for nl_pos in memchr_iter(b'\n', bytes) {
                                 seen += 1;
@@ -311,7 +436,7 @@ impl Doc {
                         rem_lines -= slice.line_breaks;
                         byte_acc += slice.range.len();
                     }
-                    return Ok(byte_acc);
+                    unreachable!("line_breaks invariant guarantees match");
                 }
             }
         }
@@ -355,7 +480,8 @@ impl Doc {
                     for slice in slices {
                         let len = slice.range.len();
                         if rem_bytes < len {
-                            let sub = &slice.buf[slice.range.start..slice.range.start + rem_bytes];
+                            let sub =
+                                &slice.buf.slice[slice.range.start..slice.range.start + rem_bytes];
                             return Ok(line_acc + count_line_breaks(sub));
                         }
                         rem_bytes -= len;
@@ -373,22 +499,7 @@ impl Doc {
         range: Range<usize>,
         f: impl FnMut(&[u8]) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, DocError> {
-        let total = self.total_bytes();
-        if range.start > range.end || range.end > total {
-            return Err(DocError::OutOfBounds {
-                offset: range.start,
-                len: range.end.saturating_sub(range.start),
-                total,
-            });
-        }
-        if !self.is_boundary(range.start) {
-            return Err(DocError::InvalidBoundary {
-                offset: range.start,
-            });
-        }
-        if !self.is_boundary(range.end) {
-            return Err(DocError::InvalidBoundary { offset: range.end });
-        }
+        self.validate_range(&range)?;
         if range.start == range.end {
             return Ok(ControlFlow::Continue(()));
         }
@@ -405,22 +516,7 @@ impl Doc {
         range: Range<usize>,
         f: impl FnMut(&[u8]) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, DocError> {
-        let total = self.total_bytes();
-        if range.start > range.end || range.end > total {
-            return Err(DocError::OutOfBounds {
-                offset: range.start,
-                len: range.end.saturating_sub(range.start),
-                total,
-            });
-        }
-        if !self.is_boundary(range.start) {
-            return Err(DocError::InvalidBoundary {
-                offset: range.start,
-            });
-        }
-        if !self.is_boundary(range.end) {
-            return Err(DocError::InvalidBoundary { offset: range.end });
-        }
+        self.validate_range(&range)?;
         if range.start == range.end {
             return Ok(ControlFlow::Continue(()));
         }
@@ -464,7 +560,7 @@ impl Doc {
                     if slice_end > range.start && cur_base < range.end {
                         let lo = range.start.saturating_sub(cur_base);
                         let hi = (range.end - cur_base).min(len);
-                        let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
+                        let sub = &slice.buf.slice[slice.range.start + lo..slice.range.start + hi];
                         if let ControlFlow::Break(b) = f(sub) {
                             return (ControlFlow::Break(b), f);
                         }
@@ -512,7 +608,7 @@ impl Doc {
                     if cur_end > range.start && slice_start < range.end {
                         let lo = range.start.saturating_sub(slice_start);
                         let hi = (range.end - slice_start).min(len);
-                        let sub = &slice.buf[slice.range.start + lo..slice.range.start + hi];
+                        let sub = &slice.buf.slice[slice.range.start + lo..slice.range.start + hi];
                         if let ControlFlow::Break(b) = f(sub) {
                             return (ControlFlow::Break(b), f);
                         }
@@ -536,7 +632,7 @@ impl Doc {
             return p;
         }
         let (slice, slice_start) = self.locate_slice(p);
-        slice_start + floor_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
+        slice_start + floor_in_slice(&slice.buf.slice[slice.range.clone()], p - slice_start)
     }
 
     /// Returns `total_bytes()` if `offset >= total_bytes()`, else the smallest valid `Unit` boundary >= `offset`.
@@ -550,7 +646,7 @@ impl Doc {
             return 0;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        slice_start + ceil_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        slice_start + ceil_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
     }
 
     /// Clamps `offset` to `total_bytes()`; returns `0` if `0`, else the greatest valid `Unit` boundary < `offset`.
@@ -562,7 +658,7 @@ impl Doc {
             return 0;
         }
         let (slice, slice_start) = self.locate_slice(p - 1);
-        slice_start + prev_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
+        slice_start + prev_in_slice(&slice.buf.slice[slice.range.clone()], p - slice_start)
     }
 
     /// Returns `total_bytes()` if `offset >= total_bytes()`, else the smallest valid `Unit` boundary > `offset`.
@@ -573,7 +669,7 @@ impl Doc {
             return total;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        slice_start + next_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        slice_start + next_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
     }
 
     /// Decodes the `Unit` at `offset`, returning `None` if `offset >= total_bytes()` or not a boundary.
@@ -583,7 +679,7 @@ impl Doc {
             return None;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        decode_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        decode_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
     }
 
     /// Returns the raw byte at `offset`, or `None` if `offset >= total_bytes()`.
@@ -593,7 +689,7 @@ impl Doc {
             return None;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        Some(slice.buf[slice.range.start + (offset - slice_start)])
+        Some(slice.buf.slice[slice.range.start + (offset - slice_start)])
     }
 
     #[must_use]
@@ -601,12 +697,33 @@ impl Doc {
         self.root.as_ref().map_or(0, |r| r.bytes)
     }
 
+    /// Conservative byte-storage charge: counts the entire backing allocation per slice,
+    /// even when slices share an allocation.
+    pub(crate) fn backing_bytes(&self) -> usize {
+        self.root.as_ref().map_or(0, |r| r.backing_bytes)
+    }
+
+    /// Copy at most one small chunk rather than pinning larger backing allocations.
+    pub(crate) fn compact_small(self) -> Self {
+        let len = self.total_bytes();
+        if len > CHUNK_CAP || self.backing_bytes() <= CHUNK_CAP {
+            return self;
+        }
+        let mut bytes = Vec::with_capacity(len);
+        let _ = self.try_for_each_slice(0..len, |chunk| {
+            bytes.extend_from_slice(chunk);
+            ControlFlow::<()>::Continue(())
+        });
+        Self::from_bytes(&bytes)
+    }
+
     #[must_use]
     pub fn total_lines(&self) -> usize {
         self.root.as_ref().map_or(1, |r| 1 + r.line_breaks)
     }
 
-    fn is_boundary(&self, offset: usize) -> bool {
+    #[must_use]
+    pub fn is_boundary(&self, offset: usize) -> bool {
         let total = self.total_bytes();
         if offset > total {
             return false;
@@ -615,7 +732,7 @@ impl Doc {
             return true;
         }
         let (slice, slice_start) = self.locate_slice(offset);
-        is_boundary_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
+        is_boundary_in_slice(&slice.buf.slice[slice.range.clone()], offset - slice_start)
     }
 
     /// Precondition: `offset < self.total_bytes()`.
@@ -700,12 +817,40 @@ impl Doc {
     }
 
     #[cfg(any(test, debug_assertions))]
-    pub(crate) fn assert_invariants(&self) {
+    pub fn assert_invariants(&self) {
         let Some(root) = &self.root else {
             return;
         };
         let depth = Self::check_entry(root, true);
         assert!(depth >= 1);
+        // D-01: verify no Unit::Char is split across adjacent ByteSlice boundaries.
+        let mut prev_tail = [0u8; 3];
+        let mut prev_tail_len = 0usize;
+        let _ = Self::visit_fwd(root, 0, &(0..root.bytes), |chunk: &[u8]| {
+            if prev_tail_len > 0 {
+                let mut seam = [0u8; 6];
+                let head_len = chunk.len().min(3);
+                seam[..prev_tail_len].copy_from_slice(&prev_tail[..prev_tail_len]);
+                seam[prev_tail_len..prev_tail_len + head_len].copy_from_slice(&chunk[..head_len]);
+                assert!(
+                    is_boundary_in_slice(&seam[..prev_tail_len + head_len], prev_tail_len),
+                    "D-01 violated: Unit::Char split across ByteSlice boundary"
+                );
+            }
+            if chunk.len() >= 3 {
+                prev_tail.copy_from_slice(&chunk[chunk.len() - 3..]);
+                prev_tail_len = 3;
+            } else {
+                let total = prev_tail_len + chunk.len();
+                let mut combined = [0u8; 5];
+                combined[..prev_tail_len].copy_from_slice(&prev_tail[..prev_tail_len]);
+                combined[prev_tail_len..total].copy_from_slice(chunk);
+                let keep = total.min(3);
+                prev_tail[..keep].copy_from_slice(&combined[total - keep..total]);
+                prev_tail_len = keep;
+            }
+            ControlFlow::<()>::Continue(())
+        });
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -718,19 +863,22 @@ impl Doc {
                     assert!((MIN_FANOUT..=MAX_FANOUT).contains(&slices.len()));
                 }
                 let mut sum_bytes = 0usize;
+                let mut sum_backing = 0usize;
                 let mut sum_lines = 0usize;
                 for slice in slices {
                     assert!(!slice.range.is_empty());
                     assert!(slice.range.len() <= MAX_SLICE_BYTES);
-                    let raw = &slice.buf[slice.range.clone()];
+                    let raw = &slice.buf.slice[slice.range.clone()];
                     assert_eq!(slice.line_breaks, count_line_breaks(raw));
                     // D-01: no Unit::Char split across slice boundaries (first byte cannot be
                     // an orphaned UTF-8 continuation that belongs to an earlier char, and
                     // trailing bytes cannot be an incomplete prefix that continues in the next slice).
                     sum_bytes += slice.range.len();
+                    sum_backing = sum_backing.saturating_add(slice.buf.slice.len());
                     sum_lines += slice.line_breaks;
                 }
                 assert_eq!(entry.bytes, sum_bytes);
+                assert_eq!(entry.backing_bytes, sum_backing);
                 assert_eq!(entry.line_breaks, sum_lines);
                 1
             }
@@ -742,6 +890,7 @@ impl Doc {
                 }
                 let mut expected_depth = None;
                 let mut sum_bytes = 0usize;
+                let mut sum_backing = 0usize;
                 let mut sum_lines = 0usize;
                 for child in children {
                     let d = Self::check_entry(child, false);
@@ -750,9 +899,11 @@ impl Doc {
                         Some(ed) => assert_eq!(d, ed, "D-02 uniform leaf depth violated"),
                     }
                     sum_bytes += child.bytes;
+                    sum_backing = sum_backing.saturating_add(child.backing_bytes);
                     sum_lines += child.line_breaks;
                 }
                 assert_eq!(entry.bytes, sum_bytes);
+                assert_eq!(entry.backing_bytes, sum_backing);
                 assert_eq!(entry.line_breaks, sum_lines);
                 expected_depth.expect("non-empty internal") + 1
             }
@@ -822,48 +973,29 @@ fn push_leftmost<'a>(
     }
 }
 
-fn advance_cursor<'a>(
-    mut stack: Vec<CursorFrame<'a>>,
-    bytes_consumed: usize,
-) -> (bool, Vec<CursorFrame<'a>>) {
+fn advance_cursor(mut stack: Vec<CursorFrame<'_>>, bytes_consumed: usize) -> Vec<CursorFrame<'_>> {
     let Some(CursorFrame::Leaf {
         slices,
         idx,
         in_slice,
     }) = stack.last_mut()
     else {
-        return (false, stack);
+        return stack;
     };
     *in_slice += bytes_consumed;
     if *in_slice < slices[*idx].range.len() {
-        return (true, stack);
+        return stack;
     }
     *idx += 1;
     *in_slice = 0;
     if *idx < slices.len() {
-        return (true, stack);
+        return stack;
     }
     stack.pop();
-    while let Some(CursorFrame::Internal {
-        children,
-        idx,
-        base,
-    }) = stack.last_mut()
-    {
-        let finished_bytes = children[*idx].bytes;
-        *idx += 1;
-        *base += finished_bytes;
-        if *idx < children.len() {
-            let next_child = &children[*idx];
-            let next_base = *base;
-            return (true, push_leftmost(stack, next_child, next_base));
-        }
-        stack.pop();
-    }
-    (false, stack)
+    advance_internal_past(stack)
 }
 
-fn advance_internal_past<'a>(mut stack: Vec<CursorFrame<'a>>) -> Vec<CursorFrame<'a>> {
+fn advance_internal_past(mut stack: Vec<CursorFrame<'_>>) -> Vec<CursorFrame<'_>> {
     while let Some(CursorFrame::Internal {
         children,
         idx,
@@ -960,17 +1092,14 @@ fn entries_eq(a: &ChildEntry, b: &ChildEntry) -> bool {
         let rem_a = sa_slice.range.len() - *oa;
         let rem_b = sb_slice.range.len() - *ob;
         let take = rem_a.min(rem_b);
-        let bytes_a = &sa_slice.buf[sa_slice.range.start + *oa..sa_slice.range.start + *oa + take];
-        let bytes_b = &sb_slice.buf[sb_slice.range.start + *ob..sb_slice.range.start + *ob + take];
+        let bytes_a =
+            &sa_slice.buf.slice[sa_slice.range.start + *oa..sa_slice.range.start + *oa + take];
+        let bytes_b =
+            &sb_slice.buf.slice[sb_slice.range.start + *ob..sb_slice.range.start + *ob + take];
         if bytes_a != bytes_b {
             return false;
         }
-        let (has_a, next_sa) = advance_cursor(sa, take);
-        let (has_b, next_sb) = advance_cursor(sb, take);
-        sa = next_sa;
-        sb = next_sb;
-        if has_a != has_b {
-            return false;
-        }
+        sa = advance_cursor(sa, take);
+        sb = advance_cursor(sb, take);
     }
 }

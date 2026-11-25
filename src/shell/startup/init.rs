@@ -295,7 +295,7 @@ mod tests {
         assert!(ed.message().contains("init.lua:2:"), "{}", ed.message());
         assert!(!ed.message().contains('\n'));
         let log = ed.buffers().find_by_name("*init-log*").unwrap();
-        let log = String::from_utf8(log.text().to_bytes()).unwrap();
+        let log = String::from_utf8(crate::test_support::doc_bytes(log.text())).unwrap();
         assert!(log.contains("init.lua:2:") && log.contains("boom"), "{log}");
         assert_eq!(ed.buffer().name(), "*scratch*");
 

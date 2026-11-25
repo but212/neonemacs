@@ -1,65 +1,124 @@
 //! Undo log in groups, kept in memory.
 
 use crate::eol::Eol;
+use crate::weave_tree::{Doc, Replace};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
-    /// Replaces `removed` at `pos` by `inserted`. An insert has empty `removed`, a delete has
-    /// empty `inserted`, and the inverse swaps the two.
-    Replace {
-        pos: usize,
-        removed: Vec<u8>,
-        inserted: Vec<u8>,
-    },
+    /// Replaces `delete_len` bytes at `offset` with `insert`.
+    Replace(Replace),
     /// Changes the save encoding only. The text is unchanged.
     SetEol { from: Eol, to: Eol },
 }
 
 impl Edit {
     #[must_use]
-    pub fn insert(pos: usize, bytes: impl Into<Vec<u8>>) -> Self {
-        Self::Replace {
-            pos,
-            removed: Vec::new(),
-            inserted: bytes.into(),
-        }
+    pub fn insert(pos: usize, bytes: impl AsRef<[u8]>) -> Self {
+        Self::Replace(Replace {
+            offset: pos,
+            delete_len: 0,
+            insert: Doc::from_bytes(bytes.as_ref()),
+        })
     }
 
     #[must_use]
-    pub fn delete(pos: usize, bytes: impl Into<Vec<u8>>) -> Self {
-        Self::Replace {
-            pos,
-            removed: bytes.into(),
-            inserted: Vec::new(),
-        }
+    pub fn delete(pos: usize, len: usize) -> Self {
+        Self::Replace(Replace {
+            offset: pos,
+            delete_len: len,
+            insert: Doc::default(),
+        })
     }
 
     #[must_use]
-    pub fn inverse(&self) -> Self {
+    pub const fn replace(offset: usize, delete_len: usize, insert: Doc) -> Self {
+        Self::Replace(Replace {
+            offset,
+            delete_len,
+            insert,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditSpan {
+    Replace {
+        pos: usize,
+        removed: usize,
+        inserted: usize,
+    },
+    SetEol,
+}
+
+impl EditSpan {
+    pub(crate) const fn inverse(self) -> Self {
         match self {
             Self::Replace {
                 pos,
                 removed,
                 inserted,
             } => Self::Replace {
-                pos: *pos,
-                removed: inserted.clone(),
-                inserted: removed.clone(),
+                pos,
+                removed: inserted,
+                inserted: removed,
             },
-            Self::SetEol { from, to } => Self::SetEol {
-                from: *to,
-                to: *from,
-            },
+            Self::SetEol => Self::SetEol,
         }
     }
 
-    const fn size(&self) -> usize {
+    pub(crate) const fn remap(self, anchor: usize) -> usize {
         match self {
             Self::Replace {
-                removed, inserted, ..
-            } => removed.len() + inserted.len(),
-            Self::SetEol { .. } => 0,
+                pos,
+                removed,
+                inserted,
+            } if anchor > pos => {
+                if anchor <= pos + removed {
+                    pos
+                } else {
+                    anchor - removed + inserted
+                }
+            }
+            _ => anchor,
         }
+    }
+}
+
+/// A replayable edit and its logical span, which excludes UTF-8 seam bytes restored by the patch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedEdit {
+    pub(crate) edit: Edit,
+    pub(crate) span: EditSpan,
+}
+
+impl RecordedEdit {
+    fn size(&self) -> u128 {
+        match (&self.edit, self.span) {
+            (
+                Edit::Replace(patch),
+                EditSpan::Replace {
+                    removed, inserted, ..
+                },
+            ) => {
+                // Preserve the logical charge for cheap inverses, but do not undercount CoW storage.
+                (removed as u128 + inserted as u128).max(patch.insert.backing_bytes() as u128)
+            }
+            _ => 0,
+        }
+    }
+}
+
+impl From<Edit> for RecordedEdit {
+    fn from(edit: Edit) -> Self {
+        let span = match &edit {
+            Edit::Replace(r) => EditSpan::Replace {
+                pos: r.offset,
+                removed: r.delete_len,
+                inserted: r.insert.total_bytes(),
+            },
+            Edit::SetEol { .. } => EditSpan::SetEol,
+        };
+        Self { edit, span }
     }
 }
 
@@ -67,13 +126,13 @@ impl Edit {
 /// (I-41).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
-    edits: Vec<Edit>,
+    edits: Vec<RecordedEdit>,
     clean_epoch: Option<u32>,
 }
 
 impl Group {
     #[must_use]
-    pub fn edits(&self) -> &[Edit] {
+    pub fn edits(&self) -> &[RecordedEdit] {
         &self.edits
     }
 
@@ -84,8 +143,8 @@ impl Group {
         self.clean_epoch
     }
 
-    fn size(&self) -> usize {
-        self.edits.iter().map(Edit::size).sum()
+    fn size(&self) -> u128 {
+        self.edits.iter().map(RecordedEdit::size).sum()
     }
 }
 
@@ -94,7 +153,7 @@ impl Group {
 pub struct UndoLog {
     groups: Vec<Group>,
     open: bool,
-    size: usize,
+    size: u128,
 }
 
 impl UndoLog {
@@ -120,7 +179,15 @@ impl UndoLog {
     /// # Panics
     /// Panics if the open group cannot be accessed.
     #[must_use]
-    pub fn record(mut self, edit: Edit, limit: usize, clean_epoch: Option<u32>) -> (Self, usize) {
+    pub fn record(
+        mut self,
+        mut edit: RecordedEdit,
+        limit: usize,
+        clean_epoch: Option<u32>,
+    ) -> (Self, usize) {
+        if let Edit::Replace(patch) = &mut edit.edit {
+            patch.insert = std::mem::take(&mut patch.insert).compact_small();
+        }
         if !self.open {
             self.groups.push(Group {
                 edits: Vec::new(),
@@ -157,7 +224,7 @@ impl UndoLog {
         let keep_open = usize::from(self.open);
         let max_drop = self.groups.len().saturating_sub(keep_open);
         let mut dropped = 0;
-        while self.size > limit && dropped < max_drop {
+        while self.size > limit as u128 && dropped < max_drop {
             self.size -= self.groups[dropped].size();
             dropped += 1;
         }
@@ -172,27 +239,35 @@ impl UndoLog {
 mod tests {
     use super::*;
 
-    fn insert(pos: usize, s: &str) -> Edit {
-        Edit::insert(pos, s.as_bytes())
+    fn insert(pos: usize, s: &str) -> RecordedEdit {
+        Edit::insert(pos, s.as_bytes()).into()
     }
 
     #[test]
-    fn inverse_is_involution() {
-        let edits = [
-            Edit::insert(2, b"ab".as_slice()),
-            Edit::delete(2, b"ab".as_slice()),
-            Edit::Replace {
-                pos: 1,
-                removed: b"x".to_vec(),
-                inserted: b"yz".to_vec(),
+    fn doc_apply_inverse_is_involution() {
+        let doc = Doc::from_bytes(b"hello world");
+        let patches = [
+            Replace {
+                offset: 2,
+                delete_len: 0,
+                insert: Doc::from_bytes(b"ab"),
             },
-            Edit::SetEol {
-                from: Eol::Lf,
-                to: Eol::Crlf,
+            Replace {
+                offset: 2,
+                delete_len: 2,
+                insert: Doc::default(),
+            },
+            Replace {
+                offset: 1,
+                delete_len: 1,
+                insert: Doc::from_bytes(b"yz"),
             },
         ];
-        for e in edits {
-            assert_eq!(e.inverse().inverse(), e);
+        for p in patches {
+            let (next, inv) = doc.clone().apply(p.clone()).unwrap();
+            let (restored, inv2) = next.apply(inv).unwrap();
+            assert_eq!(restored, doc);
+            assert_eq!(inv2, p);
         }
     }
 

@@ -7,6 +7,7 @@ use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
 use neonemacs::core::Config;
+use neonemacs::core::Doc;
 use neonemacs::core::Editor;
 use neonemacs::core::Eol;
 use neonemacs::core::effect::Event;
@@ -58,19 +59,11 @@ fn recovery_from_wal_restores_unsaved_content() {
 
     let ed = Editor::new(Config::default());
     let fx = request_open(&ed, &file_path, None, true, Vec::new());
-    let mut ed = perform_all(ed, None, fx);
-
-    if wal::has_wal(&file_path) {
-        let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
-        ed = ed.with_current_buffer(|buf| {
-            buf.with_text(neonemacs::core::Text::from_bytes(&wal_bytes))
-                .mark_modified()
-        });
-    }
+    let ed = perform_all(ed, None, fx);
 
     assert_eq!(
-        ed.buffer().text().to_bytes(),
-        b"fn new() { // recovered }\n"
+        *ed.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"fn new() { // recovered }\n")
     );
     assert!(ed.buffer().modified());
 }
@@ -89,8 +82,8 @@ fn wal_recovers_empty_zero_byte_file() {
         "0-byte WAL must be recognized via NEONWAL1 header"
     );
 
-    let wal_bytes = wal::read_wal(&file_path, disk).unwrap().bytes;
-    assert_eq!(wal_bytes, b"");
+    let recovered = wal::read_wal(&file_path, disk).unwrap();
+    assert_eq!(recovered.doc, Doc::default());
 }
 
 #[test]
@@ -136,7 +129,10 @@ fn revert_buffer_cleans_up_wal() {
     let yes = parse_keys("y").unwrap()[0];
     let ed = handle(ed, None, Event::Key(yes));
 
-    assert_eq!(ed.buffer().text().to_bytes(), b"disk content");
+    assert_eq!(
+        *ed.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"disk content")
+    );
     assert!(
         !wal::has_wal(&file_path),
         "revert-buffer must delete WAL file (I-25)"
@@ -160,7 +156,10 @@ fn find_file_recovers_the_wal_like_start_up_does() {
 
     let ed = find_file(&file_path);
     assert_eq!(ed.buffer().name(), "ff.txt");
-    assert_eq!(ed.buffer().text().to_bytes(), b"draft");
+    assert_eq!(
+        *ed.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"draft")
+    );
     assert!(ed.buffer().modified());
     assert_eq!(ed.message(), "[Recovered ff.txt from WAL]");
 }
@@ -176,7 +175,10 @@ fn find_file_keeps_an_unusable_wal_aside_and_says_so() {
     fs::write(&file_path, "changed elsewhere").unwrap();
 
     let ed = find_file(&file_path);
-    assert_eq!(ed.buffer().text().to_bytes(), b"changed elsewhere");
+    assert_eq!(
+        *ed.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"changed elsewhere")
+    );
     assert!(!ed.buffer().modified());
     assert_eq!(ed.message(), "Stale WAL kept as .ff.txt.wal.stale");
     assert!(!wal::has_wal(&file_path));
@@ -219,7 +221,7 @@ fn scratch_is_flushed_to_its_slot_after_one_idle_second() {
     session.tick_at(t0 + Duration::from_millis(1000));
     assert!(matches!(
         wal::probe_file(&slot, DiskState::Unknown),
-        neonemacs::core::effect::WalProbe::Valid(r) if r.bytes == b"x"
+        neonemacs::core::effect::WalProbe::Valid(r) if r.doc == Doc::from_bytes(b"x")
     ));
     assert!(!session.ed.buffer().is_wal_dirty());
 }
@@ -307,7 +309,10 @@ fn an_existing_slot_survives_until_the_scratch_is_clean() {
     let t0 = Instant::now();
     type_x(&mut session, t0);
     assert!(slot.exists());
-    assert_eq!(session.ed.buffer().text().to_bytes(), b"xdraft".to_vec());
+    assert_eq!(
+        *session.ed.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"xdraft")
+    );
 }
 
 #[test]
@@ -344,8 +349,8 @@ fn typing_and_idle_wal_recording() {
     assert!(wal::has_wal(&file_path));
 
     let disk = file::disk_state(&file_path);
-    let recovered = wal::read_wal(&file_path, disk).unwrap().bytes;
-    assert_eq!(recovered, b"new textline1\n");
+    let recovered = wal::read_wal(&file_path, disk).unwrap();
+    assert_eq!(recovered.doc, Doc::from_bytes(b"new textline1\n"));
 }
 
 #[test]
@@ -572,7 +577,7 @@ fn failed_write_file_keeps_old_wal() {
     let fx = request_open(&ed, &old_path, None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     let ed = ed.with_current_buffer(|buf| {
-        buf.with_text(neonemacs::core::Text::from_bytes(b"unsaved edits"))
+        buf.with_text(neonemacs::core::Doc::from_bytes(b"unsaved edits"))
             .mark_modified()
     });
 
@@ -611,7 +616,7 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
 
     // Buffer has edits matching WAL
     ed = ed.with_current_buffer(|buf| {
-        buf.with_text(neonemacs::core::Text::from_bytes(b"modified content"))
+        buf.with_text(neonemacs::core::Doc::from_bytes(b"modified content"))
             .mark_modified()
     });
 
@@ -692,11 +697,314 @@ fn wal_concurrent_write_wal_does_not_collide_on_fixed_tmp() {
     }
 
     assert!(wal::has_wal(&target));
-    let recovered = wal::read_wal(&target, disk)
-        .expect("recovered WAL must be intact")
-        .bytes;
+    let recovered = wal::read_wal(&target, disk).expect("recovered WAL must be intact");
     assert!(
-        recovered.starts_with(b"worker "),
+        recovered.doc.slice(0..7).ok() == Some(Doc::from_bytes(b"worker ")),
         "WAL content must not be corrupted"
     );
+}
+
+fn delta_config() -> Config {
+    use neonemacs::core::{Setting, Value};
+    Config::default()
+        .set(Setting::WalDeltas, Value::Bool(true))
+        .unwrap()
+}
+
+#[test]
+fn delta_wal_writes_are_opt_in_but_recovery_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("draft.txt");
+    let open = |config| {
+        let ed = Editor::new(config);
+        let fx = request_open(&ed, &path, None, true, Vec::new());
+        perform_all(ed, None, fx)
+    };
+    let wp = wal::wal_path(&path);
+    for (config, magic) in [
+        (Config::default(), wal::WAL_MAGIC),
+        (delta_config(), wal::WAL_DELTA_MAGIC),
+    ] {
+        fs::write(&path, b"disk").unwrap();
+        let ed = open(config).insert_at(4, b" draft");
+        assert_eq!(
+            ed.buffer().wal_deltas().is_some(),
+            magic == wal::WAL_DELTA_MAGIC
+        );
+        let ed = handle(ed, None, Event::Idle);
+        assert!(!ed.buffer().is_wal_dirty());
+        let raw = fs::read(&wp).unwrap();
+        assert!(raw.starts_with(magic));
+        let reopened = open(Config::default());
+        assert!(reopened.buffer().modified());
+        assert_eq!(reopened.buffer().text(), ed.buffer().text());
+        assert!(reopened.buffer().wal_deltas().is_none());
+        fs::remove_file(&wp).unwrap();
+    }
+}
+
+#[test]
+fn recovered_delta_records_are_kept_for_the_next_flush() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("draft.txt");
+    fs::write(&path, b"disk").unwrap();
+    let open = || {
+        let ed = Editor::new(delta_config());
+        let fx = request_open(&ed, &path, None, true, Vec::new());
+        perform_all(ed, None, fx)
+    };
+    let ed = handle(open().insert_at(4, b" draft"), None, Event::Idle);
+    let reopened = open();
+    assert_eq!(reopened.buffer().text(), ed.buffer().text());
+    assert_eq!(reopened.buffer().wal_deltas(), ed.buffer().wal_deltas());
+    assert!(!reopened.buffer().is_wal_dirty());
+
+    let edited = handle(reopened.insert_at(10, b"!"), None, Event::Idle);
+    assert_eq!(edited.buffer().wal_deltas().unwrap().1.len(), 2);
+    assert!(
+        fs::read(wal::wal_path(&path))
+            .unwrap()
+            .starts_with(wal::WAL_DELTA_MAGIC)
+    );
+    assert_eq!(*open().buffer().text(), Doc::from_bytes(b"disk draft!"));
+}
+
+#[test]
+fn toggling_delta_tracking_drops_the_log_until_a_new_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("draft.txt");
+    fs::write(&path, b"disk").unwrap();
+    let ed = Editor::new(delta_config());
+    let fx = request_open(&ed, &path, None, true, Vec::new());
+    let ed = perform_all(ed, None, fx).insert_at(4, b" draft");
+    assert_eq!(ed.buffer().wal_deltas().unwrap().1.len(), 1);
+
+    let ed = ed.adopt_settings(Editor::new(Config::default()));
+    assert!(ed.buffer().wal_deltas().is_none());
+    let ed = ed.set_config(delta_config()).insert_at(10, b"!");
+    assert!(ed.buffer().wal_deltas().is_none());
+    let ed = handle(ed, None, Event::Idle);
+    assert!(
+        fs::read(wal::wal_path(&path))
+            .unwrap()
+            .starts_with(wal::WAL_MAGIC)
+    );
+
+    let ed = handle(ed, None, Event::Run("save-buffer".to_owned()));
+    assert!(ed.buffer().wal_deltas().unwrap().1.is_empty());
+    let ed = ed.set_config(Config::default());
+    assert!(ed.buffer().wal_deltas().is_none());
+    let ed = ed.set_config(delta_config());
+    let ed = handle(ed, None, Event::Run("revert-buffer".to_owned()));
+    assert!(ed.buffer().wal_deltas().unwrap().1.is_empty());
+}
+
+#[test]
+fn neonwal2_recovery_then_edit_and_flush_preserves_recovered_draft() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("legacy.txt");
+    fs::write(&file_path, "original").unwrap();
+
+    let disk = file::disk_state(&file_path);
+    wal::write_wal(&file_path, disk, Eol::Lf, b"recovered draft").unwrap();
+
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let ed = perform_all(ed, Some(&lua), fx);
+    assert_eq!(
+        *ed.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"recovered draft")
+    );
+    assert!(ed.buffer().modified());
+
+    let mut session = ShellSession::new(ed, lua);
+    let t0 = Instant::now();
+    press(&mut session, KeyCode::Char('X'), KeyModifiers::NONE, t0);
+    session.tick_at(t0 + Duration::from_millis(1000));
+    assert!(wal::has_wal(&file_path));
+    assert!(!session.ed.buffer().is_wal_dirty());
+
+    // Simulate crash and reopen: must recover the full edited draft, not `Xoriginal`.
+    let reopened = Editor::new(Config::default());
+    let fx = request_open(&reopened, &file_path, None, true, Vec::new());
+    let reopened = perform_all(reopened, None, fx);
+    assert_eq!(
+        *reopened.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"Xrecovered draft")
+    );
+    assert!(reopened.buffer().modified());
+    assert_eq!(reopened.message(), "[Recovered legacy.txt from WAL]");
+
+    // Toggling EOL without any text delta must also preserve the recovered draft on flush.
+    let ed_eol = handle(reopened, None, Event::Run("toggle-eol".to_owned()));
+    let ed_eol = handle(ed_eol, None, Event::Idle);
+    assert!(!ed_eol.buffer().is_wal_dirty());
+
+    let reopened2 = Editor::new(Config::default());
+    let fx = request_open(&reopened2, &file_path, None, true, Vec::new());
+    let reopened2 = perform_all(reopened2, None, fx);
+    assert_eq!(
+        *reopened2.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"Xrecovered draft")
+    );
+    assert_eq!(reopened2.buffer().eol(), Eol::Crlf);
+    assert!(reopened2.buffer().modified());
+}
+
+#[test]
+fn lf_save_that_normalizes_on_reopen_keeps_snapshot_wal_after_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mixed.txt");
+    fs::write(&path, b"a\r\r\nb\r\n").unwrap();
+    let open = || {
+        let ed = Editor::new(delta_config());
+        let fx = request_open(&ed, &path, None, true, Vec::new());
+        perform_all(ed, None, fx)
+    };
+    let doc = neonemacs::core::Doc::from_bytes;
+    let ed = open();
+    assert_eq!(*ed.buffer().text(), doc(b"a\r\nb\n"));
+    let ed = handle(ed, None, Event::Run("toggle-eol".to_owned()));
+    let ed = handle(ed, None, Event::Run("save-buffer".to_owned()));
+    assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\n");
+    assert!(!ed.buffer().modified());
+    assert!(ed.buffer().wal_deltas().is_none());
+
+    let ed = ed.insert_at(3, b"Y");
+    let ed = handle(ed, None, Event::Run("undo".to_owned()));
+    assert_eq!(*ed.buffer().text(), doc(b"a\r\nb\n"));
+    assert!(!ed.buffer().modified());
+    let ed = handle(ed.insert_at(3, b"X"), None, Event::Idle);
+    assert!(!ed.buffer().is_wal_dirty());
+    assert!(
+        fs::read(wal::wal_path(&path))
+            .unwrap()
+            .starts_with(wal::WAL_MAGIC)
+    );
+
+    let ed = open();
+    assert_eq!(*ed.buffer().text(), doc(b"a\r\nXb\n"));
+    assert_eq!(ed.buffer().eol(), Eol::Lf);
+    assert!(ed.buffer().modified());
+}
+
+#[test]
+fn unapplicable_delta_wal_is_quarantined_as_stale_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("bad_delta.txt");
+    fs::write(&file_path, "hello").unwrap();
+
+    let disk = file::disk_state(&file_path);
+    let oob_deltas = [neonemacs::core::Replace {
+        offset: 99,
+        delete_len: 1,
+        insert: neonemacs::core::Doc::from_bytes(b"z"),
+    }];
+    let base = neonemacs::core::Doc::from_bytes(b"hello");
+    let digest = neonemacs::core::wal_base_digest(&base);
+    wal::write_wal_deltas(&file_path, disk, Eol::Lf, digest, &oob_deltas).unwrap();
+    assert!(wal::has_wal(&file_path));
+
+    let ed = Editor::new(Config::default());
+    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let ed = perform_all(ed, None, fx);
+    assert_eq!(
+        *ed.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"hello")
+    );
+    assert!(!ed.buffer().modified());
+    assert_eq!(ed.message(), "Stale WAL kept as .bad_delta.txt.wal.stale");
+    assert!(!wal::has_wal(&file_path));
+    assert!(wal::stale_path(&file_path).is_file());
+}
+
+#[test]
+fn delta_wal_rejects_a_changed_base_with_identical_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("same_metadata.txt");
+    fs::write(&path, b"abc").unwrap();
+    let open = || {
+        let ed = Editor::new(delta_config());
+        let fx = request_open(&ed, &path, None, true, Vec::new());
+        perform_all(ed, None, fx)
+    };
+    let disk = file::disk_state(&path);
+    let neonemacs::core::DiskState::Known { mtime, .. } = disk else {
+        panic!("file metadata missing")
+    };
+    let ed = handle(open().insert_at(3, b"X"), None, Event::Idle);
+    assert!(!ed.buffer().is_wal_dirty());
+    let wp = wal::wal_path(&path);
+    let raw = fs::read(&wp).unwrap();
+    assert!(raw.starts_with(wal::WAL_DELTA_MAGIC));
+
+    fs::write(&path, b"def").unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    assert_eq!(file::disk_state(&path), disk);
+    assert!(wal::read_wal(&path, disk).is_err());
+    let reopened = open();
+    assert_eq!(
+        *reopened.buffer().text(),
+        neonemacs::core::Doc::from_bytes(b"def")
+    );
+    assert!(!reopened.buffer().modified());
+    assert_eq!(fs::read(wal::stale_path(&path)).unwrap(), raw);
+    assert!(!wp.exists());
+}
+
+#[test]
+fn reaching_the_delta_record_ceiling_falls_back_to_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("many_edits.txt");
+    fs::write(&path, vec![b'a'; 128 * 1024]).unwrap();
+    let open = || {
+        let ed = Editor::new(delta_config());
+        let fx = request_open(&ed, &path, None, true, Vec::new());
+        perform_all(ed, None, fx)
+    };
+    let ed =
+        (0..neonemacs::core::MAX_WAL_DELTA_RECORDS).fold(open(), |ed, _| ed.insert_at(0, b"x"));
+    assert_eq!(
+        ed.buffer().wal_deltas().unwrap().1.len(),
+        neonemacs::core::MAX_WAL_DELTA_RECORDS
+    );
+    let ed = handle(ed.insert_at(0, b"Y"), None, Event::Idle);
+    assert!(ed.buffer().wal_deltas().is_none());
+    assert!(!ed.buffer().is_wal_dirty());
+    assert!(
+        fs::read(wal::wal_path(&path))
+            .unwrap()
+            .starts_with(wal::WAL_MAGIC)
+    );
+    assert_eq!(open().buffer().text(), ed.buffer().text());
+}
+
+#[test]
+fn delta_wal_in_scratch_slot_is_quarantined_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("scratch.wal");
+    let mut raw = wal::encode_wal_header(DiskState::Unknown, Eol::Lf).to_vec();
+    raw[..8].copy_from_slice(wal::WAL_DELTA_MAGIC);
+    raw.extend_from_slice(&neonemacs::core::wal_base_digest(
+        &neonemacs::core::Doc::default(),
+    ));
+    raw.extend_from_slice(&0u64.to_le_bytes());
+    raw.extend_from_slice(&0u64.to_le_bytes());
+    raw.extend_from_slice(&1u64.to_le_bytes());
+    raw.push(b'x');
+    fs::write(&slot, &raw).unwrap();
+
+    let ed = neonemacs::shell::startup::restore_scratch(
+        Editor::new(Config::default()).with_scratch_slot(Some(slot.clone())),
+    );
+    assert!(!ed.buffer().modified());
+    assert_eq!(ed.message(), "Stale WAL kept as scratch.wal.stale");
+    assert!(!slot.exists());
+    assert!(dir.path().join("scratch.wal.stale").is_file());
 }

@@ -8,7 +8,7 @@ use crate::commands::prompt::prompt;
 use crate::editor::{Buffer, BufferId, Dir, Editor, Purpose};
 use crate::effect::{Effect, Effects, InitLoad};
 use crate::file::Backing;
-use crate::text::Text;
+use crate::weave_tree::Doc;
 
 pub(crate) fn shell_command_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx)
@@ -45,7 +45,7 @@ pub fn shell_done(ed: Editor, result: Result<String, String>) -> Editor {
 
 /// Makes `text` the whole content of buffer `id` and leaves the buffer clean.
 fn fill_buffer(ed: Editor, id: BufferId, text: &str) -> Editor {
-    ed.replace_text(id, Text::from_bytes(text.as_bytes()))
+    ed.replace_text(id, Doc::from_bytes(text.as_bytes()))
         .with_buffer(id, Buffer::mark_clean)
 }
 
@@ -58,7 +58,7 @@ fn output_buffer(ed: &Editor, name: &str) -> Option<BufferId> {
 fn fill_named_buffer(ed: Editor, name: &str, text: &str) -> (Editor, BufferId) {
     let (ed, id) = match output_buffer(&ed, name) {
         Some(id) => (ed, id),
-        None => ed.add_buffer(name, Text::default(), Backing::None),
+        None => ed.add_buffer(name, Doc::default(), Backing::None),
     };
     (fill_buffer(ed, id, text), id)
 }
@@ -177,7 +177,7 @@ b
             .iter()
             .find(|b| b.name() == "*Shell Command Output*")
             .expect("output buffer");
-        assert_eq!(out.text().to_bytes(), b"a\nb");
+        assert_eq!(*out.text(), crate::weave_tree::Doc::from_bytes(b"a\nb"));
         assert_eq!(ed.leaf_count(), 2);
     }
 
@@ -212,8 +212,8 @@ d
         let (ed, _) = ed.undo(Vec::new());
         assert_eq!(ed.message(), "No further undo information");
         assert_eq!(
-            ed.buffers().get_by_id(output_id(&ed)).text().to_bytes(),
-            b"c\nd"
+            *ed.buffers().get_by_id(output_id(&ed)).text(),
+            crate::weave_tree::Doc::from_bytes(b"c\nd")
         );
     }
 
@@ -241,7 +241,7 @@ d
 "
             .to_owned()),
         );
-        let len = ed.buffers().get_by_id(output_id(&ed)).text().len();
+        let len = ed.buffers().get_by_id(output_id(&ed)).text().total_bytes();
         assert!(ed.window().point <= len);
         assert_eq!(ed.window().top, 0);
     }
@@ -249,7 +249,7 @@ d
     fn init_log(ed: &Editor) -> Option<Vec<u8>> {
         ed.buffers()
             .find_by_name("*init-log*")
-            .map(|b| b.text().to_bytes())
+            .map(|b| crate::test_support::doc_bytes(b.text()))
     }
 
     #[test]
@@ -316,7 +316,7 @@ more"
         let path = FilePath::resolve(Path::new(""), Path::new("*init-log*"));
         let (ed, file) = editor().add_buffer(
             "*init-log*",
-            Text::from_bytes(b"mine"),
+            Doc::from_bytes(b"mine"),
             Backing::file(path, DiskState::Unknown),
         );
         let ed = ed.with_buffer(file, Buffer::mark_modified);
@@ -324,7 +324,7 @@ more"
         let ed = record_init_error(ed, "bad");
         let ed = init_loaded(ed, Some(InitLoad::Applied));
         let kept = ed.buffers().get_by_id(file);
-        assert_eq!(kept.text().to_bytes(), b"mine");
+        assert_eq!(*kept.text(), crate::weave_tree::Doc::from_bytes(b"mine"));
         assert!(kept.modified());
         let logs = ed
             .buffers()
@@ -368,7 +368,7 @@ more"
                 .buffers()
                 .iter()
                 .find(|b| b.name() == "*Shell Command Output*")
-                .map(|b| b.text().to_bytes()),
+                .map(|b| crate::test_support::doc_bytes(b.text())),
             Some(b"line 1\nline 2".to_vec())
         );
 

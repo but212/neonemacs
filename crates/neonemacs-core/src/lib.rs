@@ -18,23 +18,25 @@ mod search;
 mod syntax;
 #[cfg(test)]
 mod test_support;
-mod text;
 mod undo;
 pub mod weave_tree;
 mod width;
 mod window;
 
-pub use buffer::{Buffer, BufferId};
+pub use buffer::{
+    Buffer, BufferId, MAX_WAL_DELTA_BYTES, MAX_WAL_DELTA_RECORDS, WAL_DELTA_RECORD_BYTES,
+    WalBaseDigest, wal_base_digest,
+};
 pub use commands::{confirmed, is_builtin, record_init_error, request_open, switch_to};
 pub use config::{Config, Setting, ShellSpec, Toggles, Value};
 pub use dispatch::command;
 pub use editor::{CANCEL_MESSAGE, Confirm, Editor, LastCommand, Mode, Prefix, Window};
-pub use eol::Eol;
+pub use eol::{Eol, EolStreamDecoder};
 pub use file::{Backing, DiskState, FilePath, RawFile, Read, loaded_from};
 pub use keymap::{AliasTarget, Code, Key, KeyError, ctrl_key, parse_key_seq, parse_keys};
 pub use syntax::{SyntaxDef, SyntaxRegistry, TokenKind, highlight_line};
-pub use text::{Text, snap_point};
 pub use undo::Edit;
+pub use weave_tree::{Doc, DocError, Replace, Unit};
 pub use width::str_width;
 
 use crate::effect::{Effects, Event};
@@ -78,7 +80,7 @@ mod tests {
     fn step_returns_editor_and_effects() {
         let ed = Editor::new(Config::default());
         let (ed, fx) = step(ed, Event::Key(Key::plain(Code::Char('a'))));
-        assert_eq!(ed.buffer().text().to_bytes(), b"a");
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"a"));
         assert_eq!(fx, [] as [Effect; 0]);
     }
 }

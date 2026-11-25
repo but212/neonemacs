@@ -1,7 +1,7 @@
 //! Buffer backing, and the buffer that a file read produces. Pure: the bytes come from the shell.
 
-use crate::eol::Eol;
-use crate::text::Text;
+use crate::eol::{Eol, EolStreamDecoder};
+use crate::weave_tree::Doc;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
@@ -54,11 +54,26 @@ pub enum Read {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawFile {
-    /// Length on disk, which can exceed `bytes.len()`.
+    /// Length on disk, which can exceed `doc.total_bytes()`.
     pub len: u64,
     pub disk: DiskState,
-    /// The whole file, or empty when `len` exceeds `max_size`.
-    pub bytes: Vec<u8>,
+    /// Normalized document tree, or empty when `len` exceeds `max_size`.
+    pub doc: Doc,
+    /// Detected line ending mode (`None` if no `\n` was seen).
+    pub eol: Option<Eol>,
+}
+
+impl RawFile {
+    #[must_use]
+    pub fn from_bytes(len: u64, disk: DiskState, raw: &[u8]) -> Self {
+        let (doc, eol) = EolStreamDecoder::new().push_chunk(raw).finish();
+        Self {
+            len,
+            disk,
+            doc,
+            eol,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,7 +165,7 @@ impl Backing {
 }
 
 pub struct Loaded {
-    pub text: Text,
+    pub text: Doc,
     pub backing: Backing,
     pub eol: Eol,
 }
@@ -186,7 +201,7 @@ pub fn loaded_from(
 ) -> Result<Loaded, TooLarge> {
     match read {
         Read::Missing => Ok(Loaded {
-            text: Text::default(),
+            text: Doc::default(),
             backing: Backing::file(path.clone(), DiskState::Unknown),
             eol: default_eol,
         }),
@@ -197,9 +212,9 @@ pub fn loaded_from(
                     max: max_size,
                 });
             }
-            let (eol, text) = Eol::from_raw(raw.bytes, default_eol);
+            let eol = raw.eol.unwrap_or(default_eol);
             Ok(Loaded {
-                text: Text::from_vec(text),
+                text: raw.doc,
                 backing: Backing::file(path.clone(), raw.disk),
                 eol,
             })
@@ -214,11 +229,7 @@ mod tests {
     use super::*;
 
     fn found(len: u64, bytes: &[u8]) -> Read {
-        Read::Found(RawFile {
-            len,
-            disk: DiskState::Unknown,
-            bytes: bytes.to_vec(),
-        })
+        Read::Found(RawFile::from_bytes(len, DiskState::Unknown, bytes))
     }
 
     fn load(read: Read, max_size: u64) -> Loaded {
@@ -305,7 +316,7 @@ mod tests {
     #[test]
     fn file_at_size_limit_is_loaded_whole() {
         let loaded = load(found(4, b"0123"), 4);
-        assert_eq!(loaded.text.to_bytes(), b"0123");
+        assert_eq!(loaded.text, Doc::from_bytes(b"0123"));
     }
 
     #[test]
@@ -317,7 +328,7 @@ mod tests {
     #[test]
     fn missing_file_has_unknown_disk_state() {
         let loaded = load(Read::Missing, 1 << 20);
-        assert_eq!(loaded.text.len(), 0);
+        assert_eq!(loaded.text.total_bytes(), 0);
         assert!(matches!(
             loaded.backing,
             Backing::File {
@@ -331,7 +342,7 @@ mod tests {
     fn crlf_file_loads_as_normalized_text() {
         let loaded = load(found(6, b"a\r\nb\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
     }
 
     #[test]
@@ -344,42 +355,42 @@ mod tests {
     fn mixed_file_is_normalized_with_majority_mode() {
         let loaded = load(found(5, b"a\r\nb\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
     }
 
     #[test]
     fn lone_cr_is_not_a_line_ending() {
         let loaded = load(found(3, b"a\rb"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text.to_bytes(), b"a\rb");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\rb"));
     }
 
     #[test]
     fn crlf_only_file_becomes_one_newline() {
         let loaded = load(found(2, b"\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"\n"));
     }
 
     #[test]
     fn double_cr_before_lf_keeps_one_cr_in_text() {
         let loaded = load(found(4, b"a\r\r\n"), 1 << 20);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\r\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\r\n"));
     }
 
     #[test]
     fn empty_file_is_lf_and_empty() {
         let loaded = load(found(0, b""), 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
-        assert!(loaded.text.is_empty());
+        assert_eq!(loaded.text.total_bytes(), 0);
     }
 
     #[test]
     fn crlf_at_size_limit_is_loaded_and_normalized() {
         let loaded = load(found(6, b"a\r\nb\r\n"), 6);
         assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text.to_bytes(), b"a\nb\n");
+        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
     }
 
     #[test]
@@ -388,13 +399,9 @@ mod tests {
             mtime: SystemTime::UNIX_EPOCH,
             size: 3,
         };
-        let read = Read::Found(RawFile {
-            len: 3,
-            disk,
-            bytes: b"a\r\n".to_vec(),
-        });
+        let read = Read::Found(RawFile::from_bytes(3, disk, b"a\r\n"));
         let loaded = load(read, 1 << 20);
-        assert_eq!(loaded.text.len(), 2);
+        assert_eq!(loaded.text.total_bytes(), 2);
         assert!(matches!(
             loaded.backing,
             Backing::File { disk: d, .. } if d == disk
@@ -418,7 +425,7 @@ mod tests {
                 }
                 let loaded = load(found(raw.len() as u64, &raw), 1 << 20);
                 assert_eq!(
-                    loaded.eol.encode(&loaded.text.to_bytes()),
+                    crate::test_support::doc_encode_eol(&loaded.text, loaded.eol),
                     raw,
                     "raw={raw:?}"
                 );

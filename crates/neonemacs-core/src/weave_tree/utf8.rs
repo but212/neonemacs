@@ -1,8 +1,7 @@
 //! RFC 3629 UTF-8 unit decoding, local boundary queries, and seam-merge logic (D-01).
 
-use std::sync::Arc;
-
 use memchr::memchr_iter;
+use triomphe::{AllocError, Arc};
 
 use super::{ByteSlice, MAX_SLICE_BYTES, Unit};
 
@@ -115,7 +114,13 @@ pub(crate) fn count_line_breaks(bytes: &[u8]) -> usize {
 /// always breaking at valid `Unit` boundaries (D-01, D-02).
 #[must_use]
 pub(crate) fn chunk_bytes_to_slices(bytes: &[u8]) -> Vec<ByteSlice> {
-    let mut slices = Vec::new();
+    try_append_slices(Vec::new(), bytes).expect("cannot allocate document slices")
+}
+
+pub(crate) fn try_append_slices(
+    mut slices: Vec<ByteSlice>,
+    bytes: &[u8],
+) -> Result<Vec<ByteSlice>, AllocError> {
     let mut start = 0;
     while start < bytes.len() {
         let max_end = (start + MAX_SLICE_BYTES).min(bytes.len());
@@ -127,7 +132,8 @@ pub(crate) fn chunk_bytes_to_slices(bytes: &[u8]) -> Vec<ByteSlice> {
             start + local_end.max(1)
         };
         let chunk = &bytes[start..end];
-        let buf: Arc<[u8]> = Arc::from(chunk);
+        slices.try_reserve(1).map_err(|_| AllocError)?;
+        let buf = Arc::try_from_header_and_slice((), chunk)?;
         let line_breaks = count_line_breaks(chunk);
         slices.push(ByteSlice {
             buf,
@@ -136,7 +142,7 @@ pub(crate) fn chunk_bytes_to_slices(bytes: &[u8]) -> Vec<ByteSlice> {
         });
         start = end;
     }
-    slices
+    Ok(slices)
 }
 
 /// Result of pre-mutation UTF-8 seam analysis around an edit site (D-01).

@@ -162,7 +162,11 @@ pub fn written(
                     b.set_name(name).set_backing(Backing::file(file, new_disk))
                 });
             }
-            ed = ed.with_buffer(id, |b| b.record_saved(new_disk));
+            let track = ed.tracks_wal_deltas();
+            ed = ed.with_buffer(id, |b| {
+                let track = track && b.eol().preserves_saved_doc(b.text());
+                b.record_saved(new_disk).track_wal_baseline(track)
+            });
             fx.push(Effect::RemoveWal {
                 target: WalTarget::Sibling(path.to_path_buf()),
             });
@@ -218,13 +222,13 @@ mod tests {
     use crate::eol::Eol;
     use crate::file::FilePath;
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
-    use crate::text::Text;
+    use crate::weave_tree::Doc;
     use std::path::Path;
 
     fn quit_message(names: &[&str]) -> String {
         let mut ed = editor();
         for name in names {
-            let (next, id) = ed.add_buffer(name, Text::default(), Backing::None);
+            let (next, id) = ed.add_buffer(name, Doc::default(), Backing::None);
             ed = next.with_buffer(id, Buffer::mark_modified);
         }
         // The initial `*scratch*` stays clean, so only the named buffers are listed.
@@ -287,10 +291,10 @@ mod tests {
         let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
         let (ed, _) = toggle_eol(ed, Vec::new());
         assert_eq!(ed.buffer().eol(), Eol::Crlf);
-        assert_eq!(ed.buffer().text().to_bytes(), b"a\nb\n");
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"a\nb\n"));
         let (ed, _) = ed.undo(Vec::new());
         assert_eq!(ed.buffer().eol(), Eol::Lf);
-        assert_eq!(ed.buffer().text().to_bytes(), b"a\nb\n");
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"a\nb\n"));
     }
 
     #[test]
@@ -315,7 +319,7 @@ mod tests {
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let (ed, _) = ed.add_buffer(
             "g.txt",
-            Text::from_bytes(b"x"),
+            Doc::from_bytes(b"x"),
             Backing::file(
                 FilePath::resolve(Path::new(""), Path::new("g.txt")),
                 DiskState::Unknown,
@@ -334,7 +338,7 @@ mod tests {
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let (ed, _) = ed.add_buffer(
             "g.txt",
-            Text::from_bytes(b"x"),
+            Doc::from_bytes(b"x"),
             Backing::file(
                 FilePath::resolve(Path::new(""), Path::new("g.txt")),
                 DiskState::Unknown,

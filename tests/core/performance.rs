@@ -2,18 +2,17 @@
 
 use neonemacs::core::Backing;
 use neonemacs::core::Config;
+use neonemacs::core::Doc;
 use neonemacs::core::Edit;
 use neonemacs::core::Editor;
-use neonemacs::core::Text;
 use std::time::{Duration, Instant};
 
 #[test]
 fn editor_apply_must_not_deep_clone_entire_buffer() {
     let ed = Editor::new(Config::default());
-    // Create a 32MB buffer (Config default max is 64MB)
     let size = 32 * 1024 * 1024;
     let large_bytes = vec![b'a'; size];
-    let (ed, id) = ed.add_buffer("large", Text::from_bytes(&large_bytes), Backing::None);
+    let (ed, id) = ed.add_buffer("large", Doc::from_bytes(&large_bytes), Backing::None);
     let ed = neonemacs::core::switch_to(ed, id);
 
     let edit = Edit::insert(0, b"x".as_slice());
@@ -28,7 +27,7 @@ fn editor_apply_must_not_deep_clone_entire_buffer() {
     let (ed, _) = ed.apply(edit2);
     let elapsed = start.elapsed();
 
-    assert_eq!(ed.buffer().text().len(), size + 2);
+    assert_eq!(ed.buffer().text().total_bytes(), size + 2);
     assert!(
         elapsed < Duration::from_millis(5),
         "Subsequent insert took {elapsed:?} (expected < 5ms). Full buffer clone detected in Editor::apply!"
@@ -46,16 +45,18 @@ fn large_file_nth_line_start_and_line_navigation_latency() {
         data.extend_from_slice(line.as_bytes());
     }
 
-    let mut text = Text::from_vec(data);
-    // Insert text in the middle to create an active gap right at the 50,000th line
+    let mut text = Doc::from_bytes(&data);
+    // Insert text in the middle to split the tree right at the 50,000th line
     let mid_pos = line_len * 50_000;
-    text = text.insert(mid_pos, b"# GAP INSERTION POINT #\n");
+    (text, _) = text
+        .replace(mid_pos, 0, b"# GAP INSERTION POINT #\n")
+        .unwrap();
 
     // Navigating to late lines should not suffer from un-vectorized byte-by-byte looping.
     // In release mode or even debug mode with SIMD slice searching, scanning 50,000 lines is near-instant (< 30ms).
     // With byte-at-a-time loop calling byte_at() millions of times with bounds checking and branches, it degrades drastically.
     let start = Instant::now();
-    let pos_80k = text.nth_line_start(80_000);
+    let pos_80k = text.line_to_offset(79_999).unwrap();
     let elapsed_nth = start.elapsed();
 
     // Since we inserted 1 line at 50,000, line 80,000 is original line (80,000 - 2) + inserted line len
@@ -63,21 +64,22 @@ fn large_file_nth_line_start_and_line_navigation_latency() {
     assert_eq!(pos_80k, expected_pos_80k);
 
     let start = Instant::now();
-    let lend = text.line_end(pos_80k);
-    let lstart = text.line_start(lend);
+    let line_idx = text.offset_to_line(pos_80k).unwrap();
+    let lstart = text.line_to_offset(line_idx).unwrap();
+    let lend = text.line_to_offset(line_idx + 1).unwrap() - 1;
     let elapsed_single = start.elapsed();
 
     assert_eq!(lstart, pos_80k);
     assert_eq!(lend, pos_80k + line_len - 1);
 
-    // Strict performance assertion: nth_line_start for 80k lines must complete under 60ms (sub-millisecond in release mode)
+    // Strict performance assertion: line_to_offset for 80k lines must complete under 60ms (sub-millisecond in release mode)
     assert!(
         elapsed_nth < Duration::from_millis(60),
-        "nth_line_start(80_000) took {elapsed_nth:?} (expected < 60ms). Byte-by-byte linear search overhead detected!"
+        "line_to_offset(79_999) took {elapsed_nth:?} (expected < 60ms). Byte-by-byte linear search overhead detected!"
     );
     assert!(
         elapsed_single < Duration::from_millis(1),
-        "line_start/line_end took {elapsed_single:?} (expected < 1ms)"
+        "offset_to_line/line_to_offset took {elapsed_single:?} (expected < 1ms)"
     );
 }
 
@@ -95,7 +97,7 @@ fn lua_comment_dwim_100_lines_on_32mb_buffer_is_fast() {
     let pad = (32 * 1024 * 1024) - data.len();
     data.resize(data.len() + pad, b' ');
 
-    let (ed, id) = ed.add_buffer("test.rs", Text::from_bytes(&data), Backing::None);
+    let (ed, id) = ed.add_buffer("test.rs", Doc::from_bytes(&data), Backing::None);
     let ed = neonemacs::core::switch_to(ed, id);
 
     // Mark region covering first 100 lines (from 0 to 1200)
@@ -115,7 +117,10 @@ fn lua_comment_dwim_100_lines_on_32mb_buffer_is_fast() {
         "comment-dwim on 100 lines of 32MB buffer took {elapsed:?} (expected < 100ms). Full Editor clone in mutate_editor detected!"
     );
     // Verify first line commented
-    assert_eq!(&ed.buffer().text().bytes(0..15), b"// let x = 42;\n");
+    assert_eq!(
+        ed.buffer().text().slice(0..15).unwrap(),
+        Doc::from_bytes(b"// let x = 42;\n")
+    );
 }
 
 #[test]
@@ -126,10 +131,10 @@ fn oversized_closed_undo_group_is_evicted_on_boundary() {
     };
     let ed = Editor::new(config);
     let large = vec![b'a'; 16 * 1024];
-    let (ed, id) = ed.add_buffer("undo-limit", Text::from_bytes(&large), Backing::None);
+    let (ed, id) = ed.add_buffer("undo-limit", Doc::from_bytes(&large), Backing::None);
     let ed = neonemacs::core::switch_to(ed, id);
 
-    let (ed, _) = ed.apply(Edit::delete(0, large[..8192].to_vec()));
+    let (ed, _) = ed.apply(Edit::delete(0, 8192));
     let ed = ed.end_command();
 
     let ed = neonemacs::shell::handle(
@@ -138,7 +143,7 @@ fn oversized_closed_undo_group_is_evicted_on_boundary() {
         neonemacs::core::effect::Event::Run("undo".to_owned()),
     );
     assert_eq!(ed.message(), "No further undo information");
-    assert_eq!(ed.buffer().text().len(), 8192);
+    assert_eq!(ed.buffer().text().total_bytes(), 8192);
 }
 
 #[test]
@@ -146,7 +151,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = Editor::new(Config::default());
     let size = 10 * 1024 * 1024;
     let line = vec![b'x'; size];
-    let (ed, id) = ed.add_buffer("long-line", Text::from_bytes(&line), Backing::None);
+    let (ed, id) = ed.add_buffer("long-line", Doc::from_bytes(&line), Backing::None);
     let ed = neonemacs::core::switch_to(ed, id);
 
     // 1. Near line start: must not copy or highlight the 10MB tail.
@@ -175,7 +180,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
 }
 
 #[test]
-fn wal_flush_streams_split_gap_buffer_without_full_copy() {
+fn wal_flush_streams_edited_doc_without_full_copy() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("split.txt");
     let initial = b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec();
@@ -186,7 +191,6 @@ fn wal_flush_streams_split_gap_buffer_without_full_copy() {
     let ed = neonemacs::shell::perform_all(ed, None, fx);
     let disk = neonemacs::shell::file::disk_state(&file_path);
 
-    // Edit at offset 10 so the gap splits the buffer between left and right halves.
     let (ed, _) = ed.apply(Edit::insert(10, b"[MID]".as_slice()));
     let (ed, fx) = neonemacs::core::step(ed, neonemacs::core::effect::Event::Idle);
     assert!(
@@ -196,34 +200,33 @@ fn wal_flush_streams_split_gap_buffer_without_full_copy() {
 
     let _ed = neonemacs::shell::perform_all(ed, None, fx);
     let wal = neonemacs::shell::wal::read_wal(&file_path, disk).unwrap();
-    assert_eq!(wal.bytes, b"0123456789[MID]abcdefghijklmnopqrstuvwxyz");
+    assert_eq!(
+        wal.doc,
+        Doc::from_bytes(b"0123456789[MID]abcdefghijklmnopqrstuvwxyz")
+    );
 }
 
 #[test]
-fn large_eol_from_raw_and_encode_are_simd_chunked() {
+fn large_eol_stream_decoder_is_simd_chunked() {
     let line = b"abcdefghijklmnopqrstuvwxyz0123456789\r\n";
     let mut raw = Vec::with_capacity(line.len() * 200_000);
     for _ in 0..200_000 {
         raw.extend_from_slice(line);
     }
     let start = Instant::now();
-    let (eol, normalized) = neonemacs::core::Eol::from_raw(raw, neonemacs::core::Eol::Lf);
-    let elapsed_from_raw = start.elapsed();
-    assert_eq!(eol, neonemacs::core::Eol::Crlf);
-
-    let start = Instant::now();
-    let encoded = eol.encode(&normalized);
-    let elapsed_encode = start.elapsed();
-    assert_eq!(encoded.len(), line.len() * 200_000);
+    let mut decoder = neonemacs::core::EolStreamDecoder::new();
+    for chunk in raw.chunks(64 * 1024) {
+        decoder = decoder.push_chunk(chunk);
+    }
+    let (doc, eol) = decoder.finish();
+    let elapsed_decode = start.elapsed();
+    assert_eq!(eol, Some(neonemacs::core::Eol::Crlf));
+    assert_eq!(doc.total_bytes(), (line.len() - 1) * 200_000);
     // Timing budgets apply only to optimized builds; debug builds still check correctness.
     if !cfg!(debug_assertions) {
         assert!(
-            elapsed_from_raw < Duration::from_millis(120),
-            "Eol::from_raw on 7.6MB CRLF took {elapsed_from_raw:?} (expected < 120ms)"
-        );
-        assert!(
-            elapsed_encode < Duration::from_millis(120),
-            "Eol::encode on 7.4MB CRLF took {elapsed_encode:?} (expected < 120ms)"
+            elapsed_decode < Duration::from_millis(120),
+            "EolStreamDecoder on 7.6MB CRLF took {elapsed_decode:?} (expected < 120ms)"
         );
     }
 }

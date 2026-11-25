@@ -2,8 +2,8 @@ use super::screen::print_styled_row;
 use super::*;
 use crate::core::Config;
 use crate::core::Confirm;
+use crate::core::Doc;
 use crate::core::Editor;
-use crate::core::Text;
 use crate::core::TokenKind;
 use crate::core::request_open;
 use crate::shell::ShellTask;
@@ -67,7 +67,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
         session.handle_event_at(&ev, t0 + Duration::from_secs(i as u64 + 1));
     }
 
-    assert_eq!(session.ed.buffer().text().to_bytes(), b"");
+    assert_eq!(*session.ed.buffer().text(), Doc::from_bytes(b""));
     assert!(!session.ed.buffer().modified());
     assert!(session.wal_deadline.is_none());
     assert!(!session.is_quit());
@@ -77,7 +77,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
         &press(KeyCode::Char('x'), KeyModifiers::NONE),
         t0 + Duration::from_secs(10),
     );
-    assert_eq!(session.ed.buffer().text().to_bytes(), b"x");
+    assert_eq!(*session.ed.buffer().text(), Doc::from_bytes(b"x"));
 }
 
 #[test]
@@ -191,9 +191,14 @@ fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
     tx.send(Ok("line1\nline2\n".to_owned())).unwrap();
     session.tick_at(t0 + Duration::from_millis(100));
     assert!(session.active_shell.is_none());
-    assert!(session.ed.buffers().iter().any(
-        |b| b.name() == "*Shell Command Output*" && b.text().to_bytes() == b"line1\nline2"
-    ));
+    assert!(
+        session
+            .ed
+            .buffers()
+            .iter()
+            .any(|b| b.name() == "*Shell Command Output*"
+                && *b.text() == Doc::from_bytes(b"line1\nline2"))
+    );
 }
 
 #[test]
@@ -236,8 +241,8 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
     assert_eq!(
         wal::read_wal(&file_a, crate::shell::file::disk_state(&file_a))
             .unwrap()
-            .bytes,
-        b"i!?nit_a"
+            .doc,
+        Doc::from_bytes(b"i!?nit_a")
     );
 
     // 3. Edit again, then save (C-x C-s) before 1s elapses -> disarms WAL flush & removes .wal
@@ -516,7 +521,7 @@ fn render_sized_caches_unchanged_rows_redraws_style_changes_and_handles_resize()
     let mut session = make_session();
     session.ed = session.ed.with_current_buffer(|b| {
         b.set_name("plain.txt")
-            .with_text(Text::from_bytes(b"let x = 42;"))
+            .with_text(Doc::from_bytes(b"let x = 42;"))
     });
 
     // 1. Initial render draws all rows
@@ -584,7 +589,7 @@ fn reload_init_replaces_settings_and_keeps_documents() {
     assert_eq!(session.ed.message(), "Loaded init.lua");
     assert_eq!(bound(&session, "C-x 9").as_deref(), Some("hello"));
     assert_eq!(session.ed.config().fill_column, 85);
-    assert_eq!(session.ed.buffer().text().to_bytes(), b"ab");
+    assert_eq!(*session.ed.buffer().text(), Doc::from_bytes(b"ab"));
     assert!(session.ed.buffer().modified());
 
     // The new Lua state holds the new command.
@@ -603,7 +608,7 @@ fn reload_init_replaces_settings_and_keeps_documents() {
 
     // The undo history survived both reloads.
     session.handle_event(&press(KeyCode::Char('/'), KeyModifiers::CONTROL));
-    assert_eq!(session.ed.buffer().text().to_bytes(), b"");
+    assert_eq!(*session.ed.buffer().text(), Doc::from_bytes(b""));
 
     session.reload_init(InitSource::Absent);
     assert_eq!(session.ed.message(), "No init.lua");
@@ -630,7 +635,10 @@ fn a_failed_reload_keeps_the_previous_settings_and_commands() {
     assert_eq!(bound(&session, "C-x 8"), None);
     assert_eq!(bound(&session, "C-x 9").as_deref(), Some("hello"));
     let log = session.ed.buffers().find_by_name("*init-log*").unwrap();
-    assert!(String::from_utf8_lossy(&log.text().to_bytes()).contains("init.lua:3:"));
+    assert!(
+        String::from_utf8_lossy(&crate::test_support::doc_bytes(log.text()))
+            .contains("init.lua:3:")
+    );
 
     session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::CONTROL));
     session.handle_event(&press(KeyCode::Char('9'), KeyModifiers::NONE));
@@ -645,7 +653,7 @@ fn a_failed_reload_keeps_the_previous_settings_and_commands() {
     // A later success empties the log.
     reload(&mut session, "");
     let log = session.ed.buffers().find_by_name("*init-log*").unwrap();
-    assert_eq!(log.text().to_bytes(), b"");
+    assert_eq!(*log.text(), Doc::from_bytes(b""));
 }
 
 #[test]

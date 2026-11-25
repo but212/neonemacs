@@ -40,12 +40,12 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
     let bad_ed2 = typ(editor(), "가나다").with_window(|w| Window { point: 1, ..w });
     let (after_del, _) = delete_char(bad_ed2, Vec::new());
     // Deleting from middle of unit should delete to boundary without panic
-    assert!(point(&after_del) <= after_del.buffer().text().len());
+    assert!(point(&after_del) <= after_del.buffer().text().total_bytes());
 
     // Force point way past end of buffer (e.g. 9999)
     let oob_ed = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_bkwd, _) = delete_backward_char(oob_ed, Vec::new());
-    assert!(point(&after_bkwd) <= after_bkwd.buffer().text().len());
+    assert!(point(&after_bkwd) <= after_bkwd.buffer().text().total_bytes());
 }
 
 #[test]
@@ -209,7 +209,10 @@ fn kill_ring_empty_and_illegal_operations() {
     ed5 = keys(ed5, "C-f C-f C-f C-f C-f"); // mark "hello"
     let (ed5, _) = kill_ring_save(ed5, Vec::new());
     assert_eq!(text(&ed5), "hello world");
-    assert_eq!(ed5.kill_ring().entries(), &[b"hello".to_vec()]);
+    assert_eq!(
+        ed5.kill_ring().entries(),
+        &[crate::weave_tree::Doc::from_bytes(b"hello")]
+    );
 }
 
 #[test]
@@ -226,7 +229,8 @@ fn massive_kill_pop_and_undo_reversibility() {
     // Now undo all operations back to the initial state
     // Consecutive undos should walk back through each edit group
     let mut steps = 0;
-    while ed.buffer().text().to_bytes() != initial_text.as_bytes() && steps < 50 {
+    let initial_doc = crate::weave_tree::Doc::from_bytes(initial_text.as_bytes());
+    while *ed.buffer().text() != initial_doc && steps < 50 {
         ed = keys(ed, "C-/");
         steps += 1;
     }
@@ -336,7 +340,7 @@ fn hostile_fuzz_sequence_no_panic() {
 
     // Must never panic, buffer must remain intact and valid UTF-8
     assert!(!ed.buffers().is_empty());
-    assert!(ed.window().point <= ed.buffer().text().len());
+    assert!(ed.window().point <= ed.buffer().text().total_bytes());
 }
 
 #[test]
@@ -619,7 +623,7 @@ fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
     // 11..15: "test"
     // 21..25: "test"
     let mut ed = typ(editor(), "test alpha test beta test");
-    assert_eq!(ed.buffer().text().len(), 25);
+    assert_eq!(ed.buffer().text().total_bytes(), 25);
     ed = ed.move_point(25);
 
     let (after_start, _) = isearch_backward(ed, Vec::new());
@@ -676,7 +680,7 @@ fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
 
 #[test]
 fn find_forward_out_of_bounds_from_does_not_panic() {
-    let t = crate::text::Text::from_bytes(b"hello");
+    let t = crate::weave_tree::Doc::from_bytes(b"hello");
     let pat = crate::search::Pattern::regex("^h").unwrap();
     // from is far beyond text length and initial gap buffer capacity
     let res = crate::search::find_forward(&t, &pat, 100_000, false);

@@ -1,38 +1,52 @@
 //! Structural B-Tree operations (`from_slices`, `split_at`, `join`) preserving D-02 and D-03.
 
-use std::sync::Arc;
+use triomphe::{AllocError, Arc};
 
 use super::utf8::count_line_breaks;
 use super::{ByteSlice, CHUNK_CAP, ChildEntry, MAX_FANOUT, MAX_SLICE_BYTES, MIN_FANOUT, SliceNode};
 
 #[must_use]
 pub(crate) fn summarize_leaf(slices: Vec<ByteSlice>) -> ChildEntry {
+    try_summarize_leaf(slices).expect("cannot allocate document leaf")
+}
+
+fn try_summarize_leaf(slices: Vec<ByteSlice>) -> Result<ChildEntry, AllocError> {
     let mut bytes = 0usize;
+    let mut backing_bytes = 0usize;
     let mut line_breaks = 0usize;
     for s in &slices {
         bytes += s.range.len();
+        backing_bytes = backing_bytes.saturating_add(s.buf.slice.len());
         line_breaks += s.line_breaks;
     }
-    ChildEntry {
-        node: Arc::new(SliceNode::Leaf { slices }),
+    Ok(ChildEntry {
+        node: Arc::try_new(SliceNode::Leaf { slices })?,
         bytes,
+        backing_bytes,
         line_breaks,
-    }
+    })
 }
 
 #[must_use]
 pub(crate) fn summarize_internal(children: Vec<ChildEntry>) -> ChildEntry {
+    try_summarize_internal(children).expect("cannot allocate document node")
+}
+
+fn try_summarize_internal(children: Vec<ChildEntry>) -> Result<ChildEntry, AllocError> {
     let mut bytes = 0usize;
+    let mut backing_bytes = 0usize;
     let mut line_breaks = 0usize;
     for c in &children {
         bytes += c.bytes;
+        backing_bytes = backing_bytes.saturating_add(c.backing_bytes);
         line_breaks += c.line_breaks;
     }
-    ChildEntry {
-        node: Arc::new(SliceNode::Internal { children }),
+    Ok(ChildEntry {
+        node: Arc::try_new(SliceNode::Internal { children })?,
         bytes,
+        backing_bytes,
         line_breaks,
-    }
+    })
 }
 
 #[must_use]
@@ -46,52 +60,43 @@ pub(crate) fn entry_height(entry: &ChildEntry) -> usize {
     h
 }
 
-/// Groups items into chunks of `MAX_FANOUT`, redistributing the last two chunks
-/// if there are >= 2 chunks and the last has fewer than `MIN_FANOUT` items.
-fn pack_fanout<T>(items: Vec<T>) -> Vec<Vec<T>> {
-    let mut groups: Vec<Vec<T>> = Vec::new();
-    let mut cur = Vec::with_capacity(MAX_FANOUT);
-    for item in items {
-        cur.push(item);
-        if cur.len() == MAX_FANOUT {
-            groups.push(cur);
-            cur = Vec::with_capacity(MAX_FANOUT);
-        }
+/// Packs one level, balancing the last two nodes if the last would underflow.
+fn try_pack_level<T>(
+    items: Vec<T>,
+    summarize: impl Fn(Vec<T>) -> Result<ChildEntry, AllocError>,
+) -> Result<Vec<ChildEntry>, AllocError> {
+    let mut items = items.into_iter();
+    let mut level = Vec::new();
+    level
+        .try_reserve_exact(items.len().div_ceil(MAX_FANOUT))
+        .map_err(|_| AllocError)?;
+    while items.len() > 0 {
+        let remaining = items.len();
+        let size = if (MAX_FANOUT + 1..MAX_FANOUT + MIN_FANOUT).contains(&remaining) {
+            remaining / 2
+        } else {
+            remaining.min(MAX_FANOUT)
+        };
+        let mut group = Vec::new();
+        group.try_reserve_exact(size).map_err(|_| AllocError)?;
+        group.extend(items.by_ref().take(size));
+        level.push(summarize(group)?);
     }
-    if !cur.is_empty() {
-        groups.push(cur);
-    }
-    let len = groups.len();
-    if len >= 2 && groups[len - 1].len() < MIN_FANOUT {
-        let last = groups.pop().expect("len >= 2");
-        let mut prev = groups.pop().expect("len >= 2");
-        let total = prev.len() + last.len();
-        let left_len = total / 2;
-        prev.extend(last);
-        let right = prev.split_off(left_len);
-        groups.push(prev);
-        groups.push(right);
-    }
-    groups
+    Ok(level)
 }
 
 /// Bottom-up O(N) B-Tree builder from valid `ByteSlice`s.
 #[must_use]
 pub(crate) fn from_slices(slices: Vec<ByteSlice>) -> Option<ChildEntry> {
-    if slices.is_empty() {
-        return None;
-    }
-    let mut level: Vec<ChildEntry> = pack_fanout(slices)
-        .into_iter()
-        .map(summarize_leaf)
-        .collect();
+    try_from_slices(slices).expect("cannot allocate document tree")
+}
+
+pub(crate) fn try_from_slices(slices: Vec<ByteSlice>) -> Result<Option<ChildEntry>, AllocError> {
+    let mut level = try_pack_level(slices, try_summarize_leaf)?;
     while level.len() > 1 {
-        level = pack_fanout(level)
-            .into_iter()
-            .map(summarize_internal)
-            .collect();
+        level = try_pack_level(level, try_summarize_internal)?;
     }
-    level.into_iter().next()
+    Ok(level.pop())
 }
 
 fn from_children_list(mut children: Vec<ChildEntry>) -> Option<ChildEntry> {
@@ -126,10 +131,10 @@ fn merge_two_slices(a: ByteSlice, b: ByteSlice) -> ByteSlice {
         };
     }
     let mut buf = Vec::with_capacity(combined);
-    buf.extend_from_slice(&a.buf[a.range]);
-    buf.extend_from_slice(&b.buf[b.range]);
+    buf.extend_from_slice(&a.buf.slice[a.range]);
+    buf.extend_from_slice(&b.buf.slice[b.range]);
     ByteSlice {
-        buf: Arc::from(buf),
+        buf: Arc::from_header_and_slice((), &buf),
         range: 0..combined,
         line_breaks: a.line_breaks + b.line_breaks,
     }
@@ -294,6 +299,19 @@ fn pop_leftmost_slice(entry: ChildEntry) -> (ByteSlice, Option<ChildEntry>) {
     }
 }
 
+fn split_or_single<T>(
+    mut items: Vec<T>,
+    summarize: impl Fn(Vec<T>) -> ChildEntry,
+) -> Vec<ChildEntry> {
+    if items.len() <= MAX_FANOUT {
+        vec![summarize(items)]
+    } else {
+        let mid = items.len() / 2;
+        let right = items.split_off(mid);
+        vec![summarize(items), summarize(right)]
+    }
+}
+
 fn join_at_height(l: ChildEntry, r: ChildEntry, hl: usize, hr: usize) -> Vec<ChildEntry> {
     if hl == hr {
         match (l.node.as_ref(), r.node.as_ref()) {
@@ -301,25 +319,13 @@ fn join_at_height(l: ChildEntry, r: ChildEntry, hl: usize, hr: usize) -> Vec<Chi
                 let mut all = Vec::with_capacity(ls.len() + rs.len());
                 all.extend_from_slice(ls);
                 all.extend_from_slice(rs);
-                if all.len() <= MAX_FANOUT {
-                    vec![summarize_leaf(all)]
-                } else {
-                    let mid = all.len() / 2;
-                    let right = all.split_off(mid);
-                    vec![summarize_leaf(all), summarize_leaf(right)]
-                }
+                split_or_single(all, summarize_leaf)
             }
             (SliceNode::Internal { children: lc }, SliceNode::Internal { children: rc }) => {
                 let mut all = Vec::with_capacity(lc.len() + rc.len());
                 all.extend_from_slice(lc);
                 all.extend_from_slice(rc);
-                if all.len() <= MAX_FANOUT {
-                    vec![summarize_internal(all)]
-                } else {
-                    let mid = all.len() / 2;
-                    let right = all.split_off(mid);
-                    vec![summarize_internal(all), summarize_internal(right)]
-                }
+                split_or_single(all, summarize_internal)
             }
             _ => unreachable!("hl == hr guarantees matching node variants"),
         }
@@ -329,15 +335,8 @@ fn join_at_height(l: ChildEntry, r: ChildEntry, hl: usize, hr: usize) -> Vec<Chi
         };
         let mut all = children.clone();
         let last = all.pop().expect("non-empty internal");
-        let mid = join_at_height(last, r, hl - 1, hr);
-        all.extend(mid);
-        if all.len() <= MAX_FANOUT {
-            vec![summarize_internal(all)]
-        } else {
-            let split = all.len() / 2;
-            let right = all.split_off(split);
-            vec![summarize_internal(all), summarize_internal(right)]
-        }
+        all.extend(join_at_height(last, r, hl - 1, hr));
+        split_or_single(all, summarize_internal)
     } else {
         let SliceNode::Internal { children } = r.node.as_ref() else {
             unreachable!("hl < hr guarantees internal node");
@@ -348,13 +347,7 @@ fn join_at_height(l: ChildEntry, r: ChildEntry, hl: usize, hr: usize) -> Vec<Chi
         let mut combined = Vec::with_capacity(mid.len() + all.len());
         combined.extend(mid);
         combined.extend(all);
-        if combined.len() <= MAX_FANOUT {
-            vec![summarize_internal(combined)]
-        } else {
-            let split = combined.len() / 2;
-            let right = combined.split_off(split);
-            vec![summarize_internal(combined), summarize_internal(right)]
-        }
+        split_or_single(combined, summarize_internal)
     }
 }
 
@@ -376,7 +369,7 @@ fn join_trees_raw(left: Option<ChildEntry>, right: Option<ChildEntry>) -> Option
 }
 
 /// Joins two valid trees in O(log P), merging adjacent seam slices when
-/// contiguous in the same `Arc<[u8]>` (`<= MAX_SLICE_BYTES`) or `<= CHUNK_CAP`.
+/// contiguous in the same backing allocation (`<= MAX_SLICE_BYTES`) or `<= CHUNK_CAP`.
 #[must_use]
 pub(crate) fn join(left: Option<ChildEntry>, right: Option<ChildEntry>) -> Option<ChildEntry> {
     let (l, r) = match (left, right) {
@@ -397,7 +390,7 @@ fn split_byte_slice(slice: &ByteSlice, local: usize) -> (ByteSlice, ByteSlice) {
     let split_pt = slice.range.start + local;
     let left_range = slice.range.start..split_pt;
     let right_range = split_pt..slice.range.end;
-    let left_lb = count_line_breaks(&slice.buf[left_range.clone()]);
+    let left_lb = count_line_breaks(&slice.buf.slice[left_range.clone()]);
     let right_lb = slice.line_breaks - left_lb;
     (
         ByteSlice {
@@ -413,7 +406,8 @@ fn split_byte_slice(slice: &ByteSlice, local: usize) -> (ByteSlice, ByteSlice) {
     )
 }
 
-/// Splits `root` at byte offset `pos` (must be a valid `Unit` boundary) in O(log P).
+/// Splits at a valid `Unit` boundary in O(log² P) worst case: joins can walk
+/// subtree edges at each level of the split.
 #[must_use]
 pub(crate) fn split_at(
     root: Option<ChildEntry>,
@@ -454,7 +448,7 @@ fn split_entry(entry: ChildEntry, pos: usize) -> (Option<ChildEntry>, Option<Chi
                 }
                 acc += len;
             }
-            (Some(entry), None)
+            unreachable!("0 < pos < entry.bytes")
         }
         SliceNode::Internal { children } => {
             let mut acc = 0usize;
@@ -473,7 +467,7 @@ fn split_entry(entry: ChildEntry, pos: usize) -> (Option<ChildEntry>, Option<Chi
                 }
                 acc += child.bytes;
             }
-            (Some(entry), None)
+            unreachable!("0 < pos < entry.bytes")
         }
     }
 }

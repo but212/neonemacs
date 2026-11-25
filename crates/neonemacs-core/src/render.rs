@@ -4,7 +4,7 @@
 use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
-use crate::text::{Text, Unit};
+use crate::weave_tree::{Doc, Unit};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
 
 /// A single terminal cell containing display glyph and syntax style (I-22).
@@ -147,18 +147,18 @@ pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
     })
 }
 
-fn scroll_window(text: &Text, mut w: Window, area: Rect, m: Metrics) -> Window {
+fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
     let height = area.h.saturating_sub(1).max(1);
     w.height = height;
     let width = area.w.max(1);
-    let p = w.point.min(text.len());
-    if p < w.top {
-        w.top = text.line_start(p);
-    }
-    // Count whole lines from `top` to the line holding point.
-    let index = text.count_lines(w.top, p);
-    if index >= height {
-        w.top = text.line_start(p);
+    let total = text.total_bytes();
+    let p = text.floor_boundary(w.point.min(total));
+    let p_line = text.offset_to_line(p).expect("floor_boundary is valid");
+    let top_line = text
+        .offset_to_line(text.floor_boundary(w.top.min(total)))
+        .expect("floor_boundary is valid");
+    if p < w.top || p_line.saturating_sub(top_line) >= height {
+        w.top = text.line_to_offset(p_line).expect("p_line < total_lines");
     }
     let col = column(text, p, m);
     if col < w.left_col {
@@ -190,7 +190,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         } else {
             &[]
         };
-        let point = w.point.min(buf.text().len());
+        let point = w.point.min(buf.text().total_bytes());
         let point_col = column(buf.text(), point, m);
         let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, m, marks, point_col);
         for (r, cells) in body.into_iter().enumerate() {
@@ -255,7 +255,7 @@ fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -
 /// Cells of the text area of one window, and the cursor as `(row, col)` inside it.
 fn window_cells(
     syntax: Option<&SyntaxDef>,
-    text: &Text,
+    text: &Doc,
     window: &Window,
     area: Rect,
     metrics: Metrics,
@@ -263,39 +263,50 @@ fn window_cells(
     point_col: usize,
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
-    let point = window.point.min(text.len());
+    let total = text.total_bytes();
+    let total_lines = text.total_lines();
+    let point = window.point.min(total);
     let mut cursor = (0, 0);
     let mut body = Vec::with_capacity(height);
-    let mut line_start = window.top;
-    for row in 0..height {
-        if line_start > text.len() {
-            body.push(vec![Cell::space(); area.w]);
-            continue;
-        }
-        let line_end = text.line_end(line_start);
-        if line_start <= point && point <= line_end {
-            let col = point_col.saturating_sub(window.left_col);
-            cursor = (row, col);
+    let first_line = text
+        .offset_to_line(text.floor_boundary(window.top.min(total)))
+        .expect("floor_boundary is valid");
+    let mut start = text.line_to_offset(first_line).expect("line exists");
+    for line in (first_line..total_lines).take(height) {
+        let next = if line + 1 < total_lines {
+            Some(text.line_to_offset(line + 1).expect("next line exists"))
+        } else {
+            None
+        };
+        let end = next.map_or(total, |offset| offset - 1);
+        if start <= point && point <= end {
+            cursor = (body.len(), point_col.saturating_sub(window.left_col));
         }
         body.push(line_cells(
             syntax,
             text,
-            line_start..line_end,
+            start..end,
             window.left_col,
             area.w,
             metrics,
             marks,
         ));
-        line_start = line_end + 1;
+        start = next.unwrap_or(total);
     }
+    body.resize_with(height, || vec![Cell::space(); area.w]);
     (body, cursor)
 }
 
+const HUGE_FILE_SYNTAX_BYTES: usize = 100 << 20;
+const SYNTAX_PREFIX_BUDGET: usize = 4096;
+const LINE_SCAN_BYTES: usize = 64 * 1024;
+const CELL_GLYPH_BYTES: usize = 8 * 1024;
+
 /// Cells of one line from `left` across `width` columns. A line cut at the
-/// right edge shows `$` in the last column (A5).
+/// right edge or by the viewport scan limit shows `$` in the last column (A5).
 fn line_cells(
     syntax: Option<&SyntaxDef>,
-    text: &Text,
+    text: &Doc,
     line: std::ops::Range<usize>,
     left: usize,
     width: usize,
@@ -305,74 +316,103 @@ fn line_cells(
     let (start, end) = (line.start, line.end);
     let mut cells = vec![Cell::space(); width];
     let right = left + width;
-    let (mut pos, mut col) = if left > 0 && end - start > 4096 {
+    let huge_file = text.total_bytes() >= HUGE_FILE_SYNTAX_BYTES;
+    let long_line = end - start > SYNTAX_PREFIX_BUDGET;
+    let (mut pos, mut col) = if left > 0 && (huge_file || long_line) {
         pos_and_column(text, start, left - 1, metrics)
     } else {
         (start, 0)
     };
-    let mut cut = false;
 
-    let token_kinds = if let Some(def) = syntax {
-        let scan_end = if end - start > 4096 {
-            // A byte budget cannot bound visible text: combining marks occupy no columns.
+    let heading_style = syntax.and_then(|def| {
+        let prefix = def.heading_prefix.as_deref()?;
+        Some(if prefix.is_empty() {
+            TokenKind::Keyword
+        } else {
+            let probe_end = start.saturating_add(prefix.len()).min(end);
+            highlight_line(syntax, text, start..probe_end)
+                .first()
+                .copied()
+                .unwrap_or(TokenKind::Normal)
+        })
+    });
+    // Do not restart the lexer inside a token. For huge files, omit styles when
+    // reaching the viewport with the correct context would exceed the prefix budget.
+    let token_kinds = if let Some(def) = syntax
+        && heading_style.is_none()
+        && (!huge_file || pos - start <= SYNTAX_PREFIX_BUDGET)
+    {
+        let scan_end = if huge_file || long_line {
+            // Combining marks occupy no columns. Bound the lexer input independently of width.
+            let limit = text.floor_boundary(start.saturating_add(LINE_SCAN_BYTES).min(end));
             let (mut cap_end, mut scan_col) = (pos, col);
-            while cap_end < end && scan_col < right {
-                let Some((unit, len)) = text.unit_at(cap_end) else {
+            while cap_end < limit && scan_col < right {
+                let Some((unit, len)) = text.decode_at(cap_end) else {
                     break;
                 };
                 scan_col += unit_width(unit, scan_col, metrics);
                 cap_end += len;
             }
             // Finish the token so truncation cannot turn an identifier into a keyword or vice versa.
-            while cap_end < end {
-                let b = text.byte_at(cap_end);
-                if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+            let max_word = def
+                .keywords
+                .iter()
+                .chain(&def.types)
+                .map(String::len)
+                .max()
+                .unwrap_or(0);
+            let word_limit = cap_end.saturating_add(max_word).min(limit);
+            while cap_end < word_limit {
+                let Some(b) = text.byte_at(cap_end) else {
+                    break;
+                };
+                if b.is_ascii_alphanumeric() || b == b'_' {
                     cap_end += 1;
                 } else {
                     break;
                 }
             }
             // Prefixes beginning in the visible region must not be cut short.
-            let prefix_len = def
-                .line_comment
-                .as_ref()
-                .map_or(0, String::len)
-                .max(def.heading_prefix.as_ref().map_or(0, String::len));
-            cap_end
+            let prefix_len = def.line_comment.as_ref().map_or(0, String::len);
+            let lookahead = cap_end
                 .saturating_add(prefix_len.saturating_sub(1))
-                .min(end)
+                .min(end);
+            // If the budget truncates a token or prefix, do not color a partial match.
+            (lookahead < limit || (lookahead == limit && limit == end)).then_some(lookahead)
         } else {
-            end
+            Some(end)
         };
-        let line_bytes = text.bytes(start..scan_end);
-        highlight_line(syntax, &line_bytes)
+        scan_end.map_or_else(Vec::new, |end| highlight_line(syntax, text, start..end))
     } else {
         Vec::new()
     };
 
-    while pos < end {
-        let Some((unit, len)) = text.unit_at(pos) else {
+    let draw_end = text.floor_boundary(pos.saturating_add(LINE_SCAN_BYTES).min(end));
+    while pos < draw_end && col < right {
+        let Some((unit, len)) = text.decode_at(pos) else {
             break;
         };
-        if col >= right {
-            cut = true;
-            break;
-        }
         let width_of_unit = unit_width(unit, col, metrics);
         if col + width_of_unit <= left {
             col += width_of_unit;
             pos += len;
             continue;
         }
-        let style = token_kinds
-            .get(pos - start)
-            .copied()
-            .unwrap_or(TokenKind::Normal);
+        let style = heading_style.unwrap_or_else(|| {
+            token_kinds
+                .get(pos - start)
+                .copied()
+                .unwrap_or(TokenKind::Normal)
+        });
         let reverse = marks.iter().any(|&(from, to)| from <= pos && pos < to);
         if width_of_unit == 0 {
             // Combining mark: attach to the cell before it.
             if col > left && col - left - 1 < width {
-                cells[col - left - 1].glyph.push(unit_char(unit));
+                let glyph = &mut cells[col - left - 1].glyph;
+                let mark = unit_char(unit);
+                if glyph.len() + mark.len_utf8() <= CELL_GLYPH_BYTES {
+                    glyph.push(mark);
+                }
             }
         } else {
             for (offset, piece) in glyph(unit_char(unit), width_of_unit)
@@ -392,7 +432,7 @@ fn line_cells(
         col += width_of_unit;
         pos += len;
     }
-    if cut && width > 0 {
+    if pos < end && width > 0 {
         cells[width - 1] = Cell::plain("$".to_owned());
     }
     cells
@@ -432,7 +472,7 @@ fn glyph(c: char, w: usize) -> Vec<String> {
 /// What does not fit is dropped in this order: the EOL mode, then the percentage.
 #[cfg(test)]
 fn status_text(buf: &Buffer, point: usize, width: usize, m: Metrics) -> String {
-    let col = column(buf.text(), point.min(buf.text().len()), m);
+    let col = column(buf.text(), point.min(buf.text().total_bytes()), m);
     status_text_with_col(buf, point, col, width, m)
 }
 
@@ -445,12 +485,12 @@ fn status_text_with_col(
 ) -> String {
     let mark = if buf.modified() { "**" } else { "--" };
     let view = if buf.view_only() { " (view)" } else { "" };
-    let percent = (point as u64 * 100)
-        .checked_div(buf.text().len() as u64)
+    let percent = (point as u128 * 100)
+        .checked_div(buf.text().total_bytes() as u128)
         .unwrap_or(100);
     let text = buf.text();
-    let p = point.min(text.len());
-    let line = text.count_lines(0, p) + 1;
+    let p = text.floor_boundary(point.min(text.total_bytes()));
+    let line = text.offset_to_line(p).expect("floor_boundary is valid") + 1;
     let col = display_col + 1;
     let head = format!("-{mark}-  {}{view}", buf.name());
     let eol = buf.eol().label();
@@ -511,7 +551,7 @@ mod tests {
 
     fn screen(text: &str, point: usize, cols: usize, rows: usize) -> Frame {
         let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(Text::from_bytes(text.as_bytes())))
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(text.as_bytes())))
             .with_window(|w| Window { point, ..w });
         let ed = scroll(ed, cols, rows);
         frame(&ed, cols, rows)
@@ -555,11 +595,11 @@ mod tests {
     }
 
     fn cells_of(s: &str, left: usize, width: usize) -> Vec<String> {
-        let text = Text::from_bytes(s.as_bytes());
+        let text = Doc::from_bytes(s.as_bytes());
         line_cells(
             None,
             &text,
-            0..text.len(),
+            0..text.total_bytes(),
             left,
             width,
             Metrics { tab: 8, cjk: false },
@@ -568,6 +608,30 @@ mod tests {
         .into_iter()
         .map(|c| c.glyph)
         .collect()
+    }
+
+    #[test]
+    fn viewport_streams_lines_across_slices_through_the_last_line() {
+        use crate::weave_tree::{DocBuilder, MAX_SLICE_BYTES};
+
+        let doc = DocBuilder::new()
+            .push_bytes(&vec![b'\n'; MAX_SLICE_BYTES - 1])
+            .push_bytes(b"abc")
+            .push_bytes(b"def\n\nlast")
+            .finish();
+        let ed = Editor::new(Config::default())
+            .with_current_buffer(|b| b.with_text(doc))
+            .with_window(|w| Window {
+                top: MAX_SLICE_BYTES - 1,
+                point: MAX_SLICE_BYTES - 1 + b"abcdef\n\nla".len(),
+                ..w
+            });
+        let f = frame(&ed, 8, 6);
+        assert_eq!(
+            &f.row_strings()[..4],
+            ["abcdef  ", "        ", "last    ", "        "]
+        );
+        assert_eq!(f.cursor, (2, 2));
     }
 
     #[test]
@@ -586,7 +650,7 @@ mod tests {
         // "가나다": 나 spans bytes 3..6 and cells 2..4.
         let ed = Editor::new(Config::default())
             .with_current_buffer(|b| {
-                b.with_text(Text::from_bytes("가나다".as_bytes()))
+                b.with_text(Doc::from_bytes("가나다".as_bytes()))
                     .set_mark(Some(3))
             })
             .with_window(|w| Window { point: 6, ..w });
@@ -661,11 +725,8 @@ mod tests {
                     false,
                 ))
             });
-            let (ed, id) = ed.add_buffer(
-                "a.t",
-                Text::from_bytes(b"let x"),
-                crate::file::Backing::None,
-            );
+            let (ed, id) =
+                ed.add_buffer("a.t", Doc::from_bytes(b"let x"), crate::file::Backing::None);
             let ed = ed.with_window(|w| Window {
                 buffer: id,
                 point: 0,
@@ -716,7 +777,7 @@ mod tests {
     #[test]
     fn frame_control_and_c1_glyphs() {
         let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(Text::from_bytes(&[0x01, b'x', 0x85])));
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(&[0x01, b'x', 0x85])));
         let ed = scroll(ed, 10, 3);
         let f = frame(&ed, 10, 3);
         assert_eq!(f.row_strings()[0], "^Ax\\85    ");
@@ -725,7 +786,7 @@ mod tests {
     #[test]
     fn frame_status_line_shows_name_state_and_percent() {
         let ed = Editor::new(Config::default()).with_current_buffer(|b| {
-            b.with_text(Text::from_bytes(b"abc"))
+            b.with_text(Doc::from_bytes(b"abc"))
                 .mark_modified()
                 .set_view_only(true)
                 .set_name("f.txt")
@@ -739,7 +800,7 @@ mod tests {
 
     fn status_editor(eol: Eol) -> Editor {
         Editor::new(Config::default()).with_current_buffer(|b| {
-            b.with_text(Text::from_bytes(b"abc"))
+            b.with_text(Doc::from_bytes(b"abc"))
                 .set_eol(eol)
                 .set_name("f.txt")
         })
@@ -779,7 +840,7 @@ mod tests {
     #[test]
     fn status_line_position_counts_lines_and_display_columns() {
         // Line 2 is "가", a tab to column 8, and "b": point at the end sits in display column 9.
-        let text = Text::from_bytes(
+        let text = Doc::from_bytes(
             "a
 가	b"
                 .as_bytes(),
@@ -790,7 +851,7 @@ mod tests {
             text,
             crate::file::Backing::None,
         );
-        let end = buf.text().len();
+        let end = buf.text().total_bytes();
         assert!(status_text(&buf, end, 60, Metrics { tab: 8, cjk: false }).contains("  2:10  "));
         assert!(status_text(&buf, 0, 60, Metrics { tab: 8, cjk: false }).contains("  1:1  "));
         // Point past the end is clamped.
@@ -810,7 +871,7 @@ mod tests {
 
     #[test]
     fn status_line_large_point_percentage_calculation() {
-        let text = Text::from_bytes(b"hello world");
+        let text = Doc::from_bytes(b"hello world");
         let buf = Buffer::new(
             crate::buffer::BufferId(1),
             "test.txt",
@@ -872,11 +933,11 @@ mod tests {
         );
         for left in [0, 4500] {
             let input = format!("{}a{} let", "x".repeat(left), "\u{0301}".repeat(3000));
-            let text = Text::from_bytes(input.as_bytes());
-            let cells = line_cells(Some(&def), &text, 0..text.len(), left, 20, m, &[]);
+            let text = Doc::from_bytes(input.as_bytes());
+            let cells = line_cells(Some(&def), &text, 0..text.total_bytes(), left, 20, m, &[]);
             assert_eq!(cells[0].glyph, format!("a{}", "\u{0301}".repeat(3000)));
             assert_eq!(
-                highlight_line(Some(&def), input.as_bytes())[input.len() - 3],
+                highlight_line(Some(&def), &text, 0..input.len())[input.len() - 3],
                 TokenKind::Keyword
             );
             assert!(
@@ -884,6 +945,38 @@ mod tests {
                 "left={left}"
             );
         }
+    }
+
+    #[test]
+    fn huge_combining_line_bounds_lexer_input_and_cell_glyphs() {
+        let m = Metrics { tab: 8, cjk: false };
+        let def = SyntaxDef::new(
+            "t",
+            vec!["t".to_owned()],
+            vec![],
+            None,
+            vec!["a".to_owned()],
+            vec![],
+            false,
+        );
+        let mut marks = Doc::from_bytes("\u{0301}".repeat(8192).as_bytes());
+        for _ in 0..13 {
+            let insert = marks.clone();
+            (marks, _) = marks
+                .apply(crate::Replace {
+                    offset: 0,
+                    delete_len: 0,
+                    insert,
+                })
+                .unwrap();
+        }
+        let (text, _) = marks.replace(0, 0, b"a").unwrap();
+        assert!(text.total_bytes() >= HUGE_FILE_SYNTAX_BYTES);
+        let cells = line_cells(Some(&def), &text, 0..text.total_bytes(), 0, 20, m, &[]);
+        assert!(cells[0].glyph.starts_with("a\u{0301}"));
+        assert!(cells[0].glyph.len() <= CELL_GLYPH_BYTES);
+        assert_eq!(cells[0].style, TokenKind::Normal);
+        assert_eq!(cells[19].glyph, "$");
     }
 
     #[test]
@@ -901,8 +994,8 @@ mod tests {
             );
             for left in [0, 4500] {
                 let input = format!("{}{prefix}{}", " ".repeat(left + 18), "x".repeat(5000));
-                let text = Text::from_bytes(input.as_bytes());
-                let cells = line_cells(Some(&def), &text, 0..text.len(), left, 20, m, &[]);
+                let text = Doc::from_bytes(input.as_bytes());
+                let cells = line_cells(Some(&def), &text, 0..text.total_bytes(), left, 20, m, &[]);
                 assert_eq!(
                     cells[18].style,
                     TokenKind::Comment,
@@ -929,9 +1022,12 @@ mod tests {
         .with_heading_prefix(Some(prefix.clone()));
         for (ending, expected) in [("###", TokenKind::Keyword), ("##!", TokenKind::Normal)] {
             let input = format!("{}{ending}{}", " ".repeat(18), "x".repeat(5000));
-            let text = Text::from_bytes(input.as_bytes());
-            let cells = line_cells(Some(&def), &text, 0..text.len(), 0, 20, m, &[]);
-            assert_eq!(highlight_line(Some(&def), input.as_bytes())[18], expected);
+            let text = Doc::from_bytes(input.as_bytes());
+            let cells = line_cells(Some(&def), &text, 0..text.total_bytes(), 0, 20, m, &[]);
+            assert_eq!(
+                highlight_line(Some(&def), &text, 0..input.len())[18],
+                expected
+            );
             assert!(cells[..19].iter().all(|c| c.style == expected));
         }
     }
@@ -950,8 +1046,8 @@ mod tests {
             false,
         );
         for suffix in ["", "b"] {
-            let text = Text::from_bytes(format!("{keyword}{suffix}").as_bytes());
-            let cells = line_cells(Some(&def), &text, 0..text.len(), 0, 20, m, &[]);
+            let text = Doc::from_bytes(format!("{keyword}{suffix}").as_bytes());
+            let cells = line_cells(Some(&def), &text, 0..text.total_bytes(), 0, 20, m, &[]);
             let expected = if suffix.is_empty() {
                 TokenKind::Keyword
             } else {
@@ -975,11 +1071,11 @@ mod tests {
             false,
         )
         .with_heading_prefix(Some("#".to_owned()));
-        let heading = Text::from_bytes(format!("# {}", "a".repeat(5000)).as_bytes());
+        let heading = Doc::from_bytes(format!("# {}", "a".repeat(5000)).as_bytes());
         let cells = line_cells(
             Some(&heading_def),
             &heading,
-            0..heading.len(),
+            0..heading.total_bytes(),
             4500,
             10,
             m,
@@ -988,11 +1084,11 @@ mod tests {
         assert!(cells[..9].iter().all(|c| c.style == TokenKind::Keyword));
 
         let non_heading =
-            Text::from_bytes(format!("{}#{}", "a".repeat(2500), "b".repeat(3000)).as_bytes());
+            Doc::from_bytes(format!("{}#{}", "a".repeat(2500), "b".repeat(3000)).as_bytes());
         let cells = line_cells(
             Some(&heading_def),
             &non_heading,
-            0..non_heading.len(),
+            0..non_heading.total_bytes(),
             4500,
             10,
             m,
@@ -1009,16 +1105,157 @@ mod tests {
             vec![],
             false,
         );
-        let comment = Text::from_bytes(format!("// {} let x = 1;", "a".repeat(4500)).as_bytes());
+        let comment = Doc::from_bytes(format!("// {} let x = 1;", "a".repeat(4500)).as_bytes());
         let cells = line_cells(
             Some(&rust_def),
             &comment,
-            0..comment.len(),
+            0..comment.total_bytes(),
             4505,
             10,
             m,
             &[],
         );
         assert!(cells[..9].iter().all(|c| c.style == TokenKind::Comment));
+    }
+
+    fn huge_doc_with_prefix(prefix: &[u8]) -> Doc {
+        // Build a >100 MiB Doc via O(log N) structural sharing, then prepend `prefix`.
+        let mut huge = Doc::from_bytes(&vec![b'x'; 16 * 1024]);
+        for _ in 0..13 {
+            let dup = huge.clone();
+            huge = huge
+                .apply(crate::weave_tree::Replace {
+                    offset: 0,
+                    delete_len: 0,
+                    insert: dup,
+                })
+                .unwrap()
+                .0;
+        }
+        assert!(huge.total_bytes() >= HUGE_FILE_SYNTAX_BYTES);
+        if prefix.is_empty() {
+            huge
+        } else {
+            huge.apply(crate::weave_tree::Replace {
+                offset: 0,
+                delete_len: 0,
+                insert: Doc::from_bytes(prefix),
+            })
+            .unwrap()
+            .0
+        }
+    }
+
+    #[test]
+    fn viewport_draws_lines_after_a_large_terminated_line() {
+        let doc = huge_doc_with_prefix(b"");
+        let doc = doc
+            .clone()
+            .replace(doc.total_bytes(), 0, b"\n\nlast")
+            .unwrap()
+            .0;
+        let ed = Editor::new(crate::Config::default()).with_current_buffer(|b| b.with_text(doc));
+        let rows = frame(&ed, 8, 5).row_strings();
+        assert_eq!(&rows[..3], ["xxxxxxx$", "        ", "last    "]);
+    }
+
+    #[test]
+    fn huge_file_preserves_comment_context_or_omits_highlighting() {
+        let rust_def = SyntaxDef::new(
+            "rust",
+            vec!["rs".to_owned()],
+            vec![],
+            Some("//".to_owned()),
+            vec!["let".to_owned()],
+            vec![],
+            false,
+        );
+        let line = b"// let x = 1;\n";
+        let huge = huge_doc_with_prefix(line);
+        let m = Metrics { tab: 8, cjk: false };
+        let cells = line_cells(Some(&rust_def), &huge, 0..line.len() - 1, 3, 10, m, &[]);
+        assert_eq!(cells[0].style, TokenKind::Comment);
+
+        let padding = " ".repeat(SYNTAX_PREFIX_BUDGET + 1);
+        let line = format!("// {padding}let x = 1;\n");
+        let huge = huge_doc_with_prefix(line.as_bytes());
+        let cells = line_cells(
+            Some(&rust_def),
+            &huge,
+            0..line.len() - 1,
+            3 + padding.len(),
+            10,
+            m,
+            &[],
+        );
+        assert_eq!(cells[0].glyph, "l");
+        assert_eq!(cells[0].style, TokenKind::Normal);
+    }
+
+    #[test]
+    fn huge_file_heading_prefix_checks_line_start_when_scrolled() {
+        let m = Metrics { tab: 8, cjk: false };
+        let heading_def = SyntaxDef::new(
+            "notes",
+            vec!["md".to_owned()],
+            vec![],
+            None,
+            vec![],
+            vec![],
+            false,
+        )
+        .with_heading_prefix(Some("#".to_owned()));
+
+        // False-positive guard: non-heading line with '#' at column left - 1 stays Normal (I-49).
+        let non_heading_line = b"abc#def\n";
+        let non_heading = huge_doc_with_prefix(non_heading_line);
+        let cells = line_cells(
+            Some(&heading_def),
+            &non_heading,
+            0..non_heading_line.len() - 1,
+            4,
+            10,
+            m,
+            &[],
+        );
+        assert!(cells.iter().all(|c| c.style == TokenKind::Normal));
+
+        // False-negative guard: scrolled heading keeps Keyword highlighting (I-49).
+        let heading_line = b"# heading\n";
+        let heading = huge_doc_with_prefix(heading_line);
+        let cells = line_cells(
+            Some(&heading_def),
+            &heading,
+            0..heading_line.len() - 1,
+            2,
+            10,
+            m,
+            &[],
+        );
+        assert!(cells[..7].iter().all(|c| c.style == TokenKind::Keyword));
+    }
+
+    #[test]
+    fn huge_file_single_line_identifier_stays_viewport_bounded() {
+        let m = Metrics { tab: 8, cjk: false };
+        let rust_def = SyntaxDef::new(
+            "rust",
+            vec!["rs".to_owned()],
+            vec![],
+            Some("//".to_owned()),
+            vec!["let".to_owned()],
+            vec!["usize".to_owned()],
+            false,
+        );
+        // 128 MiB single-line identifier of 'x' bytes; must stay strictly viewport-bounded.
+        let huge = huge_doc_with_prefix(b"");
+        let cells = line_cells(Some(&rust_def), &huge, 0..huge.total_bytes(), 0, 80, m, &[]);
+        assert_eq!(cells.len(), 80);
+        assert!(
+            cells[..79]
+                .iter()
+                .all(|c| c.glyph == "x" && c.style == TokenKind::Normal)
+        );
+        assert_eq!(cells[79].glyph, "$");
     }
 }

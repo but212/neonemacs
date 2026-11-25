@@ -16,9 +16,9 @@
 
 * **경계 스냅 및 앵커 재정렬:** 무오류(infallible) 편집을 원하면 호스트가 `Doc::replace`/`Doc::apply` 전 `floor_boundary`/`ceil_boundary`로 `offset`·`offset + delete_len`을 `0..=total_bytes()` 유효 `Unit` 경계에 스냅한다(유효 경계면 불변). 코어 검증 위임 시 실패하면 `(Self, DocError)`로 원본 `Doc` 소유권을 회수한다. `D-01` 재병합(`k_left > 0 || k_right > 0`) 시 앵커가 새 UTF-8 문자 내부에 놓일 수 있으므로 전이 직후 커서·마크·뷰포트를 `floor_boundary`/`ceil_boundary`로 재정렬한다(문자 단위 이동은 엄격 `<`/`>`인 `prev_boundary`/`next_boundary` 사용).
 * **UTF-8·라인 경계:** ① `D-01`은 RFC 3629 UTF-8만 `Unit::Char`, overlong·서로게이트·불완전 바이트는 `Unit::Raw`로 보존한다. ② `prev_boundary(0)`·`floor_boundary(0)`은 `0`을 반환한다. ③ `line_to_offset`은 `LineOutOfBounds`를 반환하므로 1-based `goto-line` 클램핑은 `D-03`(`doc.total_lines() >= 1`) 아래 `n.saturating_sub(1).min(doc.total_lines() - 1)`을 사용한다.
-* **Undo 스택 연동:** `Doc::apply`/`Doc::replace`가 반환하는 역연산 `Replace`를 그대로 저장한다.
-  * **메모리 상한:** `inv.insert.total_bytes() + inv.delete_len` (순수 삽입 역연산은 `inv.insert`가 빈 `Doc`이므로 힙 할당 0).
-  * **연속 입력 병합:** `prev.insert.total_bytes() == 0 && inv.insert.total_bytes() == 0 && inv.delete_len > 0 && prev.offset + prev.delete_len == inv.offset`일 때만 `prev.delete_len += inv.delete_len`으로 병합(`inv.insert.total_bytes() == 0`은 `k_left == 0 && k_right == 0` 보장).
+* **Undo 스택 연동:** 호스트는 `Doc::apply`/`Doc::replace`가 반환하는 역연산 `Replace`와 논리 편집 범위(`EditSpan`)를 `RecordedEdit`으로 함께 저장한다.
+  * **Undo 바이트 예산:** 역패치 삽입부가 `CHUNK_CAP`(1 KiB) 이하인 경우, 백킹 바이트가 `CHUNK_CAP`을 초과하면 저장 전에 필요한 바이트만 복사한다. 각 편집은 논리 편집 크기(`removed + inserted`)와 역패치가 유지하는 백킹 바이트 수 중 큰 값으로 `Config.undo_limit`에 반영한다. 백킹 바이트 수는 슬라이스 범위가 아닌 전체 할당 크기를 합산하며, 공유 할당도 슬라이스마다 계산한다.
+  * **연속 입력 그룹화:** 연속 `self-insert`는 `Replace`를 제자리 병합하지 않고 `amalgamating-undo-limit` 한도 내에서 동일 `Group`에 개별 `RecordedEdit`으로 누적한다.
 
 ---
 
@@ -30,7 +30,7 @@
 
 ```rust
 use std::ops::Range;
-use std::sync::Arc;
+use triomphe::{Arc, HeaderSlice};
 
 /// B-Tree 노드 팬아웃 및 슬라이스 크기 상수 (H2 벤치마크 스윕 대상)
 pub const MAX_FANOUT: usize = 32;
@@ -46,12 +46,12 @@ pub enum Unit {
     Raw(u8),
 }
 
-/// 불변 슬라이스 리프 조각 (단일 간접 참조 Arc<[u8]> 기준선; 비교는 try_for_each_slice 또는 Eq 사용)
+/// 불변 슬라이스 리프 조각 (단일 백킹 할당; 비교는 try_for_each_slice 또는 Eq 사용)
 #[derive(Clone, Debug)]
 pub(crate) struct ByteSlice {
-    pub(crate) buf: Arc<[u8]>,       // 최대 MAX_SLICE_BYTES 단위 독립 할당
-    pub(crate) range: Range<usize>,   // 항상 !range.is_empty()
-    pub(crate) line_breaks: usize,    // buf[range] 내 '\n' 개수
+    pub(crate) buf: Arc<HeaderSlice<(), [u8]>>, // 최대 MAX_SLICE_BYTES 단위 독립 할당
+    pub(crate) range: Range<usize>,            // 항상 !range.is_empty()
+    pub(crate) line_breaks: usize,             // buf.slice[range] 내 '\n' 개수
 }
 
 /// 내부 노드 및 루트의 자식 참조 + 인라인 요약 (단일 진실 원천)
@@ -59,6 +59,7 @@ pub(crate) struct ByteSlice {
 pub(crate) struct ChildEntry {
     pub(crate) node: Arc<SliceNode>,
     pub(crate) bytes: usize,
+    pub(crate) backing_bytes: usize,
     pub(crate) line_breaks: usize,
 }
 
@@ -98,6 +99,8 @@ pub enum DocError {
     OutOfBounds { offset: usize, len: usize, total: usize },
     /// 줄 번호가 문서 총 줄 수를 벗어남
     LineOutOfBounds { line: usize, total_lines: usize },
+    /// 편집 결과가 문서 바이트 길이의 상한(`usize::MAX - 1`)을 초과함
+    DocumentTooLarge,
 }
 ```
 
@@ -105,13 +108,13 @@ pub enum DocError {
 
 ## 3. 핵심 불변식 (Invariants)
 
-모든 `Doc` 연산 전후 아래 불변식을 만족해야 한다(`debug_assert!` 및 `proptest` 검증 대상).
+모든 `Doc` 연산 전후 아래 불변식을 만족해야 한다(`weave_tree_proptest.rs` 내 `assert_invariants()` 명시 호출로 검증).
 
 | ID | 불변식 | 요구조건 (Contract) |
 | :--- | :--- | :--- |
 | **D-01** | **단위 경계 및 정규 UTF-8 무결성** | 모든 `ByteSlice` 양 끝(`range`)과 분할·삽입·삭제·질의 구간은 유효 `Unit` 경계여야 하며(위반 시 `DocError::InvalidBoundary`, 단일 `Unit`은 `ByteSlice` 경계를 넘지 않음), RFC 3629 UTF-8만 `Unit::Char`로 인정한다(그 외 `Unit::Raw(u8)`). 편집 후 경계 인접 `Unit::Raw`(최대 3B)가 유효 UTF-8을 형성한 채 방치되거나(`k_left`/`k_right` 재병합 필수) 이음새를 쪼개는 부분 병합은 금지된다. |
 | **D-02** | **트리 균형·팬아웃 및 청크 상한** | ① 모든 리프는 동일 깊이. ② 원소 수는 비루트 `[MIN_FANOUT, MAX_FANOUT]`, 루트 `Leaf` `1..=MAX_FANOUT`, 루트 `Internal` `2..=MAX_FANOUT`, 빈 문서는 `doc.root == None`. ③ 모든 `ByteSlice`는 `1 <= range.len() <= MAX_SLICE_BYTES`. |
-| **D-03** | **요약 메타데이터 정합성** | `ByteSlice.line_breaks`는 `buf[range]` 내 `'\n'` 개수와 일치하고 `ChildEntry.(bytes, line_breaks)`는 하위 서브트리 합과 일치한다. `total_bytes(doc)`·`total_lines(doc)`는 `doc.root`의 `(bytes, 1 + line_breaks)`와 같다(빈 문서: `0`, `1`). |
+| **D-03** | **요약 메타데이터 정합성** | `ByteSlice.line_breaks`는 `buf.slice[range]` 내 `'\n'` 개수와 일치하고 `ChildEntry.(bytes, line_breaks)`는 하위 서브트리 합과 일치한다. `backing_bytes`는 서브트리의 각 슬라이스에 대해 `buf.slice.len()`을 더한 포화 합이다. `total_bytes(doc)`·`total_lines(doc)`는 `doc.root`의 `(bytes, 1 + line_breaks)`와 같다(빈 문서: `0`, `1`). |
 | **D-04** | **연산 가역성 및 상태 비의존성** | 성공한 `apply`/`replace`가 반환한 `inv: Replace`를 `next_doc.apply(inv)`에 적용하면 반드시 성공해 원문과 `doc' == doc`을 복원한다. `Replace`는 논리 오프셋과 불변 `Doc`만 보유해 트리 재구조화 후 댕글링 참조가 없다. |
 | **D-05** | **관측적 순수성 및 코어 격리** | `Doc`은 `std::io` 및 공개·비공개 시그니처, 반환 타입, 영속 구조체(`Doc`·`SliceNode`·`ChildEntry`·`ByteSlice`) 필드 내 `&mut`를 전면 배제한다(`I-18` 정합; 본문 내부 `let mut` 루프와 시그니처상 `&mut` 토큰 없는 `impl FnMut(&[u8]) -> ControlFlow<B>`만 허용). `H1`의 `Arc::get_mut` 최적화 시에도 `strong_count == 1` 조건으로 외부 관측 동작이 불변이어야 한다. |
 
@@ -129,8 +132,8 @@ pub enum DocError {
    * *3단 결합(`좌 + insert + 우`):* `insert_total_bytes <= 2`이고 `좌측 꼬리(k_left: 1..=3) + insert + 우측 머리(k_right: 1..=3)`가 단일 유효 UTF-8(`<= 4B`, 순수 삭제 시 `k_left >= 1 && k_right >= 1`)을 형성하면 `insert` 전체를 흡수하고 `k_left`, `k_right`, 단일 문자를 확정한다.
    * *양단 독립 결합:* 그 외에는 좌측 `좌측 꼬리(<=3B) + insert 선두(<=3B)`에서 최우측 `k_left` 기준 최장 UTF-8(`<=4B`), 잔여 `insert`가 있으면 우측 `insert 말미(<=3B) + 우측 머리(<=3B)`에서 최좌측 `k_right` 기준 최장 UTF-8(`<=4B`)을 결합한다(예: `[0xC3, 0xC3] + [0xA9]` → `[0xC3, 0xA9]`만 결합).
    * `apply`에서 흡수된 `insert` 양단은 `split`으로 절단하고, 재병합 문자(경계당 최대 4B)는 5단계 조각으로 합류시킨다.
-4. **`split` 분할 및 구조적 원문 회수:** $O(\log P)$ `split(doc, pos) -> (Doc, Doc)`로 `[offset - k_left, offset + delete_len + k_right)`를 분리한다(`delete_len == 0 && k_left == 0 && k_right == 0`이면 1회 `split`). `delete_len > 0`이면 중간 트리에서 `[offset, offset + delete_len)` 구간을 **평탄화 복사 없이** `deleted_doc: Doc`으로 분리한다(`delete_len == 0`이면 `Doc::default()`).
-5. **삽입 트리 구성:** `apply`는 이미 `D-01`·`D-02`를 만족하는 `edit.insert: Doc`을 그대로 사용하며(이음새 재병합 시에만 경계 4B 조각을 `join`), `replace`는 `insert: &[u8]`를 `MAX_SLICE_BYTES` 이하 유효 `Unit` 경계로 분할해 독립 `Arc<[u8]>` 리프로 구성한다.
+4. **`split` 분할 및 구조적 원문 회수:** 최악 $O(\log^2 P)$ `split(doc, pos) -> (Doc, Doc)`로 `[offset - k_left, offset + delete_len + k_right)`를 분리한다(`delete_len == 0 && k_left == 0 && k_right == 0`이면 1회 `split`). `delete_len > 0`이면 중간 트리에서 `[offset, offset + delete_len)` 구간을 **평탄화 복사 없이** `deleted_doc: Doc`으로 분리한다(`delete_len == 0`이면 `Doc::default()`).
+5. **삽입 트리 구성:** `apply`는 이미 `D-01`·`D-02`를 만족하는 `edit.insert: Doc`을 그대로 사용하며(이음새 재병합 시에만 경계 4B 조각을 `join`), `replace`는 `insert: &[u8]`를 `MAX_SLICE_BYTES` 이하 유효 `Unit` 경계로 분할해 독립 백킹 할당을 가진 리프로 구성한다.
 6. **`join` 재결합 및 언더플로 전파 (`D-02`):** `join(left, join(mid, right))`로 균형·팬아웃을 일괄 복원한다. `join` 하강 경로의 최하단 인접 리프에서 동일 버퍼 연속 구간(`Arc::ptr_eq && a.range.end == b.range.start`, 합 `<= MAX_SLICE_BYTES`)은 $O(1)$ 병합하고, 합 `<= CHUNK_CAP`이면 CoW 병합한다. 병합으로 리프 원소 수가 `MIN_FANOUT - 1`이 되면 스파인을 따라 형제 차용(borrow)/병합(merge)을 루트까지 전파한다(루트 `Internal` 자식 1개 시 높이 -1, 루트 `Leaf` 0개 시 `None`).
    * *필수 `proptest` 검증:* 임의 높이(1~4), 비대칭 높이 차이, `split` 직후 소규모 루트(`1..MIN_FANOUT` 리프, 2-자식 `Internal`), 비정규 UTF-8 3단 재병합(`k_left + insert + k_right`), `D-04` 역연산 왕복, 상이 청크 분할 간 `PartialEq` 동등성.
 7. **역연산 `Replace` 경계 보정 (`D-01`, `D-04`):** `k_left == 0 && k_right == 0`이면 `Replace { offset, delete_len: original_insert_bytes, insert: deleted_doc }`를 반환한다. `k_left > 0 || k_right > 0`이면 `offset: offset - k_left`, `delete_len: original_insert_bytes + k_left + k_right`, `insert: join(k_left_doc, join(deleted_doc, k_right_doc))`로 확장해 반환한다.
@@ -142,7 +145,7 @@ pub enum DocError {
 
 ### 4.3. 양방향 제로카피 스트리밍 순회 (`try_for_each_slice`, `try_for_each_slice_rev`)
 
-`range.start > range.end || range.end > doc.total_bytes()`면 `OutOfBounds`, 양 끝이 `Unit` 경계가 아니면 `InvalidBoundary`. 빈 범위(`offset..offset`)는 `f` 0회 호출 후 `Ok(ControlFlow::Continue(()))`. `D-05` 준수를 위해 `Iterator` 대신 `ControlFlow<B>` 기반 내부 순회로 `&buf[sub_range]`를 제로카피 전달하며 `ControlFlow::Break(b)` 시 즉시 중단한다. 저장·WAL 직렬화, 뷰포트 렌더링·폭 계산, 정·역방향 검색(경계 걸침은 최소 오버랩 버퍼 유지) 모두 이 메커니즘을 사용한다.
+`range.start > range.end || range.end > doc.total_bytes()`면 `OutOfBounds`, 양 끝이 `Unit` 경계가 아니면 `InvalidBoundary`. 빈 범위(`offset..offset`)는 `f` 0회 호출 후 `Ok(ControlFlow::Continue(()))`. `D-05` 준수를 위해 `Iterator` 대신 `ControlFlow<B>` 기반 내부 순회로 `&buf.slice[sub_range]`를 제로카피 전달하며 `ControlFlow::Break(b)` 시 즉시 중단한다. 저장·WAL 직렬화, 뷰포트 렌더링·폭 계산, 정·역방향 검색(경계 걸침은 최소 오버랩 버퍼 유지) 모두 이 메커니즘을 사용한다.
 
 ---
 
@@ -151,7 +154,8 @@ pub enum DocError {
 파일·WAL 저장은 `try_for_each_slice(doc, 0..total_bytes, ...)`로 제로카피 스트리밍한다.
 
 * **일괄 로드 (`Doc::from_bytes(bytes: &[u8]) -> Self`):** 정규화된 바이트에 대해 빈 입력은 `root: None`, 비어 있지 않으면 `MAX_SLICE_BYTES` 이하 유효 `Unit` 경계로 분할·할당 후 `MAX_FANOUT` 상향식 빌더로 $O(N)$ 구성한다(2개 이상 노드 중 마지막 노드가 `MIN_FANOUT` 미만이면 직전 형제와 `[MIN_FANOUT, MAX_FANOUT]` 범위로 재분배).
-* **내부 단편화 상한:** 상한 `MAX_SLICE_BYTES`(16KB)와 `CHUNK_CAP`(1KB) 이하 병합으로 삭제 후 구버전 버퍼가 즉시 해제된다. 교대 삭제 최악 패턴(`> CHUNK_CAP / 2` 조각 잔존)의 이론상 내부 증폭은 ~32배이며, 필요 시 공개 API 변경 없이 `join`에 활용률 임계치(`range.len() < buf.len() / 4`) 기준 복사를 추가해 상한을 4배로 제한할 수 있다.
+* **스트리밍 로드:** `EolStreamDecoder::try_push_chunk`와 `try_finish`로 CRLF 정규화 및 문서 구성을 수행한다. 버퍼·슬라이스·노드 할당 실패는 셸의 파일 읽기 오류로 전달되며 부분 문서는 노출하지 않는다.
+* **내부 단편화 상한:** 상한 `MAX_SLICE_BYTES`(16KB)와 `CHUNK_CAP`(1KB) 이하 병합으로 삭제 후 구버전 버퍼가 즉시 해제된다. 교대 삭제 최악 패턴(`> CHUNK_CAP / 2` 조각 잔존)의 이론상 내부 증폭은 ~32배이며, 필요 시 공개 API 변경 없이 `join`에 활용률 임계치(`range.len() < buf.slice.len() / 4`) 기준 복사를 추가해 상한을 4배로 제한할 수 있다.
 
 ---
 
@@ -159,7 +163,7 @@ pub enum DocError {
 
 ```rust
 impl Doc {
-    /// 바이트 스트림 입력 경계 (빈 입력: root: None, 대용량: MAX_SLICE_BYTES 단위 독립 Arc<[u8]> 분할)
+    /// 바이트 스트림 입력 경계 (빈 입력: root: None, 대용량: MAX_SLICE_BYTES 단위 독립 백킹 할당)
     pub fn from_bytes(bytes: &[u8]) -> Self;
 
     /// 구조적 순수 전이: Doc 소비 후 새 Doc과 역연산 Replace 반환 (실패 시 원본 Doc과 DocError 반환)
@@ -167,6 +171,9 @@ impl Doc {
 
     /// 순차 바이트 편집 경계 어댑터 (사전 Doc 할당 없이 &[u8] 전달; 실패 시 원본 Doc 반환)
     pub fn replace(self, offset: usize, delete_len: usize, insert: &[u8]) -> Result<(Self, Replace), (Self, DocError)>;
+
+    /// 최악 O(log² P) CoW 부분 문서 추출 (OutOfBounds / InvalidBoundary)
+    pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError>;
 
     /// 0-based 줄 번호 <-> 바이트 오프셋 (OutOfBounds / LineOutOfBounds / InvalidBoundary)
     pub fn line_to_offset(&self, line: usize) -> Result<usize, DocError>;
@@ -196,11 +203,11 @@ impl Doc {
     pub fn next_boundary(&self, offset: usize) -> usize;
     pub fn decode_at(&self, offset: usize) -> Option<(Unit, usize)>;
 
-    /// 원시 바이트·총량 질의 (파생 헬퍼는 호출부 이관: is_boundary → decode_at, line_start/end/count → offset_to_line/line_to_offset,
-    /// 1-based goto-line → line_to_offset(n.saturating_sub(1).min(total_lines() - 1)), 범위 수집 → try_for_each_slice)
+    /// 원시 바이트·총량·경계 질의
     pub fn byte_at(&self, offset: usize) -> Option<u8>;
     pub fn total_bytes(&self) -> usize;
     pub fn total_lines(&self) -> usize;
+    pub fn is_boundary(&self, offset: usize) -> bool;
 }
 ```
 
@@ -208,7 +215,7 @@ impl Doc {
 
 ## 7. 미검증 가설 및 검증 기준 (Hypotheses)
 
-* **`H1` (순수 CoW 기준선 vs `Arc::get_mut` 내부 최적화):** 단일 간접 참조 `Arc<[u8]>` 순수 CoW `SliceTree`만으로 연속 타이핑·단문자 삭제(`inv.insert: Doc`)·스크립트 대량 삽입 p99 지연·할당량 목표를 달성하는지 검증한다. 목표 미달 시에만 `strong_count == 1` 및 말단 정렬(`range.end == buf.len()` 또는 `buf.truncate(range.end)` 후 `range.len() < MAX_SLICE_BYTES`) 조건의 `Arc::get_mut` 제자리 확장(`Arc<Vec<u8>>` 전환, `D-05` 유지)을 내부 구현에 도입한다(분할 직후 버퍼 공유 시 첫 입력은 CoW 복사, 이후 연속 입력부터 제자리 확장).
+* **`H1` (순수 CoW 기준선 vs `Arc::get_mut` 내부 최적화):** 단일 백킹 할당의 순수 CoW `SliceTree`만으로 연속 타이핑·단문자 삭제(`inv.insert: Doc`)·스크립트 대량 삽입 p99 지연·할당량 목표를 달성하는지 검증한다. 목표 미달 시에만 `strong_count == 1` 및 말단 정렬(`range.end == buf.len()` 또는 `buf.truncate(range.end)` 후 `range.len() < MAX_SLICE_BYTES`) 조건의 `Arc::get_mut` 제자리 확장(`Arc<Vec<u8>>` 전환, `D-05` 유지)을 내부 구현에 도입한다(분할 직후 버퍼 공유 시 첫 입력은 CoW 복사, 이후 연속 입력부터 제자리 확장).
   * *검증:* 연속 타이핑, **중간 분할 직후 첫 입력 vs 이후 연속 타이핑**, **백스페이스 후 재입력(`delete-then-insert`)**, **`Doc::clone()` 스냅샷 유지 중 편집**, **스크립트 수천 회 연속 `insert`**, 대량 붙여넣기, 원거리 점프 `criterion` 벤치마크(`순수 CoW SliceTree` vs `Arc::get_mut SliceTree`).
 * **`H2` (`CHUNK_CAP`, `MAX_SLICE_BYTES`, 팬아웃):** `CHUNK_CAP = 1024`B, `MAX_SLICE_BYTES = 16`KB, `MIN_FANOUT = 16`, `MAX_FANOUT = 32`의 쓰기 증폭·캐시 적중률·트리 깊이 균형 검증.
   * *검증:* `CHUNK_CAP`(256B / 1KB / 4KB) 및 `MAX_SLICE_BYTES`(4KB / 16KB / 64KB) 스윕 벤치마크.
@@ -217,7 +224,7 @@ impl Doc {
 
 ## 8. 구현 현황 (Implementation Status)
 
-* **구현 위치:** `crates/neonemacs-core/src/weave_tree/` (`mod.rs`, `utf8.rs`, `tree.rs`), `crates/neonemacs-core/src/lib.rs`에 `pub mod weave_tree;`로 노출.
-* **격리 상태:** `Buffer`/`Editor`/`UndoLog` 연동 전 독립 데이터 구조 단계이며, `weave_tree::Unit`은 기존 `text::Unit`과 분리 정의됨.
-* **기준선 범위:** 순수 CoW `Arc<[u8]>` 기준선 구현 완료(`H1` `Arc::get_mut` 최적화 및 `H1`/`H2` `criterion` 벤치마크는 후속 단계).
-* **검증:** `#![forbid(unsafe_code)]`, `I-14`·`I-18`(`crates/neonemacs-core/tests/purity.rs`), `D-01`~`D-05` 단위·`proptest` 스위트(`crates/neonemacs-core/tests/weave_tree_proptest.rs`) 및 `clippy -D warnings` 통과.
+* **구현 위치:** `crates/neonemacs-core/src/weave_tree/` (`mod.rs`, `utf8.rs`, `tree.rs`), `crates/neonemacs-core/src/lib.rs`에서 `Doc`, `Replace`, `Unit`, `DocError` 노출.
+* **통합 상태:** 기존 갭버퍼(`text.rs`) 및 호환 심(`len`, `is_empty`, `snap_point`, `bytes`, `to_bytes`, `line_start`, `line_end`, `nth_line_start`, `count_lines`, `Editor::delete_range`, `Eol::encode`) 완전 제거. `Buffer`, `UndoLog`(`Edit::Replace(Replace)` 역패치 CoW 저장), `KillRing`(`Vec<Doc>` + `Doc::slice`), `Editor::apply`, `syntax::highlight_line(&Doc, Range)`(단일 슬라이스 무복사), `render`, `commands`, `search`, `width`, 및 `src/shell/`(`file::save_doc`, `wal::write_wal_doc`, `wal::write_scratch_doc`)이 모두 네이티브 `weave_tree::Doc`·`Replace` 및 `try_for_each_slice` 스트리밍으로 전환됨(`assert_invariants()`는 핫패스 `O(N)` 방지를 위해 `weave_tree_proptest.rs`에서 명시 호출).
+* **기준선 범위:** 순수 CoW 기준선 구현 완료(`H1` `Arc::get_mut` 최적화 및 `H1`/`H2` `criterion` 벤치마크는 후속 단계).
+* **검증:** `#![forbid(unsafe_code)]`, `I-14`·`I-18`(`crates/neonemacs-core/tests/purity.rs`), `D-01`~`D-05` 단위·`proptest` 스위트(`crates/neonemacs-core/tests/weave_tree_proptest.rs`), 워크스페이스 전체 테스트(`cargo test --workspace`) 및 `cargo clippy --workspace --all-targets -- -D warnings` 통과.

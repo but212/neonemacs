@@ -59,10 +59,21 @@ pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Eff
     perform_all(ed, None, fx)
 }
 
+/// Streams all bytes of `doc` into a `Vec<u8>` for test assertions.
+#[must_use]
+pub fn doc_bytes(doc: &crate::core::Doc) -> Vec<u8> {
+    let mut out = Vec::with_capacity(doc.total_bytes());
+    let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
+        out.extend_from_slice(chunk);
+        std::ops::ControlFlow::<()>::Continue(())
+    });
+    out
+}
+
 /// The text of the selected buffer.
 #[must_use]
 pub fn text(ed: &Editor) -> String {
-    String::from_utf8_lossy(&ed.buffer().text().to_bytes()).into_owned()
+    String::from_utf8_lossy(&doc_bytes(ed.buffer().text())).into_owned()
 }
 
 /// Point of the selected window.

@@ -4,7 +4,7 @@ use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use neonemacs::core::Backing;
 use neonemacs::core::Config;
-use neonemacs::core::Text;
+use neonemacs::core::Doc;
 use neonemacs::core::render;
 use neonemacs::core::{Editor, Window};
 use neonemacs::core::{TokenKind, highlight_line};
@@ -22,7 +22,12 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
         reg.find_by_filename("lib.rs").map(|d| d.name.as_str()),
         Some("rust")
     );
-    let rust_tokens = highlight_line(reg.find_by_filename("lib.rs"), "let x = 10; // assign");
+    let rust_line = "let x = 10; // assign";
+    let rust_tokens = highlight_line(
+        reg.find_by_filename("lib.rs"),
+        &Doc::from_bytes(rust_line.as_bytes()),
+        0..rust_line.len(),
+    );
     assert_eq!(rust_tokens[0], TokenKind::Keyword); // "let"
     assert_eq!(rust_tokens[8], TokenKind::Number); // "10"
     assert_eq!(rust_tokens[13], TokenKind::Comment); // "// assign"
@@ -32,7 +37,12 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
         reg.find_by_filename("script.py").map(|d| d.name.as_str()),
         Some("python")
     );
-    let py_tokens = highlight_line(reg.find_by_filename("script.py"), "def foo(): # comment");
+    let py_line = "def foo(): # comment";
+    let py_tokens = highlight_line(
+        reg.find_by_filename("script.py"),
+        &Doc::from_bytes(py_line.as_bytes()),
+        0..py_line.len(),
+    );
     assert_eq!(py_tokens[0], TokenKind::Keyword); // "def"
     assert_eq!(py_tokens[11], TokenKind::Comment); // "# comment"
 
@@ -41,10 +51,15 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
         reg.find_by_filename("main.c").map(|d| d.name.as_str()),
         Some("c")
     );
-    let c_tokens = highlight_line(reg.find_by_filename("main.c"), "int a = 0; return a;");
+    let c_line = "int a = 0; return a;";
+    let c_tokens = highlight_line(
+        reg.find_by_filename("main.c"),
+        &Doc::from_bytes(c_line.as_bytes()),
+        0..c_line.len(),
+    );
     assert_eq!(c_tokens[0], TokenKind::Type); // "int"
     assert_eq!(c_tokens[8], TokenKind::Number); // "0"
-    let ret_idx = "int a = 0; return a;".find("return").unwrap();
+    let ret_idx = c_line.find("return").unwrap();
     assert_eq!(c_tokens[ret_idx], TokenKind::Keyword); // "return"
 
     // Lua
@@ -52,9 +67,11 @@ fn syntax_lexer_detects_and_tokenizes_multiple_languages() {
         reg.find_by_filename("init.lua").map(|d| d.name.as_str()),
         Some("lua")
     );
+    let lua_line = "local v = 'str' -- comment";
     let lua_tokens = highlight_line(
         reg.find_by_filename("init.lua"),
-        "local v = 'str' -- comment",
+        &Doc::from_bytes(lua_line.as_bytes()),
+        0..lua_line.len(),
     );
     assert_eq!(lua_tokens[0], TokenKind::Keyword); // "local"
     assert_eq!(lua_tokens[10], TokenKind::String); // 'str'
@@ -66,7 +83,7 @@ fn styled_render_preserves_column_and_cursor_positions() {
     let lua = lua::new_state().unwrap();
     let ed = lua::bootstrap(Editor::new(Config::default()), &lua).with_current_buffer(|b| {
         b.set_name("test.rs")
-            .with_text(Text::from_bytes(b"fn main() {\n    let x = 42;\n}\n"))
+            .with_text(Doc::from_bytes(b"fn main() {\n    let x = 42;\n}\n"))
             .set_backing(Backing::None)
     });
 
@@ -104,7 +121,7 @@ fn shell_session_render_sized_wide_hangul_and_scroll_writeback() {
     let ed = Editor::new(Config::default())
         .with_current_buffer(|b| {
             b.set_name("hangul.rs")
-                .with_text(Text::from_bytes(src.as_bytes()))
+                .with_text(Doc::from_bytes(src.as_bytes()))
                 .set_backing(Backing::None)
         })
         // Place point on line 4 so `render::scroll` must scroll `window().top`
@@ -162,7 +179,7 @@ fn raw_non_utf8_bytes_do_not_shift_syntax_highlighting() {
     let src = b"let a = \"\xe4\xb8\"; let x = 7;\n";
     let ed = lua::bootstrap(Editor::new(Config::default()), &lua).with_current_buffer(|b| {
         b.set_name("test.rs")
-            .with_text(Text::from_bytes(src))
+            .with_text(Doc::from_bytes(src))
             .set_backing(Backing::None)
     });
 

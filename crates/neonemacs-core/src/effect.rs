@@ -3,10 +3,12 @@
 //! `RunShell` and `ReloadInit` itself: a `RunShell` refused while another runs gets no `Event`.
 
 use crate::buffer::BufferId;
+pub use crate::buffer::RecoveredDelta;
 use crate::config::ShellSpec;
 use crate::eol::Eol;
 use crate::file::{DiskState, Read};
 use crate::keymap::Key;
+use crate::weave_tree::Doc;
 use std::path::{Path, PathBuf};
 
 pub type Effects = Vec<Effect>;
@@ -119,11 +121,11 @@ pub enum ReadTarget {
     Revert(BufferId),
 }
 
-/// Unsaved text found in a WAL whose disk state matched: LF-normalized bytes and the line-ending mode.
+/// Unsaved document and its line-ending mode, recovered from a matching WAL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recovered {
     pub eol: Eol,
-    pub bytes: Vec<u8>,
+    pub doc: Doc,
 }
 
 /// What the shell found when it looked for a WAL (I-44).
@@ -131,6 +133,7 @@ pub struct Recovered {
 pub enum WalProbe {
     Absent,
     Valid(Recovered),
+    ValidDelta(RecoveredDelta),
     /// The WAL does not match the file. It was moved to the given path, or the error says why not.
     Stale(Result<PathBuf, String>),
 }

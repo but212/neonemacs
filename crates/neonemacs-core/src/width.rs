@@ -1,7 +1,9 @@
 //! Display width of a unit (§11, R2). Overrides `unicode-width` only for
 //! tabs, control characters, C1 controls and zero-width joiners and fillers.
 
-use crate::text::{Text, Unit};
+use std::ops::ControlFlow;
+
+use crate::weave_tree::{Doc, Unit, decode_in_slice};
 use unicode_width::UnicodeWidthChar;
 
 /// How wide the terminal draws things: the tab stop distance and whether East Asian ambiguous
@@ -24,11 +26,6 @@ impl Metrics {
             _ => c.width().unwrap_or(0),
         }
     }
-}
-
-fn contiguous_slice(text: &Text, pos: usize, end: usize) -> &[u8] {
-    let (left, right) = text.slices_in(pos..end);
-    if left.is_empty() { right } else { left }
 }
 
 /// Counts leading printable ASCII bytes (`0x20..=0x7E`), each occupying 1 byte and 1 column.
@@ -58,57 +55,76 @@ fn ascii_printable_run(bytes: &[u8]) -> usize {
 
 /// Display column of `pos` relative to the start of its line.
 #[must_use]
-pub fn column(text: &Text, pos: usize, tab: Metrics) -> usize {
-    let pos = pos.min(text.len());
+pub fn column(text: &Doc, pos: usize, tab: Metrics) -> usize {
+    let pos = text.floor_boundary(pos);
+    let line = text.offset_to_line(pos).expect("floor_boundary is valid");
+    let start = text.line_to_offset(line).expect("line < total_lines");
     let mut col = 0;
-    let mut p = text.line_start(pos);
-    while p < pos {
-        let run = ascii_printable_run(contiguous_slice(text, p, pos));
-        if run > 0 {
-            p += run;
-            col += run;
-            continue;
+    let _ = text.try_for_each_slice(start..pos, |chunk| {
+        let mut i = 0;
+        while i < chunk.len() {
+            let run = ascii_printable_run(&chunk[i..]);
+            if run > 0 {
+                col += run;
+                i += run;
+                continue;
+            }
+            let Some((unit, n)) = decode_in_slice(chunk, i) else {
+                break;
+            };
+            col += unit_width(unit, col, tab);
+            i += n;
         }
-        let Some((unit, n)) = text.unit_at(p) else {
-            break;
-        };
-        col += unit_width(unit, col, tab);
-        p += n;
-    }
+        ControlFlow::<()>::Continue(())
+    });
     col
 }
 
 /// Position and exact display column on the line starting at `line` whose column is at most `col`.
 #[must_use]
-pub(crate) fn pos_and_column(text: &Text, line: usize, col: usize, tab: Metrics) -> (usize, usize) {
-    let end = text.line_end(line);
+pub(crate) fn pos_and_column(text: &Doc, line: usize, col: usize, tab: Metrics) -> (usize, usize) {
+    let line = text.floor_boundary(line);
+    let line_idx = text.offset_to_line(line).expect("floor_boundary is valid");
+    let end = if line_idx + 1 < text.total_lines() {
+        text.line_to_offset(line_idx + 1)
+            .expect("line_idx + 1 < total_lines")
+            - 1
+    } else {
+        text.total_bytes()
+    };
     let (mut p, mut c) = (line, 0);
-    while p < end {
-        if c < col {
-            let max_ascii = (col - c).min(end - p);
-            let run = ascii_printable_run(contiguous_slice(text, p, p + max_ascii));
-            if run > 0 {
-                p += run;
-                c += run;
-                continue;
+    let _ = text.try_for_each_slice(line..end, |chunk| {
+        let mut i = 0;
+        while i < chunk.len() {
+            if c < col {
+                let max_ascii = (col - c).min(chunk.len() - i);
+                let run = ascii_printable_run(&chunk[i..i + max_ascii]);
+                if run > 0 {
+                    p += run;
+                    c += run;
+                    i += run;
+                    continue;
+                }
             }
+            let Some((unit, n)) = decode_in_slice(chunk, i) else {
+                return ControlFlow::Break(());
+            };
+            let w = unit_width(unit, c, tab);
+            if c + w > col {
+                return ControlFlow::Break(());
+            }
+            c += w;
+            p += n;
+            i += n;
         }
-        let Some((unit, n)) = text.unit_at(p) else {
-            break;
-        };
-        let w = unit_width(unit, c, tab);
-        if c + w > col {
-            break;
-        }
-        c += w;
-        p += n;
-    }
+        ControlFlow::Continue(())
+    });
     (p, c)
 }
 
 /// Position on the line starting at `line` whose column is at most `col`.
 #[must_use]
-pub fn pos_at_column(text: &Text, line: usize, col: usize, tab: Metrics) -> usize {
+pub fn pos_at_column(text: &Doc, line: usize, col: usize, tab: Metrics) -> usize {
     pos_and_column(text, line, col, tab).0
 }
 
@@ -187,7 +203,7 @@ mod tests {
             assert_eq!(unit_width(Unit::Char('\u{301}'), 0, m), 0);
         }
         assert_eq!(str_width("a\u{203B}", wide), 3);
-        let t = crate::text::Text::from_bytes("\u{203B}x".as_bytes());
+        let t = Doc::from_bytes("\u{203B}x".as_bytes());
         assert_eq!(column(&t, 3, wide), 2);
         assert_eq!(column(&t, 3, narrow), 1);
         assert_eq!(pos_at_column(&t, 0, 2, wide), 3);
@@ -195,7 +211,7 @@ mod tests {
 
     #[test]
     fn column_and_pos_at_column() {
-        let t = crate::text::Text::from_bytes("a\t가b\nnext".as_bytes());
+        let t = Doc::from_bytes("a\t가b\nnext".as_bytes());
         assert_eq!(column(&t, 0, M8), 0);
         assert_eq!(column(&t, 1, M8), 1);
         assert_eq!(column(&t, 2, M8), 8);
