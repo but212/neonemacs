@@ -14,15 +14,11 @@ pub(crate) fn summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> ChildEntr
 }
 
 fn try_summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> Result<ChildEntry<S>, AllocError> {
-    let mut bytes = 0usize;
-    let mut summary = S::default();
-    for s in &slices {
-        bytes += s.range.len();
-        summary = summary.combine(&s.summary);
-    }
+    let (bytes, backing_bytes, summary) = recompute_leaf_summary(&slices);
     Ok(ChildEntry {
         node: Arc::try_new(SliceNode::Leaf { slices })?,
         bytes,
+        backing_bytes,
         summary,
     })
 }
@@ -35,15 +31,11 @@ pub(crate) fn summarize_internal<S: Summary>(children: Vec<ChildEntry<S>>) -> Ch
 fn try_summarize_internal<S: Summary>(
     children: Vec<ChildEntry<S>>,
 ) -> Result<ChildEntry<S>, AllocError> {
-    let mut bytes = 0usize;
-    let mut summary = S::default();
-    for c in &children {
-        bytes += c.bytes;
-        summary = summary.combine(&c.summary);
-    }
+    let (bytes, backing_bytes, summary) = recompute_internal_summary(&children);
     Ok(ChildEntry {
         node: Arc::try_new(SliceNode::Internal { children })?,
         bytes,
+        backing_bytes,
         summary,
     })
 }
@@ -123,21 +115,19 @@ fn can_merge_slices<S: Summary>(a: &ByteSlice<S>, b: &ByteSlice<S>) -> bool {
 fn merge_two_slices<S: Summary>(a: ByteSlice<S>, b: ByteSlice<S>) -> ByteSlice<S> {
     let combined = a.range.len() + b.range.len();
     if Arc::ptr_eq(&a.buf, &b.buf) && a.range.end == b.range.start && combined <= MAX_SLICE_BYTES {
-        let backing_len = a.buf.len();
         return ByteSlice {
             buf: a.buf,
             range: a.range.start..b.range.end,
-            summary: a.summary.combine(&b.summary).with_backing_len(backing_len),
+            summary: a.summary.combine(&b.summary),
         };
     }
     let mut buf = Vec::with_capacity(combined);
     buf.extend_from_slice(&a.buf[a.range]);
     buf.extend_from_slice(&b.buf[b.range]);
-    let backing_len = buf.len();
     ByteSlice {
         buf: Arc::new(buf),
         range: 0..combined,
-        summary: a.summary.combine(&b.summary).with_backing_len(backing_len),
+        summary: a.summary.combine(&b.summary),
     }
 }
 
@@ -399,7 +389,6 @@ fn split_byte_slice<S: Summary>(
     let split_pt = slice.range.start + local;
     let left_range = slice.range.start..split_pt;
     let right_range = split_pt..slice.range.end;
-    let backing_len = slice.buf.len();
     let (ls, rs) = slice.summary.split_pair(
         &slice.buf[left_range.clone()],
         &slice.buf[right_range.clone()],
@@ -408,12 +397,12 @@ fn split_byte_slice<S: Summary>(
         ByteSlice {
             buf: Arc::clone(&slice.buf),
             range: left_range,
-            summary: ls.with_backing_len(backing_len),
+            summary: ls,
         },
         ByteSlice {
             buf: Arc::clone(&slice.buf),
             range: right_range,
-            summary: rs.with_backing_len(backing_len),
+            summary: rs,
         },
     )
 }
@@ -542,24 +531,28 @@ pub(crate) fn split_at<S: Summary>(
     )
 }
 
-fn recompute_leaf_summary<S: Summary>(slices: &[ByteSlice<S>]) -> (usize, S) {
+fn recompute_leaf_summary<S: Summary>(slices: &[ByteSlice<S>]) -> (usize, usize, S) {
     let mut bytes = 0usize;
+    let mut backing_bytes = 0usize;
     let mut summary = S::default();
     for s in slices {
         bytes += s.range.len();
+        backing_bytes = backing_bytes.saturating_add(s.buf.len());
         summary = summary.combine(&s.summary);
     }
-    (bytes, summary)
+    (bytes, backing_bytes, summary)
 }
 
-fn recompute_internal_summary<S: Summary>(children: &[ChildEntry<S>]) -> (usize, S) {
+fn recompute_internal_summary<S: Summary>(children: &[ChildEntry<S>]) -> (usize, usize, S) {
     let mut bytes = 0usize;
+    let mut backing_bytes = 0usize;
     let mut summary = S::default();
     for c in children {
         bytes += c.bytes;
+        backing_bytes = backing_bytes.saturating_add(c.backing_bytes);
         summary = summary.combine(&c.summary);
     }
-    (bytes, summary)
+    (bytes, backing_bytes, summary)
 }
 
 pub(crate) fn try_insert_in_place<S: Summary>(
@@ -583,14 +576,12 @@ pub(crate) fn try_insert_in_place<S: Summary>(
                     {
                         buf.truncate(slice.range.end);
                         buf.extend_from_slice(bytes);
-                        let new_backing_len = buf.len();
                         slice.range.end += bytes.len();
-                        slice.summary = slice
-                            .summary
-                            .combine(&S::from_slice(bytes))
-                            .with_backing_len(new_backing_len);
-                        let (total_bytes, total_summary) = recompute_leaf_summary(slices);
+                        slice.summary = slice.summary.combine(&S::from_slice(bytes));
+                        let (total_bytes, total_backing, total_summary) =
+                            recompute_leaf_summary(slices);
                         entry.bytes = total_bytes;
+                        entry.backing_bytes = total_backing;
                         entry.summary = total_summary;
                         return Ok(entry);
                     }
@@ -617,8 +608,10 @@ pub(crate) fn try_insert_in_place<S: Summary>(
             match try_insert_in_place(child, offset - acc, bytes) {
                 Ok(updated) => {
                     children.insert(idx, updated);
-                    let (total_bytes, total_summary) = recompute_internal_summary(children);
+                    let (total_bytes, total_backing, total_summary) =
+                        recompute_internal_summary(children);
                     entry.bytes = total_bytes;
+                    entry.backing_bytes = total_backing;
                     entry.summary = total_summary;
                     Ok(entry)
                 }
@@ -663,16 +656,18 @@ pub(crate) fn try_delete_in_place<S: Summary>(
                             if let Some(buf) = Arc::get_mut(&mut slice.buf) {
                                 buf.truncate(slice.range.end);
                             }
-                            slice.summary = kept_s.with_backing_len(slice.buf.len());
+                            slice.summary = kept_s;
                         } else {
                             let kept_range = abs_end..slice.range.end;
                             let (_, kept_s) =
                                 slice.summary.split_pair(&deleted, &slice.buf[kept_range]);
                             slice.range.start += delete_len;
-                            slice.summary = kept_s.with_backing_len(slice.buf.len());
+                            slice.summary = kept_s;
                         }
-                        let (total_bytes, total_summary) = recompute_leaf_summary(slices);
+                        let (total_bytes, total_backing, total_summary) =
+                            recompute_leaf_summary(slices);
                         entry.bytes = total_bytes;
+                        entry.backing_bytes = total_backing;
                         entry.summary = total_summary;
                         return Ok((entry, deleted));
                     }
@@ -699,8 +694,10 @@ pub(crate) fn try_delete_in_place<S: Summary>(
             match try_delete_in_place(child, offset - acc, delete_len) {
                 Ok((updated, deleted)) => {
                     children.insert(idx, updated);
-                    let (total_bytes, total_summary) = recompute_internal_summary(children);
+                    let (total_bytes, total_backing, total_summary) =
+                        recompute_internal_summary(children);
                     entry.bytes = total_bytes;
+                    entry.backing_bytes = total_backing;
                     entry.summary = total_summary;
                     Ok((entry, deleted))
                 }

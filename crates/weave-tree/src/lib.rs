@@ -17,6 +17,8 @@ use triomphe::{AllocError, Arc};
 pub use cursor::{Cursor, Slices, Units};
 pub use summary::{LineBreakMetric, LineBreaks, Metric, Summary, Utf16CodeUnits, Utf16Metric};
 
+use self::cursor::{CursorFrame, advance_internal_past, push_leftmost};
+
 use self::tree::{
     from_slices, join, split_at, try_delete_in_place, try_from_slices, try_insert_in_place,
 };
@@ -26,8 +28,8 @@ use self::utf8::{
 };
 
 /// B-Tree node fanout and slice size constants.
-pub const MAX_FANOUT: usize = 32;
-pub const MIN_FANOUT: usize = MAX_FANOUT / 2;
+pub(crate) const MAX_FANOUT: usize = 32;
+pub(crate) const MIN_FANOUT: usize = MAX_FANOUT / 2;
 pub const CHUNK_CAP: usize = 4096;
 /// Maximum size of a single `ByteSlice` (bounds leaf scan and buffer retention).
 pub const MAX_SLICE_BYTES: usize = 16 * 1024;
@@ -50,6 +52,7 @@ pub(crate) struct ByteSlice<S: Summary> {
 pub(crate) struct ChildEntry<S: Summary> {
     pub(crate) node: Arc<SliceNode<S>>,
     pub(crate) bytes: usize,
+    pub(crate) backing_bytes: usize,
     pub(crate) summary: S,
 }
 
@@ -83,8 +86,6 @@ pub enum DocError {
         len: usize,
         total: usize,
     },
-    /// Line index exceeds `total_lines`.
-    LineOutOfBounds { line: usize, total_lines: usize },
     /// The edit would produce too many bytes to represent all document offsets and counts.
     DocumentTooLarge,
 }
@@ -852,6 +853,12 @@ impl<S: Summary> WeaveTree<S> {
         self.root.as_ref().map_or(0, |r| r.bytes)
     }
 
+    /// Conservative sum of backing buffer lengths (`Arc<Vec<u8>>::len`) across all leaves.
+    #[must_use]
+    pub fn backing_bytes(&self) -> usize {
+        self.root.as_ref().map_or(0, |r| r.backing_bytes)
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.total_bytes() == 0
@@ -1006,16 +1013,19 @@ impl<S: Summary> WeaveTree<S> {
                     assert!((MIN_FANOUT..=MAX_FANOUT).contains(&slices.len()));
                 }
                 let mut sum_bytes = 0usize;
+                let mut sum_backing = 0usize;
                 let mut sum_summary = S::default();
                 for slice in slices {
                     assert!(!slice.range.is_empty());
                     assert!(slice.range.len() <= MAX_SLICE_BYTES);
                     let raw = &slice.buf[slice.range.clone()];
-                    assert!(slice.summary == S::from_leaf_slice(raw, slice.buf.len()));
+                    assert!(slice.summary == S::from_slice(raw));
                     sum_bytes += slice.range.len();
+                    sum_backing = sum_backing.saturating_add(slice.buf.len());
                     sum_summary = sum_summary.combine(&slice.summary);
                 }
                 assert_eq!(entry.bytes, sum_bytes);
+                assert_eq!(entry.backing_bytes, sum_backing);
                 assert!(entry.summary == sum_summary);
                 1
             }
@@ -1027,6 +1037,7 @@ impl<S: Summary> WeaveTree<S> {
                 }
                 let mut expected_depth = None;
                 let mut sum_bytes = 0usize;
+                let mut sum_backing = 0usize;
                 let mut sum_summary = S::default();
                 for child in children {
                     let d = Self::check_entry(child, false);
@@ -1035,9 +1046,11 @@ impl<S: Summary> WeaveTree<S> {
                         Some(ed) => assert_eq!(d, ed, "D-02 uniform leaf depth violated"),
                     }
                     sum_bytes += child.bytes;
+                    sum_backing = sum_backing.saturating_add(child.backing_bytes);
                     sum_summary = sum_summary.combine(&child.summary);
                 }
                 assert_eq!(entry.bytes, sum_bytes);
+                assert_eq!(entry.backing_bytes, sum_backing);
                 assert!(entry.summary == sum_summary);
                 expected_depth.expect("non-empty internal") + 1
             }
@@ -1065,114 +1078,54 @@ impl<S: Summary> PartialEq for WeaveTree<S> {
 
 impl<S: Summary> Eq for WeaveTree<S> {}
 
-enum EqFrame<'a, S: Summary> {
-    Internal {
-        children: &'a [ChildEntry<S>],
-        idx: usize,
-        base: usize,
-    },
-    Leaf {
-        slices: &'a [ByteSlice<S>],
-        idx: usize,
-        in_slice: usize,
-    },
-}
-
-fn push_eq_leftmost<'a, S: Summary>(
-    mut stack: Vec<EqFrame<'a, S>>,
-    entry: &'a ChildEntry<S>,
-    base: usize,
-) -> Vec<EqFrame<'a, S>> {
-    let mut cur = entry;
-    let cur_base = base;
-    loop {
-        match cur.node.as_ref() {
-            SliceNode::Internal { children } => {
-                stack.push(EqFrame::Internal {
-                    children,
-                    idx: 0,
-                    base: cur_base,
-                });
-                cur = &children[0];
-            }
-            SliceNode::Leaf { slices } => {
-                stack.push(EqFrame::Leaf {
-                    slices,
-                    idx: 0,
-                    in_slice: 0,
-                });
-                return stack;
-            }
-        }
-    }
-}
-
-fn advance_eq_cursor<S: Summary>(
-    mut stack: Vec<EqFrame<'_, S>>,
-    bytes_consumed: usize,
-) -> Vec<EqFrame<'_, S>> {
-    let Some(EqFrame::Leaf {
+fn advance_eq_cursor<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>, bytes_consumed: usize) {
+    let Some(CursorFrame::Leaf {
         slices,
         idx,
         in_slice,
+        slice_base,
     }) = stack.last_mut()
     else {
-        return stack;
+        return;
     };
     *in_slice += bytes_consumed;
     if *in_slice < slices[*idx].range.len() {
-        return stack;
+        return;
     }
+    *slice_base += slices[*idx].range.len();
     *idx += 1;
     *in_slice = 0;
     if *idx < slices.len() {
-        return stack;
+        return;
     }
     stack.pop();
-    advance_eq_internal_past(stack)
+    advance_internal_past(stack);
 }
 
-fn advance_eq_internal_past<S: Summary>(mut stack: Vec<EqFrame<'_, S>>) -> Vec<EqFrame<'_, S>> {
-    while let Some(EqFrame::Internal {
-        children,
-        idx,
-        base,
-    }) = stack.last_mut()
-    {
-        let b = children[*idx].bytes;
-        *idx += 1;
-        *base += b;
-        if *idx < children.len() {
-            let next = &children[*idx];
-            let nb = *base;
-            return push_eq_leftmost(stack, next, nb);
-        }
-        stack.pop();
-    }
-    stack
-}
-
-fn can_skip_shared_subtree<S: Summary>(sa: &[EqFrame<'_, S>], sb: &[EqFrame<'_, S>]) -> bool {
+fn can_skip_shared_subtree<S: Summary>(
+    sa: &[CursorFrame<'_, S>],
+    sb: &[CursorFrame<'_, S>],
+) -> bool {
     let (Some(top_a), Some(top_b)) = (sa.len().checked_sub(2), sb.len().checked_sub(2)) else {
         return false;
     };
     let (
-        EqFrame::Internal {
+        CursorFrame::Internal {
             children: ca,
             idx: ia,
             base: ba,
         },
-        EqFrame::Internal {
+        CursorFrame::Internal {
             children: cb,
             idx: ib,
             base: bb,
         },
-        EqFrame::Leaf {
+        CursorFrame::Leaf {
             idx: la_idx,
             in_slice: la_off,
             ..
         },
-        EqFrame::Leaf {
+        CursorFrame::Leaf {
             idx: lb_idx,
             in_slice: lb_off,
             ..
@@ -1190,8 +1143,10 @@ fn can_skip_shared_subtree<S: Summary>(sa: &[EqFrame<'_, S>], sb: &[EqFrame<'_, 
 }
 
 fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
-    let mut sa = push_eq_leftmost(Vec::new(), a, 0);
-    let mut sb = push_eq_leftmost(Vec::new(), b, 0);
+    let mut sa = Vec::new();
+    let mut sb = Vec::new();
+    push_leftmost(&mut sa, a, 0);
+    push_leftmost(&mut sb, b, 0);
 
     loop {
         if sa.is_empty() && sb.is_empty() {
@@ -1203,20 +1158,22 @@ fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
         if can_skip_shared_subtree(&sa, &sb) {
             sa.pop();
             sb.pop();
-            sa = advance_eq_internal_past(sa);
-            sb = advance_eq_internal_past(sb);
+            advance_internal_past(&mut sa);
+            advance_internal_past(&mut sb);
             continue;
         }
         let (
-            Some(EqFrame::Leaf {
+            Some(CursorFrame::Leaf {
                 slices: la,
                 idx: ia,
                 in_slice: oa,
+                ..
             }),
-            Some(EqFrame::Leaf {
+            Some(CursorFrame::Leaf {
                 slices: lb,
                 idx: ib,
                 in_slice: ob,
+                ..
             }),
         ) = (sa.last(), sb.last())
         else {
@@ -1232,7 +1189,7 @@ fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
         if bytes_a != bytes_b {
             return false;
         }
-        sa = advance_eq_cursor(sa, take);
-        sb = advance_eq_cursor(sb, take);
+        advance_eq_cursor(&mut sa, take);
+        advance_eq_cursor(&mut sb, take);
     }
 }

@@ -135,9 +135,8 @@ pub(crate) fn try_append_slices<S: Summary>(
         };
         v.try_reserve_exact(cap).map_err(|_| AllocError)?;
         v.extend_from_slice(chunk);
-        let backing_len = v.len();
         let buf = Arc::try_new(v)?;
-        let summary = S::from_leaf_slice(chunk, backing_len);
+        let summary = S::from_slice(chunk);
         slices.push(ByteSlice {
             buf,
             range: 0..chunk.len(),

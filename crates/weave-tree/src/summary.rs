@@ -11,18 +11,6 @@ pub trait Summary: Clone + Default + Eq {
     /// Computes summary metadata from a valid `Unit`-bounded byte slice.
     fn from_slice(bytes: &[u8]) -> Self;
 
-    /// Attaches or updates the backing allocation length (`Arc<Vec<u8>>::len`) for a leaf
-    /// slice. Pure content summaries leave this as a no-op.
-    #[must_use]
-    fn with_backing_len(self, _backing_len: usize) -> Self {
-        self
-    }
-
-    /// Computes summary metadata for a leaf `ByteSlice` with its backing allocation length.
-    fn from_leaf_slice(bytes: &[u8], backing_len: usize) -> Self {
-        Self::from_slice(bytes).with_backing_len(backing_len)
-    }
-
     /// Associative monoid combination.
     fn combine(&self, other: &Self) -> Self;
 

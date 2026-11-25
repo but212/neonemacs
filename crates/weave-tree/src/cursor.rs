@@ -8,7 +8,7 @@ use crate::utf8::{decode_unit_raw, prev_in_slice};
 use crate::{ByteSlice, ChildEntry, DocError, Metric, SliceNode, Summary, Unit, WeaveTree};
 
 #[derive(Clone, Debug)]
-enum CursorFrame<'a, S: Summary> {
+pub(crate) enum CursorFrame<'a, S: Summary> {
     Internal {
         children: &'a [ChildEntry<S>],
         idx: usize,
@@ -332,7 +332,7 @@ impl<'a, S: Summary> Cursor<'a, S> {
     }
 }
 
-fn push_leftmost<'a, S: Summary>(
+pub(crate) fn push_leftmost<'a, S: Summary>(
     stack: &mut Vec<CursorFrame<'a, S>>,
     entry: &'a ChildEntry<S>,
     base: usize,
@@ -444,7 +444,7 @@ fn descend_to_byte<'a, S: Summary>(
     }
 }
 
-fn advance_internal_past<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>) {
+pub(crate) fn advance_internal_past<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>) {
     while let Some(CursorFrame::Internal {
         children,
         idx,

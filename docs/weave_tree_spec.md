@@ -15,7 +15,7 @@
 `Doc`은 바이트·라인 요약과 단위 경계 무결성만 책임진다. 줄바꿈(`Lf`/`Crlf`), Undo 스택, 커서/마크/뷰포트(`point`, `mark`, `top`), 더티/에폭(epoch), 디스크·WAL I/O는 **호스트**가 소유한다.
 
 * **경계 스냅 및 앵커 재정렬:** 무오류(infallible) 편집을 원하면 호스트가 `Doc::replace`/`Doc::apply` 전 `floor_boundary`/`ceil_boundary`로 `offset`·`offset + delete_len`을 `0..=total_bytes()` 유효 `Unit` 경계에 스냅한다(유효 경계면 불변). 코어 검증 위임 시 실패하면 `(Self, DocError)`로 원본 `Doc` 소유권을 회수한다. `D-01` 재병합(`k_left > 0 || k_right > 0`) 시 앵커가 새 UTF-8 문자 내부에 놓일 수 있으므로 전이 직후 커서·마크·뷰포트를 `floor_boundary`/`ceil_boundary`로 재정렬한다(문자 단위 이동은 엄격 `<`/`>`인 `prev_boundary`/`next_boundary` 사용).
-* **UTF-8·라인 경계:** ① `D-01`은 RFC 3629 UTF-8만 `Unit::Char`, overlong·서로게이트·불완전 바이트는 `Unit::Raw`로 보존한다. ② `prev_boundary(0)`·`floor_boundary(0)`은 `0`을 반환한다. ③ `line_to_offset`은 `LineOutOfBounds`를 반환하므로 1-based `goto-line` 클램핑은 `D-03`(`doc.total_lines() >= 1`) 아래 `n.saturating_sub(1).min(doc.total_lines() - 1)`을 사용한다.
+* **UTF-8·라인 경계:** ① `D-01`은 RFC 3629 UTF-8만 `Unit::Char`, overlong·서로게이트·불완전 바이트는 `Unit::Raw`로 보존한다. ② `prev_boundary(0)`·`floor_boundary(0)`은 `0`을 반환한다. ③ `line_to_offset`은 `OutOfBounds`를 반환하므로 1-based `goto-line` 클램핑은 `D-03`(`doc.total_lines() >= 1`) 아래 `n.saturating_sub(1).min(doc.total_lines() - 1)`을 사용한다.
 * **Undo 스택 연동:** 호스트는 `Doc::apply`/`Doc::replace`가 반환하는 역연산 `Replace`와 논리 편집 범위(`EditSpan`)를 `RecordedEdit`으로 함께 저장한다.
   * **Undo 바이트 예산:** 역패치 삽입부가 `CHUNK_CAP`(4 KiB) 이하인 경우, 백킹 바이트가 `CHUNK_CAP`을 초과하면 저장 전에 필요한 바이트만 복사한다. 각 편집은 논리 편집 크기(`removed + inserted`)와 역패치가 유지하는 백킹 바이트 수 중 큰 값으로 `Config.undo_limit`에 반영한다. 백킹 바이트 수는 슬라이스 범위가 아닌 전체 할당 크기를 합산하며, 공유 할당도 슬라이스마다 계산한다.
   * **연속 입력 그룹화:** 연속 `self-insert`는 `Replace`를 제자리 병합하지 않고 `amalgamating-undo-limit` 한도 내에서 동일 `Group`에 개별 `RecordedEdit`으로 누적한다.
@@ -95,10 +95,8 @@ pub struct Replace {
 pub enum DocError {
     /// 유효 Unit 경계 중간 분할 시도 (D-01)
     InvalidBoundary { offset: usize },
-    /// 바이트 오프셋/범위가 문서 길이를 벗어남
+    /// 바이트 오프셋/범위 또는 메트릭 인덱스가 문서 범위를 벗어남
     OutOfBounds { offset: usize, len: usize, total: usize },
-    /// 줄 번호가 문서 총 줄 수를 벗어남
-    LineOutOfBounds { line: usize, total_lines: usize },
     /// 편집 결과가 문서 바이트 길이의 상한(`usize::MAX - 1`)을 초과함
     DocumentTooLarge,
 }
@@ -140,7 +138,7 @@ pub enum DocError {
 
 ### 4.2. 좌표 변환 (`line_to_offset`, `offset_to_line`)
 
-* **`line_to_offset(doc, line)`:** `line >= total_lines(doc)`면 `LineOutOfBounds`, 빈 문서 `line == 0`은 `0`. `ChildEntry.line_breaks` 누적으로 $O(\log P)$ 하강 후 리프 `ByteSlice`(`<= MAX_SLICE_BYTES`) 내부만 스캔(말미 `\n`이면 마지막 빈 줄은 `total_bytes()`).
+* **`line_to_offset(doc, line)`:** `line >= total_lines(doc)`면 `OutOfBounds`, 빈 문서 `line == 0`은 `0`. `ChildEntry.line_breaks` 누적으로 $O(\log P)$ 하강 후 리프 `ByteSlice`(`<= MAX_SLICE_BYTES`) 내부만 스캔(말미 `\n`이면 마지막 빈 줄은 `total_bytes()`).
 * **`offset_to_line(doc, offset)`:** `offset > doc.total_bytes()`면 `OutOfBounds`, 비경계면 `InvalidBoundary`. $O(\log P)$ 하강하며 이전 `ChildEntry.line_breaks`와 리프 내 `offset`까지 `\n` 수를 합산한다.
 
 ### 4.3. 양방향 제로카피 스트리밍 순회 (`try_for_each_slice`, `try_for_each_slice_rev`)
@@ -175,7 +173,7 @@ impl Doc {
     /// 최악 O(log P) CoW 부분 문서 추출 (OutOfBounds / InvalidBoundary)
     pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError>;
 
-    /// 0-based 줄 번호 <-> 바이트 오프셋 (OutOfBounds / LineOutOfBounds / InvalidBoundary)
+    /// 0-based 줄 번호 <-> 바이트 오프셋 (OutOfBounds / InvalidBoundary)
     pub fn line_to_offset(&self, line: usize) -> Result<usize, DocError>;
     pub fn offset_to_line(&self, offset: usize) -> Result<usize, DocError>;
 

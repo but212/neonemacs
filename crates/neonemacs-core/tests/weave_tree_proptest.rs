@@ -61,9 +61,10 @@ fn empty_doc_contracts() {
     assert_eq!(doc.line_to_offset(0), Ok(0));
     assert_eq!(
         doc.line_to_offset(1),
-        Err(DocError::LineOutOfBounds {
-            line: 1,
-            total_lines: 1
+        Err(DocError::OutOfBounds {
+            offset: 1,
+            len: 0,
+            total: 0
         })
     );
     assert_eq!(doc.offset_to_line(0), Ok(0));
