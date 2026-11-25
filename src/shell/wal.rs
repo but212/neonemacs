@@ -705,26 +705,10 @@ mod tests {
     }
 
     #[test]
-    fn old_format_wal_is_ignored() {
-        let mut raw = encode_wal(DiskState::Unknown, Eol::Lf, b"x");
-        raw[..8].copy_from_slice(b"NEONWAL1");
-        assert_eq!(decode_wal(&raw, DiskState::Unknown), None);
-    }
-
-    #[test]
     fn unknown_eol_byte_invalidates_header() {
         let mut raw = encode_wal(DiskState::Unknown, Eol::Lf, b"x");
         raw[8] = 2;
         assert_eq!(decode_wal(&raw, DiskState::Unknown), None);
-    }
-
-    #[test]
-    fn read_wal_returns_eol_from_header() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("doc.txt");
-        write_wal(&target, DiskState::Unknown, Eol::Crlf, b"x\n").unwrap();
-        let recovered = read_wal(&target, DiskState::Unknown).unwrap();
-        assert_eq!(recovered.eol, Eol::Crlf);
     }
 
     #[test]

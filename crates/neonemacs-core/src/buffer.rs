@@ -704,30 +704,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pool_scratch_is_scratch_backed_before_and_after_a_kill() {
-        // I-42
-        let pool = BufferPool::new();
-        assert!(pool.get(0).unwrap().backing().is_scratch());
-        let (pool, replacement) = pool.kill(BufferId(0));
-        assert_eq!(pool.get_by_id(replacement).name(), SCRATCH_NAME);
-        assert!(pool.get_by_id(replacement).backing().is_scratch());
-    }
-
-    #[test]
-    fn buffer_pool_starts_with_scratch() {
+    fn buffer_pool_starts_with_scratch_and_kill_last_recreates_it() {
+        // I-08, I-42
         let pool = BufferPool::new();
         assert_eq!(pool.len(), 1);
-        assert_eq!(pool.get(0).unwrap().name(), "*scratch*");
+        assert_eq!(pool.get(0).unwrap().name(), SCRATCH_NAME);
         assert_eq!(pool.get(0).unwrap().id(), BufferId(0));
-    }
+        assert!(pool.get(0).unwrap().backing().is_scratch());
 
-    #[test]
-    fn buffer_pool_kill_last_creates_scratch_enforcing_i08() {
-        let pool = BufferPool::new();
         let (pool, replacement) = pool.kill(BufferId(0));
         assert_eq!(pool.len(), 1);
         assert_ne!(replacement, BufferId(0));
-        assert_eq!(pool.get_by_id(replacement).name(), "*scratch*");
+        assert_eq!(pool.get_by_id(replacement).name(), SCRATCH_NAME);
+        assert!(pool.get_by_id(replacement).backing().is_scratch());
     }
 
     #[test]

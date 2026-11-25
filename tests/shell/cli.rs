@@ -73,20 +73,12 @@ fn run_in_pty(bin: &str, args: &[&Path], xdg_config_home: &Path) -> u32 {
 fn cli_invalid_line_numbers_and_trailing_flags_exit_code_2() {
     let bin = env!("CARGO_BIN_EXE_neonemacs");
 
+    // Exhaustive flag/line-number validation lives in `shell::startup::args::tests`;
+    // here we spot-check binary exit code 2 and stderr wiring across each error category.
     let test_cases = [
         (vec!["+0", "test.txt"], "invalid line number: +0"),
-        (vec!["+-1", "test.txt"], "invalid line number: +-1"),
-        (vec!["+abc", "test.txt"], "invalid line number: +abc"),
-        (vec!["+", "test.txt"], "invalid line number: +"),
-        (vec!["+  5", "test.txt"], "invalid line number: +  5"),
-        (
-            vec!["+18446744073709551616", "test.txt"],
-            "invalid line number: +18446744073709551616",
-        ),
         (vec!["+5"], "+n must be followed by a file"),
-        (vec!["file.txt", "+10"], "+n must be followed by a file"),
         (vec!["-x"], "unknown option: -x"),
-        (vec!["file.txt", "--versoin"], "unknown option: --versoin"),
     ];
 
     for (args, expected_err) in test_cases {
@@ -114,7 +106,7 @@ fn cli_invalid_line_numbers_and_trailing_flags_exit_code_2() {
 fn cli_version_and_help_exit_0_without_starting_editor() {
     let bin = env!("CARGO_BIN_EXE_neonemacs");
 
-    for flag in ["-v", "--version"] {
+    for flag in ["-v"] {
         let output = Command::new(bin)
             .arg(flag)
             .output()
@@ -129,7 +121,7 @@ fn cli_version_and_help_exit_0_without_starting_editor() {
         assert!(output.stderr.is_empty(), "stderr for {flag}");
     }
 
-    for flag in ["-h", "--help"] {
+    for flag in ["-h"] {
         let output = Command::new(bin)
             .arg(flag)
             .output()

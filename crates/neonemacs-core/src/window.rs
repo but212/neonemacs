@@ -238,7 +238,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn window_manager_initial_state_satisfies_i19() {
+    fn window_manager_split_and_cycle_satisfies_i19() {
         let wm = WindowManager::new(Window {
             buffer: BufferId(0),
             point: 0,
@@ -248,18 +248,7 @@ mod tests {
         });
         assert_eq!(wm.leaf_count(), 1);
         assert_eq!(wm.selected(), 0);
-        assert!(wm.selected() < wm.leaf_count());
-    }
 
-    #[test]
-    fn window_manager_split_and_cycle_satisfies_i19() {
-        let wm = WindowManager::new(Window {
-            buffer: BufferId(0),
-            point: 0,
-            top: 0,
-            left_col: 0,
-            height: 0,
-        });
         let wm = wm.split(Dir::Below);
         assert_eq!(wm.leaf_count(), 2);
         assert_eq!(wm.selected(), 0);

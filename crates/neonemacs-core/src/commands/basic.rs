@@ -379,33 +379,22 @@ mod tests {
     }
 
     #[test]
-    fn recenter_puts_point_line_on_middle_row_without_editing() {
-        let ed = with_height(typ(editor(), &numbered(30)), 10);
-        let ed = ed.with_window(|w| Window {
-            point: 0,
+    fn recenter_puts_point_line_on_middle_row_and_clamps_to_start() {
+        let base = with_height(typ(editor(), &numbered(30)), 10);
+        let ed = base.clone().with_window(|w| Window {
+            point: ls(20),
             top: 0,
             ..w
         });
-        let ed = ed.with_window(|w| Window { point: ls(20), ..w });
         let before = ed.buffer().text().total_bytes();
         let ed = run_command(ed, recenter);
         assert_eq!(top(&ed), ls(15));
         assert_eq!(point(&ed), ls(20));
         assert_eq!(ed.buffer().text().total_bytes(), before);
-    }
 
-    #[test]
-    fn recenter_clamps_to_buffer_start() {
-        let ed = with_height(typ(editor(), &numbered(30)), 10);
-        let ed = ed.with_window(|w| Window { point: 3 * 2, ..w });
+        let ed = base.with_window(|w| Window { point: 3 * 2, ..w });
         let ed = run_command(ed, recenter);
         assert_eq!(top(&ed), 0);
-    }
-
-    #[test]
-    fn insert_hangul_saves_utf8() {
-        let ed = typ(editor(), "한");
-        assert_eq!(*ed.buffer().text(), Doc::from_bytes("한".as_bytes()));
     }
 
     #[test]

@@ -478,21 +478,12 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keymap::{Code, Key};
+    use crate::keymap::Key;
     use crate::test_support::{press, text};
 
     fn editor_with(s: &str) -> Editor {
         Editor::new(Config::default())
             .with_current_buffer(|b| b.with_text(Doc::from_bytes(s.as_bytes())))
-    }
-
-    #[test]
-    fn keys_type_and_undo() {
-        let ed = press(editor_with(""), Key::plain(Code::Char('a')));
-        let ed = press(ed, Key::plain(Code::Char('b')));
-        assert_eq!(text(&ed), "ab");
-        let ed = press(ed, Key::plain(Code::Char('c')));
-        assert_eq!(text(&ed), "abc");
     }
 
     #[test]

@@ -259,22 +259,19 @@ mod tests {
     }
 
     #[test]
-    fn toggle_to_crlf_saves_crlf_bytes() {
-        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
-        let id = ed.window().buffer;
-        let (ed, _) = toggle_eol(ed, Vec::new());
-        assert_eq!(ed.buffer().eol(), Eol::Crlf);
-        assert!(ed.buffer().modified());
-        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
-    }
-
-    #[test]
-    fn toggle_back_to_lf_saves_lf_bytes() {
-        let ed = file_buffer(editor(), b"a\nb\n", Eol::Crlf);
-        let id = ed.window().buffer;
-        let (ed, _) = toggle_eol(ed, Vec::new());
-        assert_eq!(ed.buffer().eol(), Eol::Lf);
-        assert_eq!(saved_bytes(&ed, id), b"a\nb\n");
+    fn toggle_eol_flips_mode_marks_wal_dirty_and_saves_bytes() {
+        for (initial, expected_eol, expected_bytes) in [
+            (Eol::Lf, Eol::Crlf, &b"a\r\nb\r\n"[..]),
+            (Eol::Crlf, Eol::Lf, &b"a\nb\n"[..]),
+        ] {
+            let ed = file_buffer(editor(), b"a\nb\n", initial);
+            let id = ed.window().buffer;
+            let (ed, _) = toggle_eol(ed, Vec::new());
+            assert_eq!(ed.buffer().eol(), expected_eol);
+            assert!(ed.buffer().modified());
+            assert!(ed.buffer().backing().is_wal_dirty());
+            assert_eq!(saved_bytes(&ed, id), expected_bytes);
+        }
     }
 
     #[test]
@@ -298,13 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn toggle_eol_marks_wal_dirty() {
-        let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
-        let (ed, _) = toggle_eol(ed, Vec::new());
-        assert!(ed.buffer().backing().is_wal_dirty());
-    }
-
-    #[test]
     fn read_only_buffer_refuses_toggle() {
         let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf)
             .with_current_buffer(|b| b.set_view_only(true));
@@ -324,24 +314,12 @@ mod tests {
         );
         let before = ed.buffer().backing().clone();
 
-        let (ed, fx) = write_file(ed, "g.txt", Vec::new());
-        assert_eq!(fx, [] as [Effect; 0]);
-        assert_eq!(ed.message(), "Buffer g.txt is visiting g.txt");
-        assert_eq!(*ed.buffer().backing(), before);
-    }
-
-    #[test]
-    fn write_file_to_parent_spelling_of_visited_path_is_refused() {
-        let ed = file_buffer(editor(), b"abc", Eol::Lf);
-        let (ed, _) = ed.add_buffer(
-            "g.txt",
-            Doc::from_bytes(b"x"),
-            Backing::file(FilePath::resolve("", "g.txt"), DiskState::Unknown),
-        );
-
-        let (ed, fx) = write_file(ed, "sub/../g.txt", Vec::new());
-        assert_eq!(fx, [] as [Effect; 0]);
-        assert_eq!(ed.message(), "Buffer g.txt is visiting g.txt");
+        for path in ["g.txt", "sub/../g.txt"] {
+            let (ed, fx) = write_file(ed.clone(), path, Vec::new());
+            assert_eq!(fx, [] as [Effect; 0]);
+            assert_eq!(ed.message(), "Buffer g.txt is visiting g.txt");
+            assert_eq!(*ed.buffer().backing(), before);
+        }
     }
 
     #[test]
@@ -485,22 +463,17 @@ mod tests {
     }
 
     #[test]
-    fn save_of_missing_opened_file_asks_when_created_externally() {
-        // Opened as missing (Unknown); the file exists by the time of the save.
+    fn save_of_missing_opened_file_asks_when_created_externally_and_writes_when_missing() {
+        // Opened as missing (Unknown); asks if the file exists by save time, otherwise writes.
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let id = ed.window().buffer;
-        let (ed, fx) = disk_checked(ed, StatTarget::Save(id), "f.txt", known(5), Vec::new());
+        let (asked, fx) = disk_checked(ed.clone(), StatTarget::Save(id), "f.txt", known(5), Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
-            ed.mode(),
+            asked.mode(),
             crate::editor::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
         ));
-    }
 
-    #[test]
-    fn save_of_new_file_still_writes() {
-        let ed = file_buffer(editor(), b"abc", Eol::Lf);
-        let id = ed.window().buffer;
         let (_, fx) = disk_checked(
             ed,
             StatTarget::Save(id),

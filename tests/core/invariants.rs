@@ -11,13 +11,13 @@ use neonemacs::shell::wal;
 use std::fs;
 
 #[test]
-fn restore_content_must_snap_saved_point_and_mark() {
+fn restore_content_snaps_saved_point_mark_and_active_window() {
     let ed = Editor::new(Config::default());
     let path = "long_to_short.txt";
     let initial_text = Doc::from_bytes(b"line 1\nline 2\nline 3\nline 4\nline 5\nlong text line");
     let (mut ed, id) = ed.add_buffer(
         "test",
-        initial_text,
+        initial_text.clone(),
         Backing::file(FilePath::resolve("", path), DiskState::Unknown),
     );
 
@@ -44,27 +44,22 @@ fn restore_content_must_snap_saved_point_and_mark() {
         buf.mark().unwrap() <= buf.text().total_bytes(),
         "I-01 violation: mark exceeds restored text len"
     );
-}
 
-#[test]
-fn restore_content_snaps_active_window_and_applies_line() {
-    let ed = Editor::new(Config::default());
-    let path = "active_wal.txt";
-    let initial_text = Doc::from_bytes(b"line 1\nline 2\nline 3\nline 4\nlong text line");
-    let (ed, id) = ed.add_buffer(
+    // Active window point/top are snapped and `Some(line)` is applied.
+    let active_path = "active_wal.txt";
+    let (ed2, id2) = Editor::new(Config::default()).add_buffer(
         "test",
         initial_text,
-        Backing::file(FilePath::resolve("", path), DiskState::Unknown),
+        Backing::file(FilePath::resolve("", active_path), DiskState::Unknown),
     );
-    let ed = neonemacs::core::switch_to(ed, id).with_window(|w| Window {
+    let ed2 = neonemacs::core::switch_to(ed2, id2).with_window(|w| Window {
         point: 35,
         top: 14,
         ..w
     });
-
     let recovered =
-        ed.restore_buffer_content(path, Doc::from_bytes(b"a\nb\nc\n"), Eol::Lf, Some(2));
-    assert_eq!(recovered.buffer_by_id(id).saved_point(), 2);
+        ed2.restore_buffer_content(active_path, Doc::from_bytes(b"a\nb\nc\n"), Eol::Lf, Some(2));
+    assert_eq!(recovered.buffer_by_id(id2).saved_point(), 2);
     assert_eq!(recovered.window().point, 2);
     assert_eq!(recovered.window().top, 0);
 }

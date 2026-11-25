@@ -323,48 +323,42 @@ mod tests {
     }
 
     #[test]
-    fn resolve_folds_parent() {
-        let cwd = "/w";
-        let expected = "/w/a.txt";
-        assert_eq!(FilePath::resolve(cwd, "./a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "/w/./a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "../w/a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "a/../b.txt").as_str(), "/w/b.txt");
-        assert_eq!(FilePath::resolve(cwd, "/..").as_str(), "/");
-    }
-
-    #[test]
-    fn resolve_keeps_leading_parent_of_relative_path() {
-        let cwd = "";
-        assert_eq!(FilePath::resolve(cwd, "../x").as_str(), "../x");
-        assert_eq!(FilePath::resolve(cwd, "a/../../x").as_str(), "../x");
-    }
-
-    #[test]
-    fn resolve_handles_windows_prefixes_and_separators() {
-        assert_eq!(
-            FilePath::resolve(r"C:\work\proj", r"..\other\a.txt").as_str(),
-            "C:/work/other/a.txt"
-        );
-        assert_eq!(
-            FilePath::resolve(r"C:\work", r"C:\..\root.txt").as_str(),
-            "C:/root.txt"
-        );
-        assert_eq!(
-            FilePath::resolve(r"\\server\share\dir", r"..\file.txt").as_str(),
-            r"\\server\share/file.txt"
-        );
-        assert_eq!(
-            FilePath::resolve(r"\\server\share", "file.txt").as_str(),
-            r"\\server\share/file.txt"
-        );
+    fn resolve_normalizes_paths_and_windows_prefixes() {
+        let cases = [
+            ("/w", "./a.txt", "/w/a.txt"),
+            ("/w", "a.txt", "/w/a.txt"),
+            ("/w", "/w/./a.txt", "/w/a.txt"),
+            ("/w", "../w/a.txt", "/w/a.txt"),
+            ("/w", "a/../b.txt", "/w/b.txt"),
+            ("/w", "/..", "/"),
+            ("", "../x", "../x"),
+            ("", "a/../../x", "../x"),
+            (r"C:\work\proj", r"..\other\a.txt", "C:/work/other/a.txt"),
+            (r"C:\work", r"C:\..\root.txt", "C:/root.txt"),
+            (
+                r"\\server\share\dir",
+                r"..\file.txt",
+                r"\\server\share/file.txt",
+            ),
+            (
+                r"\\server\share",
+                "file.txt",
+                r"\\server\share/file.txt",
+            ),
+            ("/w", "///w/a.txt", "/w/a.txt"),
+            ("", "///a/b/../..", "/"),
+        ];
+        for (cwd, input, expected) in cases {
+            assert_eq!(
+                FilePath::resolve(cwd, input).as_str(),
+                expected,
+                "cwd={cwd:?} input={input:?}"
+            );
+        }
         assert_eq!(
             FilePath::resolve("", r"\\server\share"),
             FilePath::resolve("", r"\\server\share\a\..")
         );
-        assert_eq!(FilePath::resolve("/w", "///w/a.txt").as_str(), "/w/a.txt");
-        assert_eq!(FilePath::resolve("", "///a/b/../..").as_str(), "/");
         assert_eq!(file_name(FilePath::resolve("", "/").as_str()), None);
         assert_eq!(file_name(r"\\server\share"), None);
         assert_eq!(
@@ -374,10 +368,21 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_file_takes_the_default_eol() {
+    fn missing_file_uses_default_eol_and_unknown_disk_state() {
         let path = FilePath::resolve("", "new.txt");
-        let loaded = loaded_from(&path, Read::Missing, 4, Eol::Crlf).unwrap();
-        assert_eq!(loaded.eol, Eol::Crlf);
+        let crlf = loaded_from(&path, Read::Missing, 4, Eol::Crlf).unwrap();
+        assert_eq!(crlf.eol, Eol::Crlf);
+
+        let loaded = load(Read::Missing, 1 << 20);
+        assert_eq!(loaded.eol, Eol::Lf);
+        assert_eq!(loaded.text.total_bytes(), 0);
+        assert!(matches!(
+            loaded.backing,
+            Backing::File {
+                disk: DiskState::Unknown,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -400,71 +405,20 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_has_unknown_disk_state() {
-        let loaded = load(Read::Missing, 1 << 20);
-        assert_eq!(loaded.text.total_bytes(), 0);
-        assert!(matches!(
-            loaded.backing,
-            Backing::File {
-                disk: DiskState::Unknown,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn crlf_file_loads_as_normalized_text() {
-        let loaded = load(found(6, b"a\r\nb\r\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
-    }
-
-    #[test]
-    fn missing_file_is_lf() {
-        let loaded = load(Read::Missing, 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
-    }
-
-    #[test]
-    fn mixed_file_is_normalized_with_majority_mode() {
-        let loaded = load(found(5, b"a\r\nb\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
-    }
-
-    #[test]
-    fn lone_cr_is_not_a_line_ending() {
-        let loaded = load(found(3, b"a\rb"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\rb"));
-    }
-
-    #[test]
-    fn crlf_only_file_becomes_one_newline() {
-        let loaded = load(found(2, b"\r\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"\n"));
-    }
-
-    #[test]
-    fn double_cr_before_lf_keeps_one_cr_in_text() {
-        let loaded = load(found(4, b"a\r\r\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\r\n"));
-    }
-
-    #[test]
-    fn empty_file_is_lf_and_empty() {
-        let loaded = load(found(0, b""), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text.total_bytes(), 0);
-    }
-
-    #[test]
-    fn crlf_at_size_limit_is_loaded_and_normalized() {
-        let loaded = load(found(6, b"a\r\nb\r\n"), 6);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
+    fn load_normalizes_eol_and_preserves_non_eol_bytes() {
+        let cases: &[(&[u8], u64, Eol, &[u8])] = &[
+            (b"a\r\nb\r\n", 6, Eol::Crlf, b"a\nb\n"),
+            (b"a\r\nb\n", 1 << 20, Eol::Lf, b"a\nb\n"),
+            (b"a\rb", 1 << 20, Eol::Lf, b"a\rb"),
+            (b"\r\n", 1 << 20, Eol::Crlf, b"\n"),
+            (b"a\r\r\n", 1 << 20, Eol::Crlf, b"a\r\n"),
+            (b"", 1 << 20, Eol::Lf, b""),
+        ];
+        for &(raw, max_size, expected_eol, expected_bytes) in cases {
+            let loaded = load(found(raw.len() as u64, raw), max_size);
+            assert_eq!(loaded.eol, expected_eol, "raw={raw:?}");
+            assert_eq!(loaded.text, Doc::from_bytes(expected_bytes), "raw={raw:?}");
+        }
     }
 
     #[test]

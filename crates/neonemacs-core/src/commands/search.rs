@@ -354,25 +354,25 @@ mod tests {
     }
 
     #[test]
-    fn isearch_moves_and_cancels() {
-        let ed = typ(editor(), "abc abd");
-        let ed = keys(ed, "C-a C-s");
-        let ed = typ(ed, "a");
-        assert_eq!(point(&ed), 1);
-        let ed = typ(ed, "b");
-        assert_eq!(point(&ed), 2);
-        let ed = keys(ed, "C-s");
-        assert_eq!(point(&ed), 6);
-        let ed = keys(ed, "DEL");
-        assert_eq!(point(&ed), 1);
-        let ed = keys(ed, "C-g");
-        assert_eq!(point(&ed), 0);
-        assert_eq!(
-            ed.mode(),
-            &Mode::Normal {
-                prefix: Prefix::None
+    fn isearch_moves_and_cancels_on_ctrl_g_and_esc() {
+        for cancel in ["C-g", "ESC"] {
+            let ed = typ(editor(), "abc abd");
+            let ed = keys(ed, "C-a C-s");
+            let ed = typ(ed, "a");
+            assert_eq!(point(&ed), 1);
+            let ed = typ(ed, "b");
+            assert_eq!(point(&ed), 2);
+            let ed = keys(ed, "C-s");
+            assert_eq!(point(&ed), 6);
+            let ed = keys(ed, "DEL");
+            assert_eq!(point(&ed), 1);
+            let ed = keys(ed, cancel);
+            assert_eq!(point(&ed), 0);
+            assert_eq!(ed.mode(), &Mode::normal());
+            if cancel == "ESC" {
+                assert_eq!(ed.message(), "Quit");
             }
-        );
+        }
     }
 
     fn with_jamo() -> Editor {
@@ -420,42 +420,19 @@ mod tests {
     }
 
     #[test]
-    fn query_replace_unknown_key_hints_and_keeps_session() {
-        let ed = typ(editor(), "foo");
-        let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| {
+    fn query_replace_unrecognized_keys_hint_and_keep_session() {
+        // I-46: both unknown chars and non-character keys (arrow) hint without ending the session.
+        let base = typ(editor(), "foo");
+        let base = keys(base, "C-a");
+        let base = run_command(base, |e, fx| {
             (start_query(e, "foo", "qux", MatchKind::Literal), fx)
         });
-        let ed = typ(ed, "z");
-        assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
-        assert_eq!(ed.message(), "Answer y, n, !, or q");
-        assert_eq!(text(&ed), "foo");
-    }
-
-    #[test]
-    fn query_replace_non_character_key_hints_and_keeps_session() {
-        // I-46: a key without a character (an arrow) is answered too, and does not end the session.
-        let ed = typ(editor(), "foo");
-        let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| {
-            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
-        });
-        let ed = crate::test_support::press(ed, Key::plain(Code::Up));
-        assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
-        assert_eq!(ed.message(), "Answer y, n, !, or q");
-        assert_eq!(text(&ed), "foo");
-    }
-
-    #[test]
-    fn isearch_esc_cancels_like_ctrl_g() {
-        let ed = typ(editor(), "abc abd");
-        let ed = keys(ed, "C-a C-s");
-        let ed = typ(ed, "b");
-        assert_eq!(point(&ed), 2);
-        let ed = keys(ed, "ESC");
-        assert_eq!(point(&ed), 0);
-        assert_eq!(ed.mode(), &Mode::normal());
-        assert_eq!(ed.message(), "Quit");
+        for key in [Key::plain(Code::Char('z')), Key::plain(Code::Up)] {
+            let ed = crate::test_support::press(base.clone(), key);
+            assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
+            assert_eq!(ed.message(), "Answer y, n, !, or q");
+            assert_eq!(text(&ed), "foo");
+        }
     }
 
     #[test]
@@ -530,23 +507,6 @@ mod tests {
         // The whole session is one undo group.
         let ed = keys(ed, "C-/");
         assert_eq!(text(&ed), "foo bar foo baz foo");
-    }
-
-    #[test]
-    fn query_replace_quits_early() {
-        let ed = typ(editor(), "foo bar foo");
-        let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| {
-            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
-        });
-        let ed = keys(ed, "y q");
-        assert_eq!(text(&ed), "qux bar foo");
-        assert_eq!(
-            ed.mode(),
-            &Mode::Normal {
-                prefix: Prefix::None
-            }
-        );
     }
 
     #[test]

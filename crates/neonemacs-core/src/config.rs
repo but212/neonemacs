@@ -333,7 +333,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn get_and_set_are_checked() {
+    fn get_and_set_validate_values_and_update_config() {
         let c = Config::default();
         assert_eq!(c.get(Setting::FillColumn), Value::Int(70));
         assert_eq!(c.get(Setting::CaseFoldSearch), Value::Bool(true));
@@ -342,6 +342,63 @@ mod tests {
         assert!(c.set(Setting::TabWidth, Value::Int(0)).is_err());
         assert!(c.set(Setting::FillColumn, Value::Bool(true)).is_err());
         assert_eq!(c.tab_width, 8);
+
+        assert_eq!(c.get(Setting::DefaultEol), Value::Str("lf".to_owned()));
+        let c = c
+            .set(Setting::DefaultEol, Value::Str("crlf".to_owned()))
+            .unwrap();
+        assert_eq!(c.default_eol, Eol::Crlf);
+        assert!(
+            c.set(Setting::DefaultEol, Value::Str("cr".to_owned()))
+                .is_err()
+        );
+        assert_eq!(
+            c.set(Setting::DefaultEol, Value::Int(1)),
+            Err("default-eol takes a string".to_owned())
+        );
+
+        assert_eq!(c.shell_spec(), ShellSpec::default());
+        let c = c
+            .set(Setting::ShellFileName, Value::Str("pwsh".to_owned()))
+            .unwrap()
+            .set(
+                Setting::ShellCommandSwitch,
+                Value::Str("-Command".to_owned()),
+            )
+            .unwrap();
+        assert_eq!(
+            c.shell_spec(),
+            ShellSpec {
+                program: "pwsh".to_owned(),
+                switch: "-Command".to_owned()
+            }
+        );
+        assert_eq!(
+            c.set(Setting::ShellFileName, Value::Str(String::new())),
+            Err("shell-file-name must not be empty".to_owned())
+        );
+        assert_eq!(
+            c.set(Setting::ShellCommandSwitch, Value::Bool(true)),
+            Err("shell-command-switch takes a string".to_owned())
+        );
+
+        assert_eq!(c.get(Setting::AmbiguousWidth), Value::Int(1));
+        assert!(!c.metrics().cjk);
+        let c = c.set(Setting::AmbiguousWidth, Value::Int(2)).unwrap();
+        assert!(c.metrics().cjk);
+        assert_eq!(c.metrics().tab, 8);
+        assert_eq!(
+            c.set(Setting::AmbiguousWidth, Value::Int(3)),
+            Err("ambiguous-width must be between 1 and 2".to_owned())
+        );
+
+        assert_eq!(c.get(Setting::ExpandTabs), Value::Bool(false));
+        let c = c.set(Setting::ExpandTabs, Value::Bool(true)).unwrap();
+        assert!(c.toggles.contains(Toggles::EXPAND_TABS));
+        assert_eq!(
+            c.set(Setting::ExpandTabs, Value::Int(1)),
+            Err("expand-tabs takes a boolean".to_owned())
+        );
     }
 
     #[test]
@@ -383,78 +440,5 @@ mod tests {
         }
         let indexes: Vec<usize> = Setting::ALL.iter().map(|&s| index(s)).collect();
         assert_eq!(indexes, (0..16).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn default_eol_takes_lf_or_crlf() {
-        let c = Config::default();
-        assert_eq!(c.get(Setting::DefaultEol), Value::Str("lf".to_owned()));
-        let c = c
-            .set(Setting::DefaultEol, Value::Str("crlf".to_owned()))
-            .unwrap();
-        assert_eq!(c.default_eol, Eol::Crlf);
-        assert!(
-            c.set(Setting::DefaultEol, Value::Str("cr".to_owned()))
-                .is_err()
-        );
-        assert_eq!(
-            c.set(Setting::DefaultEol, Value::Int(1)),
-            Err("default-eol takes a string".to_owned())
-        );
-    }
-
-    #[test]
-    fn shell_settings_take_non_empty_strings() {
-        let c = Config::default();
-        assert_eq!(c.shell_spec(), ShellSpec::default());
-        let c = c
-            .set(Setting::ShellFileName, Value::Str("pwsh".to_owned()))
-            .unwrap()
-            .set(
-                Setting::ShellCommandSwitch,
-                Value::Str("-Command".to_owned()),
-            )
-            .unwrap();
-        assert_eq!(
-            c.shell_spec(),
-            ShellSpec {
-                program: "pwsh".to_owned(),
-                switch: "-Command".to_owned()
-            }
-        );
-        assert_eq!(
-            c.set(Setting::ShellFileName, Value::Str(String::new())),
-            Err("shell-file-name must not be empty".to_owned())
-        );
-        assert_eq!(
-            c.set(Setting::ShellCommandSwitch, Value::Bool(true)),
-            Err("shell-command-switch takes a string".to_owned())
-        );
-    }
-
-    #[test]
-    fn ambiguous_width_is_one_or_two() {
-        let c = Config::default();
-        assert_eq!(c.get(Setting::AmbiguousWidth), Value::Int(1));
-        assert!(!c.metrics().cjk);
-        let c = c.set(Setting::AmbiguousWidth, Value::Int(2)).unwrap();
-        assert!(c.metrics().cjk);
-        assert_eq!(c.metrics().tab, 8);
-        assert_eq!(
-            c.set(Setting::AmbiguousWidth, Value::Int(3)),
-            Err("ambiguous-width must be between 1 and 2".to_owned())
-        );
-    }
-
-    #[test]
-    fn expand_tabs_defaults_off_and_takes_a_boolean() {
-        let c = Config::default();
-        assert_eq!(c.get(Setting::ExpandTabs), Value::Bool(false));
-        let c = c.set(Setting::ExpandTabs, Value::Bool(true)).unwrap();
-        assert!(c.toggles.contains(Toggles::EXPAND_TABS));
-        assert_eq!(
-            c.set(Setting::ExpandTabs, Value::Int(1)),
-            Err("expand-tabs takes a boolean".to_owned())
-        );
     }
 }

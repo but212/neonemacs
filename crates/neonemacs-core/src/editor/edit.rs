@@ -307,30 +307,21 @@ mod tests {
     }
 
     #[test]
-    fn undo_of_undo() {
-        let ed = editor_with("");
-        let ed = type_char(ed, 'a');
-        let ed = run_command(ed, |e, fx| (e, fx));
-        let ed = type_char(ed, 'b');
-        let ed = run_command(ed, |e, fx| (e, fx));
-        let ed = undo(ed);
-        assert_eq!(text(&ed), "a");
-        let ed = run_command(ed, |e, fx| (e, fx));
-        let ed = undo(ed);
-        assert_eq!(text(&ed), "ab");
-    }
+    fn undo_chains_walk_back_and_non_undo_breaks_chain() {
+        let base = editor_with("");
+        let base = type_char(base, 'a');
+        let base = run_command(base, |e, fx| (e, fx));
+        let base = type_char(base, 'b');
+        let base = run_command(base, |e, fx| (e, fx));
+        let after_first = undo(base);
+        assert_eq!(text(&after_first), "a");
 
-    #[test]
-    fn consecutive_undos_walk_back() {
-        let ed = editor_with("");
-        let ed = type_char(ed, 'a');
-        let ed = run_command(ed, |e, fx| (e, fx));
-        let ed = type_char(ed, 'b');
-        let ed = run_command(ed, |e, fx| (e, fx));
-        let ed = undo(ed);
-        assert_eq!(text(&ed), "a");
-        let ed = undo(ed);
-        assert_eq!(text(&ed), "");
+        // Consecutive undo walks further back.
+        assert_eq!(text(&undo(after_first.clone())), "");
+
+        // An intervening command breaks the undo chain, so the next undo redoes.
+        let broken = run_command(after_first, |e, fx| (e, fx));
+        assert_eq!(text(&undo(broken)), "ab");
     }
 
     #[test]
@@ -372,44 +363,17 @@ mod tests {
     }
 
     #[test]
-    fn undo_back_to_saved_text_is_clean_and_drops_the_wal() {
-        // I-41
-        let ed = type_char(saved(""), 'a');
-        assert!(ed.buffer().modified());
-        let (ed, fx) = undo_fx(ed);
-        assert_eq!(text(&ed), "");
-        assert!(!ed.buffer().modified());
-        assert!(!ed.buffer().is_wal_dirty());
-        assert_eq!(
-            fx,
-            vec![crate::effect::Effect::RemoveWal {
-                target: crate::effect::WalTarget::Sibling("f.txt".to_owned())
-            }]
-        );
-    }
-
-    #[test]
-    fn undo_past_the_saved_text_is_modified() {
-        let ed = type_char(editor_with(""), 'x');
-        let ed = ed.with_current_buffer(|b| b.record_saved(crate::file::DiskState::Unknown));
-        let ed = type_char(ed, 'a');
-        let ed = undo(ed);
-        assert!(!ed.buffer().modified());
-        // The chained undo removes the saved "x": now the text differs from the saved one.
-        let ed = undo(ed);
-        assert_eq!(text(&ed), "");
-        assert!(ed.buffer().modified());
-    }
-
-    #[test]
     fn undoing_an_undo_returns_to_clean_through_the_original_group() {
         // Undoing to clean text drops the WAL of the file-backed buffer (I-41).
         let wal = crate::effect::Effect::RemoveWal {
             target: crate::effect::WalTarget::Sibling("f.txt".to_owned()),
         };
-        let (ed, fx) = undo_fx(type_char(saved(""), 'a'));
+        let ed = type_char(saved(""), 'a');
+        assert!(ed.buffer().modified());
+        let (ed, fx) = undo_fx(ed);
         assert_eq!(fx, core::slice::from_ref(&wal));
         assert!(!ed.buffer().modified());
+        assert!(!ed.buffer().is_wal_dirty());
         // A command in between breaks the undo chain, so this undo redoes "a".
         let ed = run_command(ed, |e, fx| (e.move_point(0), fx));
         let (ed, fx) = undo_fx(ed);
@@ -668,8 +632,19 @@ mod tests {
 
     #[test]
     fn expand_tabs_inserts_spaces_to_next_stop_as_one_undo_step() {
-        for (before, spaces) in [("", 8), ("abc", 5), ("abcdefg", 1), ("가", 6)] {
-            let ed = soft_tabs(before);
+        for (tab_width, before, spaces) in [
+            (8, "", 8),
+            (8, "abc", 5),
+            (8, "abcdefg", 1),
+            (8, "가", 6),
+            (4, "", 4),
+        ] {
+            let ed = Editor::new(Config {
+                toggles: Toggles::DEFAULT.union(Toggles::EXPAND_TABS),
+                tab_width,
+                ..Config::default()
+            })
+            .with_current_buffer(|b| b.with_text(Doc::from_bytes(before.as_bytes())));
             let ed = ed.with_window(|w| Window {
                 point: before.len(),
                 ..w
@@ -687,16 +662,5 @@ mod tests {
         assert_eq!(text(&ed), "\t");
         let ed = type_char(soft_tabs(""), 'x');
         assert_eq!(text(&ed), "x");
-    }
-
-    #[test]
-    fn expand_tabs_follows_tab_width() {
-        let config = Config {
-            toggles: Toggles::DEFAULT.union(Toggles::EXPAND_TABS),
-            tab_width: 4,
-            ..Config::default()
-        };
-        let ed = type_char(Editor::new(config), '\t');
-        assert_eq!(text(&ed), "    ");
     }
 }

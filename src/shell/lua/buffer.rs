@@ -157,14 +157,25 @@ mod tests {
     use crate::core::Editor;
 
     #[test]
-    fn set_mark_from_lua_makes_an_active_region() {
+    fn set_mark_and_query_from_lua_manage_active_region() {
         let lua = new_state().unwrap();
         let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(crate::core::Doc::from_bytes(b"abc")));
-        let (ed, res) = script(&lua, ed, "buffer.set_mark(2)");
+            .with_current_buffer(|b| b.with_text(crate::core::Doc::from_bytes(b"hello world")));
+        assert_eq!(ed.buffer().mark(), None);
+
+        let (ed, res) = script(&lua, ed, "buffer.set_mark(5)");
         res.unwrap();
         assert!(ed.buffer().mark_active());
-        let (ed, res) = script(&lua, ed, "buffer.set_mark(nil)");
+        assert_eq!(ed.buffer().mark(), Some(5));
+
+        let (ed, res) = script(
+            &lua,
+            ed,
+            r#"
+            assert(buffer.mark() == 5, "mark should be 5")
+            buffer.set_mark(nil)
+        "#,
+        );
         res.unwrap();
         assert!(!ed.buffer().mark_active());
         assert_eq!(ed.buffer().mark(), None);
@@ -252,32 +263,6 @@ mod tests {
             ed.kill_ring().entries(),
             &[neonemacs::core::Doc::from_bytes(b"hi ")]
         );
-    }
-
-    #[test]
-    fn buffer_mark_api() {
-        let lua = new_state().unwrap();
-        let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(crate::core::Doc::from_bytes(b"hello world")));
-        assert_eq!(ed.buffer().mark(), None);
-
-        // set mark to 5
-        let (ed, res) = script(&lua, ed, r"buffer.set_mark(5)");
-        res.unwrap();
-        assert_eq!(ed.buffer().mark(), Some(5));
-
-        // query mark from lua
-        let (ed, res) = script(
-            &lua,
-            ed,
-            r#"
-            local m = buffer.mark()
-            assert(m == 5, "mark should be 5")
-            buffer.set_mark(nil)
-        "#,
-        );
-        res.unwrap();
-        assert_eq!(ed.buffer().mark(), None);
     }
 
     #[test]

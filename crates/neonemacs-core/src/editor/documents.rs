@@ -115,7 +115,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_drops_oldest_past_max() {
+    fn push_drops_oldest_past_max_and_after_lowering_max() {
         let max = 120;
         let mut kr = KillRing::new();
         for i in 0..=max {
@@ -127,10 +127,7 @@ mod tests {
             kr.last(),
             Some(&Doc::from_bytes(max.to_string().as_bytes()))
         );
-    }
 
-    #[test]
-    fn lowering_max_drops_oldest_entries_on_next_push() {
         let kr = KillRing::from_entries(vec![
             Doc::from_bytes(b"a"),
             Doc::from_bytes(b"b"),

@@ -226,6 +226,14 @@ mod tests {
         let ed = asking().with_key_aliases(|a| a.alias('ㅛ', to("Y")));
         let ed = press(ed, ch('ㅛ'));
         assert_eq!(text(&ed), "", "the answer folds to y");
+
+        let ed = asking().with_key_aliases(|a| a.alias('ㅃ', to("Q")));
+        let ed = press(ed, ch('ㅃ'));
+        assert_eq!(
+            ed.message(),
+            "Please answer y or n. Kill? (y or n)",
+            "q is no yes/no answer"
+        );
     }
 
     #[test]
@@ -275,17 +283,6 @@ mod tests {
     fn alias_is_ignored_for_plain_text_after_a_failed_lookup() {
         let ed = hangul().with_keymap(|k| k.bind_str("b", "undo").unwrap());
         assert_eq!(text(&typ(ed, "ㅠ")), "ㅠ", "I-48: no lookup for plain text");
-    }
-
-    #[test]
-    fn answer_folds_an_uppercase_alias_target() {
-        let ed = asking().with_key_aliases(|a| a.alias('ㅃ', to("Q")));
-        let ed = press(ed, ch('ㅃ'));
-        assert_eq!(
-            ed.message(),
-            "Please answer y or n. Kill? (y or n)",
-            "q is no yes/no answer"
-        );
     }
 
     #[test]

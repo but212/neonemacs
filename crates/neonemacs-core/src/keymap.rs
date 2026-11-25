@@ -370,13 +370,15 @@ mod tests {
     }
 
     #[test]
-    fn unbind_removes_existing_binding() {
+    fn unbind_removes_existing_and_ignores_missing() {
         let map = Keymap::survival();
-        let key = parse_key_seq("C-x C-s").unwrap();
-        assert_eq!(map.lookup(&key), Some("save-buffer"));
+        let existing = parse_key_seq("C-x C-s").unwrap();
+        assert_eq!(map.lookup(&existing), Some("save-buffer"));
+        assert_eq!(map.clone().unbind(&existing).lookup(&existing), None);
 
-        let unmapped = map.unbind(&key);
-        assert_eq!(unmapped.lookup(&key), None);
+        let missing = parse_key_seq("C-k").unwrap();
+        assert_eq!(map.lookup(&missing), None);
+        assert_eq!(map.unbind(&missing).lookup(&missing), None);
     }
 
     fn target(s: &str) -> AliasTarget {
@@ -420,15 +422,5 @@ mod tests {
         assert_eq!(a.rewrite(key("C-M-ㅠ")), Some(key("C-M-b")));
         assert_eq!(a.rewrite(key("x")), None, "no alias");
         assert_eq!(a.rewrite(key("RET")), None, "not a character key");
-    }
-
-    #[test]
-    fn unbind_nonexistent_is_noop() {
-        let map = Keymap::survival();
-        let key = parse_key_seq("C-k").unwrap();
-        assert_eq!(map.lookup(&key), None);
-
-        let map2 = map.unbind(&key);
-        assert_eq!(map2.lookup(&key), None);
     }
 }

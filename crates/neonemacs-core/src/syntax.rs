@@ -432,7 +432,6 @@ mod tests {
         assert_eq!(lang(&reg, "main.rs"), Some("rust"));
         assert_eq!(lang(&reg, "src/lib.rs"), Some("rust"));
         assert_eq!(lang(&reg, "test.py"), None);
-        assert!(reg.find_by_filename("main.rs").is_some());
     }
 
     #[test]

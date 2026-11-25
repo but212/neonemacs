@@ -203,56 +203,25 @@ mod tests {
     }
 
     #[test]
-    fn opened_mixed_file_normalizes_and_saves_majority_crlf() {
-        let read = Read::Found(RawFile::from_bytes(7, DiskState::Unknown, b"a\r\nb\r\nc\n"));
-        let target = ReadTarget::Open {
-            line: None,
-            show: false,
-        };
-        let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
-        let id = ed.buffers().iter().last().unwrap().id();
-        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
-        assert_eq!(
-            *ed.buffer_by_id(id).text(),
-            crate::Doc::from_bytes(b"a\nb\nc\n")
-        );
-        assert!(!ed.buffer_by_id(id).modified());
-        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\nc\r\n");
-    }
-
-    #[test]
-    fn opened_mixed_file_normalizes_and_saves_majority_lf_or_tie() {
-        let read = Read::Found(RawFile::from_bytes(5, DiskState::Unknown, b"a\r\nb\n"));
-        let target = ReadTarget::Open {
-            line: None,
-            show: false,
-        };
-        let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
-        let id = ed.buffers().iter().last().unwrap().id();
-        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Lf);
-        assert_eq!(
-            *ed.buffer_by_id(id).text(),
-            crate::Doc::from_bytes(b"a\nb\n")
-        );
-        assert!(!ed.buffer_by_id(id).modified());
-        assert_eq!(saved_bytes(&ed, id), b"a\nb\n");
-    }
-
-    #[test]
-    fn opened_crlf_file_saves_crlf_bytes() {
-        let read = Read::Found(RawFile::from_bytes(6, DiskState::Unknown, b"a\r\nb\r\n"));
-        let target = ReadTarget::Open {
-            line: None,
-            show: false,
-        };
-        let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
-        let id = ed.buffers().iter().last().unwrap().id();
-        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
-        assert_eq!(
-            *ed.buffer_by_id(id).text(),
-            crate::Doc::from_bytes(b"a\nb\n")
-        );
-        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
+    fn opened_files_normalize_eol_and_save_expected_bytes() {
+        let cases: &[(&[u8], Eol, &[u8], &[u8])] = &[
+            (b"a\r\nb\r\nc\n", Eol::Crlf, b"a\nb\nc\n", b"a\r\nb\r\nc\r\n"),
+            (b"a\r\nb\n", Eol::Lf, b"a\nb\n", b"a\nb\n"),
+            (b"a\r\nb\r\n", Eol::Crlf, b"a\nb\n", b"a\r\nb\r\n"),
+        ];
+        for &(raw, expected_eol, expected_doc, expected_saved) in cases {
+            let read = Read::Found(RawFile::from_bytes(raw.len() as u64, DiskState::Unknown, raw));
+            let target = ReadTarget::Open {
+                line: None,
+                show: false,
+            };
+            let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
+            let id = ed.buffers().iter().last().unwrap().id();
+            assert_eq!(ed.buffer_by_id(id).eol(), expected_eol);
+            assert_eq!(*ed.buffer_by_id(id).text(), crate::Doc::from_bytes(expected_doc));
+            assert!(!ed.buffer_by_id(id).modified());
+            assert_eq!(saved_bytes(&ed, id), expected_saved);
+        }
     }
 
     #[test]
@@ -414,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn open_of_visited_path_reuses_buffer() {
+    fn open_of_visited_or_parent_spelled_path_reuses_buffer() {
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let count = ed.buffers().iter().count();
         let read = Read::Found(RawFile::from_bytes(3, DiskState::Unknown, b"abc"));
@@ -430,10 +399,7 @@ mod tests {
         );
         assert_eq!(ed.buffers().iter().count(), count);
         assert_eq!(fx, [] as [Effect; 0]);
-    }
 
-    #[test]
-    fn open_with_parent_spelling_reuses_buffer() {
         let ed = editor().with_cwd("/w".to_owned());
         let ed = ed.with_current_buffer(|b| {
             b.with_text(Doc::from_bytes(b"abc"))

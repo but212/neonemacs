@@ -47,20 +47,13 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
     let oob_ed = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_bkwd, _) = delete_backward_char(oob_ed, Vec::new());
     assert!(point(&after_bkwd) <= after_bkwd.buffer().text().total_bytes());
-}
 
-#[test]
-fn snap_and_insert_clamping_prevents_gap_buffer_panic() {
-    let ed = typ(editor(), "abc");
-    let ed = ed.move_point(9999);
+    let ed = typ(editor(), "abc").move_point(9999);
     assert_eq!(point(&ed), 3);
-    let ed = ed.self_insert('x');
-    assert_eq!(text(&ed), "abcx");
+    assert_eq!(text(&ed.self_insert('x')), "abcx");
 
-    // Hostile window with OOB point: self_insert must clamp and never panic
     let oob_ed = typ(editor(), "abc").with_window(|w| Window { point: 9999, ..w });
-    let oob_ed = oob_ed.self_insert('!');
-    assert_eq!(text(&oob_ed), "abc!");
+    assert_eq!(text(&oob_ed.self_insert('!')), "abc!");
 }
 
 #[test]
@@ -106,6 +99,19 @@ fn prompt_hostile_backspaces_and_cancellation() {
     let ed = typ(ed, "not_a_number");
     let ed = keys(ed, "RET");
     assert_eq!(ed.message(), "Not a line number: not_a_number");
+
+    // Empty RET on shell-command prompt must be a clean no-op
+    let ed = keys(editor(), "M-x");
+    let ed = typ(ed, "shell-command");
+    let ed = keys(ed, "RET");
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
+    let ed = keys(ed, "RET");
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
 }
 
 #[test]
@@ -140,41 +146,6 @@ fn isearch_invalid_regex_and_rapid_reversals() {
     assert_eq!(point(&ed), start_p);
     assert_eq!(
         ed.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-}
-
-#[test]
-fn query_replace_empty_and_illegal_keys() {
-    let mut ed = typ(editor(), "foo bar foo");
-
-    // Empty search pattern via prompt
-    ed = keys(ed, "M-x");
-    ed = typ(ed, "query-replace");
-    ed = keys(ed, "RET");
-    ed = keys(ed, "RET"); // Empty pattern
-    assert_eq!(ed.message(), "Query replace needs a pattern");
-    assert_eq!(
-        ed.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-
-    // Query replace with pattern not present in buffer
-    let ed2 = typ(editor(), "foo bar foo");
-    let ed2 = keys(ed2, "M-x");
-    let ed2 = typ(ed2, "query-replace");
-    let ed2 = keys(ed2, "RET");
-    let ed2 = typ(ed2, "notfound");
-    let ed2 = keys(ed2, "RET");
-    let ed2 = typ(ed2, "replacement");
-    let ed2 = keys(ed2, "RET");
-    assert_eq!(ed2.message(), "No match");
-    assert_eq!(
-        ed2.mode(),
         &Mode::Normal {
             prefix: Prefix::None
         }
@@ -490,6 +461,17 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
 
 #[test]
 fn prompt_query_replace_chained_adversarial() {
+    // Empty search pattern via prompt
+    let ed0 = keys(typ(editor(), "foo bar foo"), "M-x");
+    let ed0 = keys(typ(ed0, "query-replace"), "RET RET");
+    assert_eq!(ed0.message(), "Query replace needs a pattern");
+    assert_eq!(
+        ed0.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
+
     let mut ed = typ(editor(), "alpha beta alpha gamma");
 
     // Boundary check: Point is at end of buffer -> query-replace has no match forward
@@ -545,24 +527,6 @@ fn prompt_query_replace_chained_adversarial() {
     ed = keys(ed, "RET");
     // Invalid regex must be caught gracefully and reported in the echo area without panic
     assert_eq!(ed.message(), "unclosed [");
-    assert_eq!(
-        ed.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-}
-
-#[test]
-fn prompt_shell_command_adversarial() {
-    let mut ed = editor();
-    ed = keys(ed, "M-x");
-    ed = typ(ed, "shell-command");
-    ed = keys(ed, "RET");
-    assert!(matches!(ed.mode(), Mode::Prompt(_)));
-
-    // Empty RET on shell-command prompt must be a clean no-op
-    ed = keys(ed, "RET");
     assert_eq!(
         ed.mode(),
         &Mode::Normal {

@@ -644,12 +644,8 @@ mod tests {
     }
 
     #[test]
-    fn a_combining_mark_joins_the_cell_before_it() {
+    fn combining_mark_joins_previous_cell_or_drops_at_left_edge() {
         assert_eq!(cells_of("e\u{301}x", 0, 4), ["e\u{301}", "x", " ", " "]);
-    }
-
-    #[test]
-    fn a_combining_mark_at_the_left_edge_is_dropped_not_misplaced() {
         // The base "e" is scrolled off; its mark sits at column 1 == left and has no cell to join.
         assert_eq!(cells_of("e\u{301}x", 1, 3), ["x", " ", " "]);
     }
@@ -701,15 +697,23 @@ mod tests {
     }
 
     #[test]
-    fn echo_prefix_off_keeps_the_message_visible() {
-        let ed = Editor::new(Config {
+    fn echo_prefix_pending_keys_and_toggle_behavior() {
+        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
+
+        let off = Editor::new(Config {
             toggles: Toggles::DEFAULT.difference(Toggles::ECHO_PREFIX),
             ..Config::default()
         })
         .set_message("Wrote f");
-        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
-        assert_eq!(echo(keys(ed.clone(), "C-x")), "Wrote f");
-        assert_eq!(echo(keys(ed, "ESC")), "Wrote f");
+        assert_eq!(echo(keys(off.clone(), "C-x")), "Wrote f");
+        assert_eq!(echo(keys(off, "ESC")), "Wrote f");
+
+        let on = Editor::new(Config::default()).set_message("Wrote f");
+        assert_eq!(echo(on.clone()), "Wrote f");
+        assert_eq!(echo(keys(on.clone(), "C-x")), "C-x-");
+        assert_eq!(echo(keys(on.clone(), "ESC")), "ESC-");
+        // The message returns once the sequence ends.
+        assert_eq!(echo(keys(on, "C-x C-g")), "Quit");
     }
 
     #[test]
@@ -750,17 +754,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_prefix_key_shows_in_the_echo_area() {
-        let ed = Editor::new(Config::default()).set_message("Wrote f");
-        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
-        assert_eq!(echo(ed.clone()), "Wrote f");
-        assert_eq!(echo(keys(ed.clone(), "C-x")), "C-x-");
-        assert_eq!(echo(keys(ed.clone(), "ESC")), "ESC-");
-        // The message returns once the sequence ends.
-        assert_eq!(echo(keys(ed, "C-x C-g")), "Quit");
-    }
-
-    #[test]
     fn scroll_records_body_height_per_window() {
         let ed = Editor::new(Config::default());
         assert_eq!(ed.window().height, 0);
@@ -778,17 +771,13 @@ mod tests {
     }
 
     #[test]
-    fn wide_char_at_right_edge_is_clipped_with_dollar() {
-        let r = screen_rows("abcd가", 0, 5, 3);
-        assert_eq!(r[0], "abcd$");
-        let r1 = screen_rows("가", 0, 1, 3);
-        assert_eq!(r1[0], "$");
-    }
-
-    #[test]
-    fn frame_long_line_is_cut_with_dollar() {
-        let r = screen_rows("abcdefghijklmnop", 0, 10, 3);
-        assert_eq!(r[0], "abcdefghi$");
+    fn right_edge_overflow_clips_wide_and_long_lines_with_dollar() {
+        assert_eq!(screen_rows("abcd가", 0, 5, 3)[0], "abcd$");
+        assert_eq!(screen_rows("가", 0, 1, 3)[0], "$");
+        assert_eq!(
+            screen_rows("abcdefghijklmnop", 0, 10, 3)[0],
+            "abcdefghi$"
+        );
     }
 
     #[test]
@@ -824,34 +813,19 @@ mod tests {
     }
 
     #[test]
-    fn status_line_shows_eol_mode() {
-        let ed = scroll(status_editor(Eol::Crlf), 26, 3);
-        assert_eq!(
-            frame(&ed, 26, 3).row_strings()[1],
-            "----  f.txt  CRLF  1:1  0%"
-        );
-
-        let ed = scroll(status_editor(Eol::Lf), 24, 3);
-        assert_eq!(
-            frame(&ed, 24, 3).row_strings()[1],
-            "----  f.txt  LF  1:1  0%"
-        );
-    }
-
-    #[test]
-    fn status_line_drops_eol_before_percent_when_narrow() {
-        // Full text is 26 cells. At 25 the EOL goes and the position and percent stay.
-        let ed = scroll(status_editor(Eol::Crlf), 25, 3);
-        let r = frame(&ed, 25, 3).row_strings();
-        assert_eq!(r[1], format!("{:-<25}", "----  f.txt  1:1  0%"));
-    }
-
-    #[test]
-    fn status_line_drops_percent_before_position_when_narrower() {
-        // Without EOL and percent the text is 16 cells.
-        let ed = scroll(status_editor(Eol::Crlf), 19, 3);
-        let r = frame(&ed, 19, 3).row_strings();
-        assert_eq!(r[1], format!("{:-<19}", "----  f.txt  1:1"));
+    fn status_line_shows_eol_and_drops_segments_by_width() {
+        let cases = [
+            (Eol::Crlf, 26, "----  f.txt  CRLF  1:1  0%".to_owned()),
+            (Eol::Lf, 24, "----  f.txt  LF  1:1  0%".to_owned()),
+            // Full text is 26 cells. At 25 the EOL goes and the position and percent stay.
+            (Eol::Crlf, 25, format!("{:-<25}", "----  f.txt  1:1  0%")),
+            // Without EOL and percent the text is 16 cells.
+            (Eol::Crlf, 19, format!("{:-<19}", "----  f.txt  1:1")),
+        ];
+        for (eol, width, expected) in cases {
+            let ed = scroll(status_editor(eol), width, 3);
+            assert_eq!(frame(&ed, width, 3).row_strings()[1], expected);
+        }
     }
 
     #[test]
@@ -915,23 +889,17 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cursor_follows_input_cursor_in_display_columns() {
-        let ed = prompt_editor("가a", "bc");
+    fn prompt_cursor_scroll_and_note_message_behavior() {
         // "Find file: " is 11 columns; "가" is 2 and "a" is 1.
+        let ed = prompt_editor("가a", "bc");
         assert_eq!(frame(&ed, 40, 4).cursor, (14, 3));
-    }
 
-    #[test]
-    fn prompt_long_input_scrolls_to_keep_cursor_visible() {
         let ed = prompt_editor(&"x".repeat(30), "");
         let f = frame(&ed, 20, 4);
         assert_eq!(f.cursor, (19, 3));
         let echo = f.row_strings()[3].clone();
         assert!(echo.starts_with(&"x".repeat(19)), "{echo}");
-    }
 
-    #[test]
-    fn prompt_note_message_leaves_cursor_in_text_area() {
         let ed = prompt_editor("is", "").set_message("No match");
         assert_eq!(frame(&ed, 40, 4).cursor, (0, 0));
     }

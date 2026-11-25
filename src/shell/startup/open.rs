@@ -126,42 +126,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.txt");
         fs::write(&a, b"a\n").unwrap();
-        // The second spelling names the same file, so it must reuse the buffer.
-        let args = [
-            a.display().to_string(),
-            dir.path().join(".").join("a.txt").display().to_string(),
-        ];
-        let files = files_of(&args);
-
-        let ed = open_files(Editor::new(Config::default()), None, &files);
-        assert_eq!(
-            ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
-            1
-        );
-    }
-
-    #[test]
-    fn duplicate_args_with_parent_make_one_buffer() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.txt");
-        fs::write(&a, b"a\n").unwrap();
-        // `sub` does not exist: `..` folds lexically, so the second spelling is the same file.
-        let args = [
-            a.display().to_string(),
-            dir.path()
-                .join("sub")
-                .join("..")
-                .join("a.txt")
-                .display()
-                .to_string(),
-        ];
-        let files = files_of(&args);
-
-        let ed = open_files(Editor::new(Config::default()), None, &files);
-        assert_eq!(
-            ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
-            1
-        );
+        // Both `.` and `sub/..` fold lexically to the same file, so each must reuse the buffer.
+        for alias in [
+            dir.path().join(".").join("a.txt"),
+            dir.path().join("sub").join("..").join("a.txt"),
+        ] {
+            let args = [a.display().to_string(), alias.display().to_string()];
+            let files = files_of(&args);
+            let ed = open_files(Editor::new(Config::default()), None, &files);
+            assert_eq!(
+                ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
+                1
+            );
+        }
     }
 
     #[test]

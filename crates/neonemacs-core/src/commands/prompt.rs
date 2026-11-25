@@ -259,19 +259,17 @@ mod tests {
     use crate::test_support::{editor, keys, typ};
 
     #[test]
-    fn mx_completes_and_cancels() {
-        let ed = keys(editor(), "M-x");
-        assert!(matches!(ed.mode(), Mode::Prompt(_)));
-        let ed = typ(ed, "for");
-        let ed = keys(ed, "TAB");
-        assert!(matches!(ed.mode(), Mode::Prompt(p) if p.input() == "forward-char"));
-        let ed = keys(ed, "C-g");
-        assert_eq!(
-            ed.mode(),
-            &Mode::Normal {
-                prefix: Prefix::None
-            }
-        );
+    fn mx_completes_and_cancels_on_ctrl_g_and_esc() {
+        for cancel in ["C-g", "ESC"] {
+            let ed = keys(editor(), "M-x");
+            assert!(matches!(ed.mode(), Mode::Prompt(_)));
+            let ed = typ(ed, "for");
+            let ed = keys(ed, "TAB");
+            assert!(matches!(ed.mode(), Mode::Prompt(p) if p.input() == "forward-char"));
+            let ed = keys(ed, cancel);
+            assert_eq!(ed.mode(), &Mode::normal());
+            assert_eq!(ed.message(), "Quit");
+        }
     }
 
     #[test]
@@ -444,14 +442,6 @@ mod tests {
         let (ed, _) = kill_named(ed, "*init-log*", Vec::new());
         assert!(ed.buffers().iter().all(|b| b.id() != log));
         assert!(ed.buffers().iter().any(|b| b.id() == file));
-    }
-
-    #[test]
-    fn esc_cancels_prompt_like_ctrl_g() {
-        let ed = typ_prompt(keys(editor(), "M-x"), "kill");
-        let ed = keys(ed, "ESC");
-        assert_eq!(ed.mode(), &Mode::normal());
-        assert_eq!(ed.message(), "Quit");
     }
 
     fn typ_prompt(ed: Editor, s: &str) -> Editor {
