@@ -184,6 +184,39 @@ fn text_word_and_buffer_motion() {
 }
 
 #[test]
+fn text_word_motion_stops_at_cjk_punctuation_and_symbols() {
+    let lua = new_state().unwrap();
+    let ed = bootstrap(Editor::new(Config::default()), &lua);
+    let text = "안녕，세계！※★끝";
+    let (ed, id) = ed.add_buffer(
+        "test",
+        crate::core::Doc::from_bytes(text.as_bytes()),
+        crate::core::Backing::None,
+    );
+    let ed = ed.with_window(|w| crate::core::Window {
+        buffer: id,
+        point: 0,
+        ..w
+    });
+
+    let (ed, res) = script(&lua, ed, r#"run("forward-word")"#);
+    res.unwrap();
+    assert_eq!(ed.window().point, "안녕".len());
+
+    let (ed, res) = script(&lua, ed, r#"run("forward-word")"#);
+    res.unwrap();
+    assert_eq!(ed.window().point, "안녕，세계".len());
+
+    let (ed, res) = script(&lua, ed, r#"run("backward-word")"#);
+    res.unwrap();
+    assert_eq!(ed.window().point, "안녕，".len());
+
+    let (ed, res) = script(&lua, ed, r#"run("end-of-buffer"); run("backward-word")"#);
+    res.unwrap();
+    assert_eq!(ed.window().point, "안녕，세계！※★".len());
+}
+
+#[test]
 fn text_kill_word_and_backward() {
     let lua = new_state().unwrap();
     let ed = bootstrap(Editor::new(Config::default()), &lua);

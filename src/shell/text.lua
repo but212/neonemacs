@@ -43,9 +43,51 @@ local function collect_lines(from_pos, to_pos)
     return lines
 end
 
-local function is_word_byte(b)
-    if not b then return false end
-    return (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (b == 95) or (b >= 128)
+local function utf8_cp_len(cp)
+    if cp <= 0x7F then return 1 end
+    if cp <= 0x7FF then return 2 end
+    if cp <= 0xFFFF then return 3 end
+    return 4
+end
+
+local function utf8_char_at(text, i)
+    local b = string.byte(text, i)
+    if b < 128 then return b, i + 1 end
+    local ok, cp = pcall(utf8.codepoint, text, i, i)
+    if ok and cp then return cp, i + utf8_cp_len(cp) end
+    return nil, i + 1
+end
+
+local function utf8_prev_char_at(text, i)
+    local b = string.byte(text, i)
+    if b < 128 then return b, i - 1 end
+    local s = i
+    while s > 1 and i - s < 3 do
+        local sb = string.byte(text, s)
+        if sb < 128 or sb > 191 then break end
+        s = s - 1
+    end
+    local ok, cp = pcall(utf8.codepoint, text, s, s)
+    if ok and cp and s + utf8_cp_len(cp) - 1 == i then
+        return cp, s - 1
+    end
+    return nil, i - 1
+end
+
+local function is_word_cp(cp)
+    if not cp then return false end
+    if cp < 128 then
+        return (cp >= 48 and cp <= 57) or (cp >= 65 and cp <= 90) or (cp >= 97 and cp <= 122) or (cp == 95)
+    end
+    if (cp >= 0x0080 and cp <= 0x00BF) or cp == 0x00D7 or cp == 0x00F7 then return false end
+    if cp >= 0x2000 and cp <= 0x206F then return false end
+    if cp >= 0x2190 and cp <= 0x27BF then return false end
+    if cp >= 0x3000 and cp <= 0x303F then return false end
+    if (cp >= 0xFF01 and cp <= 0xFF0F) or (cp >= 0xFF1A and cp <= 0xFF20)
+        or (cp >= 0xFF3B and cp <= 0xFF40) or (cp >= 0xFF5B and cp <= 0xFF65) then
+        return false
+    end
+    return true
 end
 
 --------------------------------------------------------------------------------
@@ -62,13 +104,17 @@ local function scan_word_forward(from_pos)
             local text = buffer.get_text(cur_pos, l_end)
             local text_len = #text
             local i = 1
-            while i <= text_len and not is_word_byte(string.byte(text, i)) do
-                i = i + 1
+            while i <= text_len do
+                local cp, next_i = utf8_char_at(text, i)
+                if is_word_cp(cp) then break end
+                i = next_i
             end
             if i <= text_len then
                 local w_start = cur_pos + i - 1
-                while i <= text_len and is_word_byte(string.byte(text, i)) do
-                    i = i + 1
+                while i <= text_len do
+                    local cp, next_i = utf8_char_at(text, i)
+                    if not is_word_cp(cp) then break end
+                    i = next_i
                 end
                 return w_start, cur_pos + i - 1
             end
@@ -86,13 +132,17 @@ local function scan_word_backward(from_pos)
         if cur_pos > l_start then
             local text = buffer.get_text(l_start, cur_pos)
             local i = #text
-            while i >= 1 and not is_word_byte(string.byte(text, i)) do
-                i = i - 1
+            while i >= 1 do
+                local cp, prev_i = utf8_prev_char_at(text, i)
+                if is_word_cp(cp) then break end
+                i = prev_i
             end
             if i >= 1 then
                 local w_end = l_start + i
-                while i >= 1 and is_word_byte(string.byte(text, i)) do
-                    i = i - 1
+                while i >= 1 do
+                    local cp, prev_i = utf8_prev_char_at(text, i)
+                    if not is_word_cp(cp) then break end
+                    i = prev_i
                 end
                 return l_start + i, w_end
             end

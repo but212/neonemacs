@@ -420,6 +420,9 @@ fn line_cells(
                     glyph.push(mark);
                 }
             }
+        } else if col + width_of_unit > right {
+            // Do not place a wide glyph that overflows the right edge; A5 marks the cut with `$`.
+            break;
         } else {
             for (offset, piece) in glyph(unit_char(unit), width_of_unit)
                 .into_iter()
@@ -772,6 +775,14 @@ mod tests {
         let r = screen_rows("가나\na\tb", 0, 10, 4);
         assert_eq!(r[0], format!("가나{}", " ".repeat(6)));
         assert_eq!(r[1], "a       b ");
+    }
+
+    #[test]
+    fn wide_char_at_right_edge_is_clipped_with_dollar() {
+        let r = screen_rows("abcd가", 0, 5, 3);
+        assert_eq!(r[0], "abcd$");
+        let r1 = screen_rows("가", 0, 1, 3);
+        assert_eq!(r1[0], "$");
     }
 
     #[test]
