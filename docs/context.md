@@ -229,7 +229,7 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-18** | Zero `&mut` references in any `neonemacs-core` function signatures, return types, or struct fields. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
 | **I-19** | Selected window index is strictly bounded: `selected < layout.leaf_count()`. | Runtime (`WindowTree`) |
 | **I-20** | Any buffer ID passed to `with_buffer` exists within the buffer pool. | Runtime (`BufferPool::with_buffer`) |
-| **I-21** | The shell's `RefCell<Option<Editor>>` is `None` strictly during `step`, and no borrow is held across Lua invocations; effect execution only holds a short immutable borrow scoped strictly to slice reads during `WriteFile` and `FlushWal`. | Runtime (`shell::step_in`, `perform_in`, `perform`, Lua `run`) |
+| **I-21** | The shell's `RefCell<Option<Editor>>` is `None` strictly during `step`, and no borrow is held across Lua invocations; effect execution only holds a short immutable borrow scoped strictly to slice reads during `WriteFile` and `FlushWal`, or cloning the baseline `Doc` during `ProbeWal`. | Runtime (`shell::step_in`, `perform_in`, `perform`, Lua `run`) |
 | **I-22** | Terminal ANSI escape sequences do not affect character display widths, coordinate mapping, or differential screen updates. | Type + Output render queue (`session/screen.rs`) |
 | **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. Header records EOL mode (`NEONWAL2` snapshot or `NEONWALD` delta log). | Runtime (`wal.rs`) |
 | **I-24** | Background shell execution is non-blocking with spinner animation; concurrent execution requests are rejected with busy notices. | Runtime + Worker thread channel (`mpsc`) |

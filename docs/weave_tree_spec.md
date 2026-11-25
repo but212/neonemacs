@@ -29,7 +29,7 @@
 ### 2.1. 핵심 타입 및 B-Tree 상수 (Rust)
 
 ```rust
-use std::ops::Range;
+use core::ops::Range;
 use triomphe::{Arc, HeaderSlice};
 
 /// B-Tree 노드 팬아웃 및 슬라이스 크기 상수 (H2 벤치마크 스윕 대상)
@@ -183,13 +183,13 @@ impl Doc {
     pub fn try_for_each_slice<B>(
         &self,
         range: Range<usize>,
-        f: impl FnMut(&[u8]) -> std::ops::ControlFlow<B>,
-    ) -> Result<std::ops::ControlFlow<B>, DocError>;
+        f: impl FnMut(&[u8]) -> core::ops::ControlFlow<B>,
+    ) -> Result<core::ops::ControlFlow<B>, DocError>;
     pub fn try_for_each_slice_rev<B>(
         &self,
         range: Range<usize>,
-        f: impl FnMut(&[u8]) -> std::ops::ControlFlow<B>,
-    ) -> Result<std::ops::ControlFlow<B>, DocError>;
+        f: impl FnMut(&[u8]) -> core::ops::ControlFlow<B>,
+    ) -> Result<core::ops::ControlFlow<B>, DocError>;
 
     /// 단위 경계 스냅·이동 및 단발 디코딩 (D-01에 의해 단일 Unit은 ByteSlice 경계를 넘지 않아 단일 슬라이스 내부만 디코딩)
     /// - floor_boundary: total_bytes() 클램프 후 offset 이하 최대 유효 Unit 경계 (멱등)
