@@ -60,9 +60,15 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
         "execute-extended-command",
         Builtin::Prompt("M-x ", Purpose::ExecuteCommand),
     ),
-    ("find-file", Builtin::Prompt("Find file: ", Purpose::FindFile)),
+    (
+        "find-file",
+        Builtin::Prompt("Find file: ", Purpose::FindFile),
+    ),
     ("forward-char", Builtin::Fn(forward_char)),
-    ("goto-line", Builtin::Prompt("Goto line: ", Purpose::GotoLine)),
+    (
+        "goto-line",
+        Builtin::Prompt("Goto line: ", Purpose::GotoLine),
+    ),
     (
         "isearch-backward",
         Builtin::Isearch(Direction::Backward, MatchKind::Literal),
@@ -85,7 +91,10 @@ pub const BUILTINS: &[(&str, Builtin)] = &[
     ),
     ("kill-region", Builtin::Fn(kill_region)),
     ("kill-ring-save", Builtin::Fn(kill_ring_save)),
-    ("move-beginning-of-line", Builtin::Fn(move_beginning_of_line)),
+    (
+        "move-beginning-of-line",
+        Builtin::Fn(move_beginning_of_line),
+    ),
     ("move-end-of-line", Builtin::Fn(move_end_of_line)),
     ("next-line", Builtin::Fn(next_line)),
     ("other-window", Builtin::Fn(other_window)),

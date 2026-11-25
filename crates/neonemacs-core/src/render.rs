@@ -160,8 +160,8 @@ fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
     let total = text.total_bytes();
     let p = text.floor_boundary(w.point.min(total));
     let p_line = offset_to_line(text, p).expect("floor_boundary is valid");
-    let top_line =
-        offset_to_line(text, text.floor_boundary(w.top.min(total))).expect("floor_boundary is valid");
+    let top_line = offset_to_line(text, text.floor_boundary(w.top.min(total)))
+        .expect("floor_boundary is valid");
     if p < w.top || p_line.saturating_sub(top_line) >= height {
         w.top = line_to_offset(text, p_line).expect("p_line < total_lines");
     }

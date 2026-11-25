@@ -56,11 +56,14 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
     )?;
     buffer_table.set(
         "line_start",
-        scope.create_function(|_, pos: usize| Ok(line_start(editor_ref(cell).buffer().text(), pos)))?,
+        scope.create_function(|_, pos: usize| {
+            Ok(line_start(editor_ref(cell).buffer().text(), pos))
+        })?,
     )?;
     buffer_table.set(
         "line_end",
-        scope.create_function(|_, pos: usize| Ok(line_end(editor_ref(cell).buffer().text(), pos)))?,
+        scope
+            .create_function(|_, pos: usize| Ok(line_end(editor_ref(cell).buffer().text(), pos)))?,
     )?;
     buffer_table.set(
         "width",

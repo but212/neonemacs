@@ -1,11 +1,11 @@
 //! Opening and reading files: asking the shell to read, applying what it read (new buffer or
 //! revert), and applying what it found in a WAL (docs/context.md §3.2, §4.2).
 
-use crate::goto_line_offset;
 use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
 use crate::file::{Read, loaded_from};
+use crate::goto_line_offset;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
