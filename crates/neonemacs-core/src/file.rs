@@ -340,11 +340,7 @@ mod tests {
                 r"..\file.txt",
                 r"\\server\share/file.txt",
             ),
-            (
-                r"\\server\share",
-                "file.txt",
-                r"\\server\share/file.txt",
-            ),
+            (r"\\server\share", "file.txt", r"\\server\share/file.txt"),
             ("/w", "///w/a.txt", "/w/a.txt"),
             ("", "///a/b/../..", "/"),
         ];

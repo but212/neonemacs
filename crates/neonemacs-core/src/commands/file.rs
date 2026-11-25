@@ -467,7 +467,13 @@ mod tests {
         // Opened as missing (Unknown); asks if the file exists by save time, otherwise writes.
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let id = ed.window().buffer;
-        let (asked, fx) = disk_checked(ed.clone(), StatTarget::Save(id), "f.txt", known(5), Vec::new());
+        let (asked, fx) = disk_checked(
+            ed.clone(),
+            StatTarget::Save(id),
+            "f.txt",
+            known(5),
+            Vec::new(),
+        );
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             asked.mode(),

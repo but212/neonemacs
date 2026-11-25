@@ -774,10 +774,7 @@ mod tests {
     fn right_edge_overflow_clips_wide_and_long_lines_with_dollar() {
         assert_eq!(screen_rows("abcd가", 0, 5, 3)[0], "abcd$");
         assert_eq!(screen_rows("가", 0, 1, 3)[0], "$");
-        assert_eq!(
-            screen_rows("abcdefghijklmnop", 0, 10, 3)[0],
-            "abcdefghi$"
-        );
+        assert_eq!(screen_rows("abcdefghijklmnop", 0, 10, 3)[0], "abcdefghi$");
     }
 
     #[test]
