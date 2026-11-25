@@ -19,7 +19,7 @@ pub(crate) use self::utf8::{decode_in_slice, decode_unit_raw, prev_in_slice};
 /// B-Tree node fanout and slice size constants.
 pub const MAX_FANOUT: usize = 32;
 pub const MIN_FANOUT: usize = MAX_FANOUT / 2;
-pub const CHUNK_CAP: usize = 1024;
+pub const CHUNK_CAP: usize = 4096;
 /// Maximum size of a single `ByteSlice` (bounds `line_to_offset` scan and buffer retention).
 pub const MAX_SLICE_BYTES: usize = 16 * 1024;
 
@@ -337,7 +337,7 @@ impl Doc {
             && seam.abs_insert_right == 0
             && let InsertSource::Bytes(bytes) = insert
             && !bytes.is_empty()
-            && bytes.len() <= CHUNK_CAP
+            && bytes.len() <= CHUNK_CAP.min(1024)
         {
             if let Some(root) = self.root {
                 match try_insert_in_place(root, offset, bytes) {

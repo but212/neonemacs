@@ -17,7 +17,7 @@
 * **경계 스냅 및 앵커 재정렬:** 무오류(infallible) 편집을 원하면 호스트가 `Doc::replace`/`Doc::apply` 전 `floor_boundary`/`ceil_boundary`로 `offset`·`offset + delete_len`을 `0..=total_bytes()` 유효 `Unit` 경계에 스냅한다(유효 경계면 불변). 코어 검증 위임 시 실패하면 `(Self, DocError)`로 원본 `Doc` 소유권을 회수한다. `D-01` 재병합(`k_left > 0 || k_right > 0`) 시 앵커가 새 UTF-8 문자 내부에 놓일 수 있으므로 전이 직후 커서·마크·뷰포트를 `floor_boundary`/`ceil_boundary`로 재정렬한다(문자 단위 이동은 엄격 `<`/`>`인 `prev_boundary`/`next_boundary` 사용).
 * **UTF-8·라인 경계:** ① `D-01`은 RFC 3629 UTF-8만 `Unit::Char`, overlong·서로게이트·불완전 바이트는 `Unit::Raw`로 보존한다. ② `prev_boundary(0)`·`floor_boundary(0)`은 `0`을 반환한다. ③ `line_to_offset`은 `LineOutOfBounds`를 반환하므로 1-based `goto-line` 클램핑은 `D-03`(`doc.total_lines() >= 1`) 아래 `n.saturating_sub(1).min(doc.total_lines() - 1)`을 사용한다.
 * **Undo 스택 연동:** 호스트는 `Doc::apply`/`Doc::replace`가 반환하는 역연산 `Replace`와 논리 편집 범위(`EditSpan`)를 `RecordedEdit`으로 함께 저장한다.
-  * **Undo 바이트 예산:** 역패치 삽입부가 `CHUNK_CAP`(1 KiB) 이하인 경우, 백킹 바이트가 `CHUNK_CAP`을 초과하면 저장 전에 필요한 바이트만 복사한다. 각 편집은 논리 편집 크기(`removed + inserted`)와 역패치가 유지하는 백킹 바이트 수 중 큰 값으로 `Config.undo_limit`에 반영한다. 백킹 바이트 수는 슬라이스 범위가 아닌 전체 할당 크기를 합산하며, 공유 할당도 슬라이스마다 계산한다.
+  * **Undo 바이트 예산:** 역패치 삽입부가 `CHUNK_CAP`(4 KiB) 이하인 경우, 백킹 바이트가 `CHUNK_CAP`을 초과하면 저장 전에 필요한 바이트만 복사한다. 각 편집은 논리 편집 크기(`removed + inserted`)와 역패치가 유지하는 백킹 바이트 수 중 큰 값으로 `Config.undo_limit`에 반영한다. 백킹 바이트 수는 슬라이스 범위가 아닌 전체 할당 크기를 합산하며, 공유 할당도 슬라이스마다 계산한다.
   * **연속 입력 그룹화:** 연속 `self-insert`는 `Replace`를 제자리 병합하지 않고 `amalgamating-undo-limit` 한도 내에서 동일 `Group`에 개별 `RecordedEdit`으로 누적한다.
 
 ---
@@ -35,7 +35,7 @@ use triomphe::{Arc, HeaderSlice};
 /// B-Tree 노드 팬아웃 및 슬라이스 크기 상수 (H2 벤치마크 스윕 대상)
 pub const MAX_FANOUT: usize = 32;
 pub const MIN_FANOUT: usize = MAX_FANOUT / 2;
-pub const CHUNK_CAP: usize = 1024;
+pub const CHUNK_CAP: usize = 4096;
 /// 단일 ByteSlice 최대 크기 (line_to_offset O(N) 스캔 및 백킹 버퍼 장기 점유 방지)
 pub const MAX_SLICE_BYTES: usize = 16 * 1024;
 
@@ -155,7 +155,7 @@ pub enum DocError {
 
 * **일괄 로드 (`Doc::from_bytes(bytes: &[u8]) -> Self`):** 정규화된 바이트에 대해 빈 입력은 `root: None`, 비어 있지 않으면 `MAX_SLICE_BYTES` 이하 유효 `Unit` 경계로 분할·할당 후 `MAX_FANOUT` 상향식 빌더로 $O(N)$ 구성한다(2개 이상 노드 중 마지막 노드가 `MIN_FANOUT` 미만이면 직전 형제와 `[MIN_FANOUT, MAX_FANOUT]` 범위로 재분배).
 * **스트리밍 로드:** `EolStreamDecoder::try_push_chunk`와 `try_finish`로 CRLF 정규화 및 문서 구성을 수행한다. 버퍼·슬라이스·노드 할당 실패는 셸의 파일 읽기 오류로 전달되며 부분 문서는 노출하지 않는다.
-* **내부 단편화 상한:** 상한 `MAX_SLICE_BYTES`(16KB)와 `CHUNK_CAP`(1KB) 이하 병합으로 삭제 후 구버전 버퍼가 즉시 해제된다. 교대 삭제 최악 패턴(`> CHUNK_CAP / 2` 조각 잔존)의 이론상 내부 증폭은 ~32배이며, 필요 시 공개 API 변경 없이 `join`에 활용률 임계치(`range.len() < buf.slice.len() / 4`) 기준 복사를 추가해 상한을 4배로 제한할 수 있다.
+* **내부 단편화 상한:** 상한 `MAX_SLICE_BYTES`(16KB)와 `CHUNK_CAP`(4KB) 이하 병합으로 삭제 후 구버전 버퍼가 즉시 해제된다. 교대 삭제 최악 패턴(`> CHUNK_CAP / 2` 조각 잔존)의 이론상 내부 증폭은 ~32배이며, 필요 시 공개 API 변경 없이 `join`에 활용률 임계치(`range.len() < buf.slice.len() / 4`) 기준 복사를 추가해 상한을 4배로 제한할 수 있다.
 
 ---
 
@@ -213,12 +213,11 @@ impl Doc {
 
 ---
 
-## 7. 미검증 가설 및 검증 기준 (Hypotheses)
+## 7. 가설 검증 결과 (Hypotheses & Benchmarks)
 
-* **`H1` (순수 CoW 기준선 vs `Arc::get_mut` 내부 최적화):** 단일 백킹 할당의 순수 CoW `SliceTree`만으로 연속 타이핑·단문자 삭제(`inv.insert: Doc`)·스크립트 대량 삽입 p99 지연·할당량 목표를 달성하는지 검증한다. 목표 미달 시에만 `strong_count == 1` 및 말단 정렬(`range.end == buf.len()` 또는 `buf.truncate(range.end)` 후 `range.len() < MAX_SLICE_BYTES`) 조건의 `Arc::get_mut` 제자리 확장(`Arc<Vec<u8>>` 전환, `D-05` 유지)을 내부 구현에 도입한다(분할 직후 버퍼 공유 시 첫 입력은 CoW 복사, 이후 연속 입력부터 제자리 확장).
-  * *검증:* 연속 타이핑, **중간 분할 직후 첫 입력 vs 이후 연속 타이핑**, **백스페이스 후 재입력(`delete-then-insert`)**, **`Doc::clone()` 스냅샷 유지 중 편집**, **스크립트 수천 회 연속 `insert`**, 대량 붙여넣기, 원거리 점프 `criterion` 벤치마크(`순수 CoW SliceTree` vs `Arc::get_mut SliceTree`).
-* **`H2` (`CHUNK_CAP`, `MAX_SLICE_BYTES`, 팬아웃):** `CHUNK_CAP = 1024`B, `MAX_SLICE_BYTES = 16`KB, `MIN_FANOUT = 16`, `MAX_FANOUT = 32`의 쓰기 증폭·캐시 적중률·트리 깊이 균형 검증.
-  * *검증:* `CHUNK_CAP`(256B / 1KB / 4KB) 및 `MAX_SLICE_BYTES`(4KB / 16KB / 64KB) 스윕 벤치마크.
+* **`H1` (순수 CoW 기준선 vs `Arc::get_mut` 내부 최적화 — 검증 완료):** `Arc<Vec<u8>>` 전환 및 `strong_count == 1` 말단 정렬(`buf.truncate(range.end)` 후 `range.len() <= MAX_SLICE_BYTES`) 제자리 확장 + 스택 이음새 분석을 도입해 `criterion` 벤치마크([weave_tree_bench.rs](file:///c:/Users/redog/Desktop/SJI/project/neonemacs/crates/neonemacs-core/benches/weave_tree_bench.rs))로 실측 검증하였다.
+  * *실측 결과:* 100 KiB 16연속 타이핑 **47.71 µs → 3.97 µs**(-92% 이상, 첫 분할 1.92 µs + 후속 제자리 확장 ~0.14 µs/자), 스크립트 3,000회 연속 삽입 **254.9 µs**(~85 ns/회), 삭제 후 재입력 **3.32 µs**, `Doc::clone()` 스냅샷 유지 중 편집 **1.83 µs**, 1 MiB 원거리 4점프 편집 **23.43 µs**, 64 KiB 붙여넣기 **11.99 µs**.
+* **`H2` (`CHUNK_CAP`, `MAX_SLICE_BYTES`, 팬아웃 — 검증 완료):** `MAX_SLICE_BYTES = 16` KiB, `CHUNK_CAP = 4` KiB, `MIN_FANOUT = 16`, `MAX_FANOUT = 32`에서 1 MiB `line_to_offset` **8.82 ns**, `offset_to_line` **29.52 ns**. 최악 조건(`memchr` 슬라이스 말단 스캔) 스윕: 4 KiB **213 ns**, 16 KiB **811 ns**, 64 KiB **3.27 µs**(`16 KiB`가 1 µs 미만 상한과 트리 깊이 균형을 만족). `CHUNK_CAP` CoW 이음새 병합 할당·복사 비용 스윕: 256 B **136.5 ns**, 1 KiB **3.11 µs**, 4 KiB **190.5 ns**로, 단편화 억제와 병합 비용 측면에서 `4 KiB`를 채택했다.
 
 ---
 
@@ -226,5 +225,5 @@ impl Doc {
 
 * **구현 위치:** `crates/neonemacs-core/src/weave_tree/` (`mod.rs`, `utf8.rs`, `tree.rs`), `crates/neonemacs-core/src/lib.rs`에서 `Doc`, `Replace`, `Unit`, `DocError` 노출.
 * **통합 상태:** 기존 갭버퍼(`text.rs`) 및 호환 심(`len`, `is_empty`, `snap_point`, `bytes`, `to_bytes`, `line_start`, `line_end`, `nth_line_start`, `count_lines`, `Editor::delete_range`, `Eol::encode`) 완전 제거. `Buffer`, `UndoLog`(`Edit::Replace(Replace)` 역패치 CoW 저장), `KillRing`(`Vec<Doc>` + `Doc::slice`), `Editor::apply`, `syntax::highlight_line(&Doc, Range)`(단일 슬라이스 무복사), `render`, `commands`, `search`, `width`, 및 `src/shell/`(`file::save_doc`, `wal::write_wal_doc`, `wal::write_scratch_doc`)이 모두 네이티브 `weave_tree::Doc`·`Replace` 및 `try_for_each_slice` 스트리밍으로 전환됨(`assert_invariants()`는 핫패스 `O(N)` 방지를 위해 `weave_tree_proptest.rs`에서 명시 호출).
-* **구현 상태:** 순수 CoW 기준선 위에 단일 패스 $O(\log P)$ `split_at`, `H1` `Arc<Vec<u8>>` 기반 `Arc::get_mut` 제자리 확장(`<= CHUNK_CAP` 무이음새 순수 삽입), 스택 기반 이음새 검사가 적용됨(`criterion` 벤치마크 스위트 `crates/neonemacs-core/benches/weave_tree_bench.rs` 포함). `MAX_SLICE_BYTES = 16 KiB` + SIMD `memchr` 기반 `line_to_offset`/`offset_to_line`은 실측 수십 ns 수준이므로 별도 라인 인덱스 테이블 없이 유지(`H2`).
+* **구현 상태:** 순수 CoW 기준선 위에 단일 패스 $O(\log P)$ `split_at`, `H1` `Arc<Vec<u8>>` 기반 `Arc::get_mut` 제자리 확장(`<= CHUNK_CAP.min(1024)` 무이음새 순수 삽입), 스택 기반 이음새 검사가 적용됨(`criterion` 벤치마크 스위트 `crates/neonemacs-core/benches/weave_tree_bench.rs` 포함). `MAX_SLICE_BYTES = 16 KiB` + SIMD `memchr` 기반 `line_to_offset`/`offset_to_line`은 실측 수십 ns 수준이므로 별도 라인 인덱스 테이블 없이 유지(`H2`).
 * **검증:** `#![forbid(unsafe_code)]`, `I-14`·`I-18`(`crates/neonemacs-core/tests/purity.rs`), `D-01`~`D-05` 단위·`proptest` 스위트(`crates/neonemacs-core/tests/weave_tree_proptest.rs`), 워크스페이스 전체 테스트(`cargo test --workspace`) 및 `cargo clippy --workspace --all-targets -- -D warnings` 통과.

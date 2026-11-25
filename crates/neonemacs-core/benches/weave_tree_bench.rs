@@ -85,12 +85,48 @@ fn bench_micro_edits(c: &mut Criterion) {
         );
     });
 
-    group.bench_function("script_1000_inserts", |b| {
+    group.bench_function("script_3000_inserts", |b| {
         b.iter_batched(
             Doc::default,
             |mut doc| {
-                for i in 0..1000 {
+                for i in 0..3000 {
                     let (next, _) = doc.replace(i, 0, b"a").expect("valid insert");
+                    doc = next;
+                }
+                black_box(doc)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // H1: first keystroke after mid-slice split (CoW) vs immediate subsequent keystroke (Arc::get_mut)
+    group.bench_function("mid_split_subsequent_char_100kb", |b| {
+        b.iter_batched(
+            || {
+                base_100k
+                    .clone()
+                    .replace(50 * 1024, 0, b"z")
+                    .expect("valid split")
+                    .0
+            },
+            |doc| {
+                let (next, inv) = doc
+                    .replace(50 * 1024 + 1, 0, b"z")
+                    .expect("valid in-place append");
+                black_box((next, inv))
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let doc_1mb_edits = make_lines_doc(1024 * 1024, 80);
+    let jump_offsets = [100_000, 900_000, 250_000, 750_000];
+    group.bench_function("remote_jump_4_edits_1mb", |b| {
+        b.iter_batched(
+            || doc_1mb_edits.clone(),
+            |mut doc| {
+                for &off in &jump_offsets {
+                    let (next, _) = doc.replace(off, 0, b"x").expect("valid jump edit");
                     doc = next;
                 }
                 black_box(doc)
@@ -151,6 +187,33 @@ fn bench_tree_and_lines(c: &mut Criterion) {
             black_box(line)
         });
     });
+
+    // H2 sweep: worst-case leaf scan at end of 4 KiB / 16 KiB / 64 KiB slices
+    for (label, slice_sz) in [("4kb", 4 * 1024), ("16kb", 16 * 1024), ("64kb", 64 * 1024)] {
+        let mut buf = vec![b'a'; slice_sz];
+        buf[slice_sz - 1] = b'\n';
+        group.bench_function(format!("h2_memchr_worst_case_{label}"), |b| {
+            b.iter(|| {
+                let count = memchr::memchr_iter(b'\n', black_box(&buf)).count();
+                black_box(count)
+            });
+        });
+    }
+
+    // H2 sweep: CHUNK_CAP (256 B / 1 KiB / 4 KiB) CoW seam merge allocation + copy cost
+    for (label, cap) in [("256b", 256usize), ("1kb", 1024), ("4kb", 4096)] {
+        let left = vec![b'a'; cap / 2];
+        let right = vec![b'b'; cap / 2];
+        group.bench_function(format!("h2_chunk_cap_merge_{label}"), |b| {
+            b.iter(|| {
+                let mut merged = Vec::with_capacity(left.len() + right.len());
+                merged.extend_from_slice(black_box(&left));
+                merged.extend_from_slice(black_box(&right));
+                let arc = std::sync::Arc::new(merged);
+                black_box(arc)
+            });
+        });
+    }
 
     group.finish();
 }

@@ -49,7 +49,7 @@ The system partitions strictly into a pure functional core and an imperative she
 ### 2.1 Buffers, Windows, and Files
 
 - **`Buffer`**: Core text storage and metadata entity:
-  - `Doc` (`Weave Tree`): Summarized immutable CoW slice B-Tree (`MAX_FANOUT = 32`, `MIN_FANOUT = 16`, `CHUNK_CAP = 1024`, `MAX_SLICE_BYTES = 16384`) over shared byte slices interpreted as strict RFC 3629 `Unit`s. For $P$ slices, line/offset queries take $O(\log P)$, while edits using tree splits take $O(\log^2 P)$ worst case (`D-01`..`D-05`).
+  - `Doc` (`Weave Tree`): Summarized immutable CoW slice B-Tree (`MAX_FANOUT = 32`, `MIN_FANOUT = 16`, `CHUNK_CAP = 4096`, `MAX_SLICE_BYTES = 16384`) over shared byte slices interpreted as strict RFC 3629 `Unit`s. For $P$ slices, line/offset queries take $O(\log P)$, while edits using one-pass tree splits take $O(\log P)$ worst case (`D-01`..`D-05`).
   - `saved_point`: Per-buffer cursor byte offset.
   - `Mark`: Optional anchor byte offset. Active mark forms the active region; inactive mark is preserved for position swapping (I-47).
   - `Eol`: Buffer line termination convention (`Lf` or `Crlf`).
@@ -81,7 +81,7 @@ The system partitions strictly into a pure functional core and an imperative she
   - Consecutive `self-insert` insertions amalgamate into a single group up to `amalgamating-undo-limit` (default 20 characters). Non-insert commands immediately seal the group.
   - Clean state restoration (I-41): undo groups opened while clean record save epoch. Undoing the full group restores clean status (`modified = false`) and removes WAL iff epoch matches.
   - Whole-buffer replacements (`Buffer::with_text`: revert, WAL restore, shell output) wipe undo history to prevent stale offset replay (I-34).
-  - `Config.undo_limit` governs the undo byte budget (I-35). Undo compacts inverse inserts of at most `CHUNK_CAP` (1 KiB) when they would retain more than `CHUNK_CAP` backing bytes. Each text edit then charges the greater of its logical edit size and the full backing byte lengths retained by its inverse slices, conservatively counting shared allocations more than once. Closed groups exceeding a positive limit are evicted immediately on boundary.
+  - `Config.undo_limit` governs the undo byte budget (I-35). Undo compacts inverse inserts of at most `CHUNK_CAP` (4 KiB) when they would retain more than `CHUNK_CAP` backing bytes. Each text edit then charges the greater of its logical edit size and the full backing byte lengths retained by its inverse slices, conservatively counting shared allocations more than once. Closed groups exceeding a positive limit are evicted immediately on boundary.
 - **`KillRing`**: Ring buffer of CoW `Doc` slices (`Vec<Doc>`) capped at `kill-ring-max` entries (default 120) per `push` (I-26). `kill_range` and `kill_ring_save` extract slices in $O(\log^2 P)$ worst-case time via `Doc::slice`, consecutive kills (`kill-line`, `kill-word`, `C-w`) merge via `Doc::apply` (I-09), and `yank` / `yank-pop` insert `Doc` directly without UTF-8 re-parsing. `yank-pop` cycles entries strictly immediately after `LastCommand::Yank` (I-38). If the yank joined neighboring bytes into a UTF-8 unit, `yank-pop` leaves the text and ring unchanged.
 
 ### 2.3 Persistence and Crash Recovery (WAL)
@@ -184,7 +184,7 @@ The system partitions strictly into a pure functional core and an imperative she
 
 ### 4.3 Editing and Text Model
 
-- **Immutable CoW slice B-Tree (`Weave Tree`)**: `Doc` (`crates/neonemacs-core/src/weave_tree/`) replaces the gap buffer (`text.rs`). Keeps strict RFC 3629 `Unit` boundaries (`D-01`), O(log² P) worst-case split-based edits and O(log P) line-index queries (`D-02`, `D-03`), CoW sharing for `UndoLog` inverse `Replace` patches (`D-04`), and zero `&mut` signatures (`D-05`, I-18); the pure CoW baseline is active (`H1` `Arc::get_mut` and `H2` parameter sweeps deferred).
+- **Immutable CoW slice B-Tree (`Weave Tree`)**: `Doc` (`crates/neonemacs-core/src/weave_tree/`) replaces the gap buffer (`text.rs`). Keeps strict RFC 3629 `Unit` boundaries (`D-01`), one-pass O(log P) split-based edits and O(log P) line-index queries (`D-02`, `D-03`), CoW sharing for `UndoLog` inverse `Replace` patches (`D-04`), and zero `&mut` signatures (`D-05`, I-18); `H1` (`Arc<Vec<u8>>` + `Arc::get_mut` in-place append) and `H2` (`criterion` sweeps in `crates/neonemacs-core/benches/weave_tree_bench.rs`) are active and benchmarked.
 - **Safe edit pipeline**: All text modifications and EOL conversions pass through `Editor::apply(Edit)` (I-31). Centralizes undo recording, modified flags, WAL dirtying, and view-only checks.
 - **Save epoch clean tracking**: Undo groups record save epoch if opened while clean. Undoing restores clean status and removes WAL iff current epoch matches (I-03, I-41), accurately clearing dirty flags without diffing.
 - **Undo log wiping on external replacement**: Wholesale buffer text replacements (`Buffer::with_text`) invalidate and wipe the undo log (I-34). Prevents replaying historical relative offsets against replaced content.
