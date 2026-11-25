@@ -5,6 +5,7 @@ use neonemacs::core::Config;
 use neonemacs::core::Doc;
 use neonemacs::core::Edit;
 use neonemacs::core::Editor;
+use neonemacs_core::render::Cell;
 use neonemacs_core::{line_to_offset, offset_to_line};
 use std::time::{Duration, Instant};
 
@@ -161,7 +162,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = neonemacs::core::render::scroll(ed, 120, 40);
     let frame = neonemacs::core::render::frame(&ed, 120, 40);
     let elapsed_head = start.elapsed();
-    assert!(!frame.rows.is_empty());
+    assert_ne!(frame.rows, [] as [Vec<Cell>; 0]);
     assert!(
         elapsed_head < Duration::from_millis(60),
         "scroll + frame near start of 10MB single line took {elapsed_head:?} (expected < 60ms)"
@@ -173,7 +174,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = neonemacs::core::render::scroll(ed, 120, 40);
     let frame = neonemacs::core::render::frame(&ed, 120, 40);
     let elapsed_mid = start.elapsed();
-    assert!(!frame.rows.is_empty());
+    assert_ne!(frame.rows, [] as [std::vec::Vec<neonemacs_core::render::Cell>; 0]);
     assert!(
         elapsed_mid < Duration::from_millis(150),
         "scroll + frame at 5MB offset of 10MB single line took {elapsed_mid:?} (expected < 150ms)"

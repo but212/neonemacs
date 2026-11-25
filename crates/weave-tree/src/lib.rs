@@ -452,7 +452,7 @@ impl<S: Summary> WeaveTree<S> {
         Ok(())
     }
 
-    /// Extracts a CoW subdocument in $O(\log P)$ worst-case time for $P$ slices.
+    /// Extracts a `CoW` subdocument in $O(\log P)$ worst-case time for $P$ slices.
     pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError> {
         self.validate_range(&range)?;
         if range.start == range.end {

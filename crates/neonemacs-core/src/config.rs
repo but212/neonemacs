@@ -123,6 +123,7 @@ pub enum Setting {
 }
 
 impl Setting {
+    #[must_use]
     pub const fn toggle(self) -> Option<Toggles> {
         match self {
             Self::ExpandTabs => Some(Toggles::EXPAND_TABS),
