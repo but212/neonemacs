@@ -85,38 +85,33 @@ struct Rect {
 fn rects(layout: &Layout, rect: Rect) -> Vec<Rect> {
     match layout {
         Layout::Leaf(_) => vec![rect],
-        Layout::Split {
-            dir: Dir::Below,
-            first,
-            second,
-        } => {
-            let top = rect.h.div_ceil(2);
-            let mut out = rects(first, Rect { h: top, ..rect });
-            out.extend(rects(
-                second,
-                Rect {
-                    y: rect.y + top,
-                    h: rect.h - top,
-                    ..rect
-                },
-            ));
-            out
-        }
-        Layout::Split {
-            dir: Dir::Right,
-            first,
-            second,
-        } => {
-            let left = rect.w.div_ceil(2);
-            let mut out = rects(first, Rect { w: left, ..rect });
-            out.extend(rects(
-                second,
-                Rect {
-                    x: rect.x + left,
-                    w: rect.w - left,
-                    ..rect
-                },
-            ));
+        Layout::Split { dir, first, second } => {
+            let (first_rect, second_rect) = match dir {
+                Dir::Below => {
+                    let top = rect.h.div_ceil(2);
+                    (
+                        Rect { h: top, ..rect },
+                        Rect {
+                            y: rect.y + top,
+                            h: rect.h - top,
+                            ..rect
+                        },
+                    )
+                }
+                Dir::Right => {
+                    let left = rect.w.div_ceil(2);
+                    (
+                        Rect { w: left, ..rect },
+                        Rect {
+                            x: rect.x + left,
+                            w: rect.w - left,
+                            ..rect
+                        },
+                    )
+                }
+            };
+            let mut out = rects(first, first_rect);
+            out.extend(rects(second, second_rect));
             out
         }
     }
@@ -160,8 +155,7 @@ fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
     let total = text.total_bytes();
     let p = text.floor_boundary(w.point.min(total));
     let p_line = offset_to_line(text, p).expect("floor_boundary is valid");
-    let top_line = offset_to_line(text, text.floor_boundary(w.top.min(total)))
-        .expect("floor_boundary is valid");
+    let top_line = crate::line_at(text, w.top);
     if p < w.top || p_line.saturating_sub(top_line) >= height {
         w.top = line_to_offset(text, p_line).expect("p_line < total_lines");
     }
@@ -222,7 +216,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     if rows > 0 {
         // While a prompt is shown, the cursor sits in the echo area and the tail of a long line stays visible.
         let message = match ed.mode() {
-            Mode::Prompt(p) if ed.message() == p.echo() => {
+            Mode::Prompt(p) if p.matches_echo(ed.message()) => {
                 let want = (p.cursor_width(m) + 1).saturating_sub(cols);
                 let (rest, skipped) = skip_cells(ed.message(), want, m);
                 let x = p.cursor_width(m).saturating_sub(skipped);
@@ -246,7 +240,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     Frame { rows: grid, cursor }
 }
 
-fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
+fn put<T>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
     if let Some(line) = grid.get_mut(row) {
         for (i, item) in items.into_iter().enumerate() {
             if let Some(slot) = line.get_mut(col + i) {
@@ -273,8 +267,7 @@ fn window_cells(
     let point = window.point.min(total);
     let mut cursor = (0, 0);
     let mut body = Vec::with_capacity(height);
-    let first_line = offset_to_line(text, text.floor_boundary(window.top.min(total)))
-        .expect("floor_boundary is valid");
+    let first_line = crate::line_at(text, window.top);
     let mut start = line_to_offset(text, first_line).expect("line exists");
     for line in (first_line..total_lines).take(height) {
         let next = if line + 1 < total_lines {
@@ -370,7 +363,7 @@ fn line_cells(
                 let Some(b) = text.byte_at(cap_end) else {
                     break;
                 };
-                if b.is_ascii_alphanumeric() || b == b'_' {
+                if crate::syntax::is_ident_byte(b) {
                     cap_end += 1;
                 } else {
                     break;
@@ -461,7 +454,13 @@ fn glyph(c: char, w: usize) -> Vec<String> {
         return vec!["^".to_owned(), "?".to_owned()];
     }
     if (0x80..=0x9F).contains(&code) {
-        return format!("\\{code:02X}").chars().map(String::from).collect();
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let b = code as usize;
+        return vec![
+            "\\".to_owned(),
+            char::from(HEX[b >> 4]).to_string(),
+            char::from(HEX[b & 0xF]).to_string(),
+        ];
     }
     let mut cells = vec![c.to_string()];
     cells.extend(core::iter::repeat_n(String::new(), w.saturating_sub(1)));
@@ -489,8 +488,7 @@ fn status_text_with_col(
         .checked_div(buf.text().total_bytes() as u128)
         .unwrap_or(100);
     let text = buf.text();
-    let p = text.floor_boundary(point.min(text.total_bytes()));
-    let line = offset_to_line(text, p).expect("floor_boundary is valid") + 1;
+    let line = crate::line_at(text, point) + 1;
     let col = display_col + 1;
     let head = format!("-{mark}-  {}{view}", buf.name());
     let eol = buf.eol().label();
@@ -500,7 +498,7 @@ fn status_text_with_col(
         format!("{head}  {pos}  {percent}%"),
     ]
     .into_iter()
-    .find(|s| text_width(s, m) <= width)
+    .find(|s| crate::width::str_width(s, m) <= width)
     .unwrap_or_else(|| format!("{head}  {pos}"))
 }
 
@@ -514,10 +512,6 @@ fn skip_cells(s: &str, cells: usize, m: Metrics) -> (&str, usize) {
         skipped += m.char(c);
     }
     ("", skipped)
-}
-
-fn text_width(s: &str, m: Metrics) -> usize {
-    s.chars().map(|c| m.char(c)).sum()
 }
 
 /// Fits `s` into `width` cells, padding with `fill`. Wide characters are not split.
@@ -537,9 +531,7 @@ fn fit(s: &str, width: usize, fill: char, m: Metrics) -> Vec<String> {
         cells.push(c.to_string());
         cells.extend(core::iter::repeat_n(String::new(), w - 1));
     }
-    while cells.len() < width {
-        cells.push(fill.to_string());
-    }
+    cells.resize(width, fill.to_string());
     cells
 }
 

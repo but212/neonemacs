@@ -5,6 +5,11 @@ use triomphe::{AllocError, Arc};
 
 use crate::{ByteSlice, CHUNK_CAP, MAX_SLICE_BYTES, Summary, Unit};
 
+/// Returns `true` if `b` is a UTF-8 continuation byte (`10xxxxxx`).
+pub(crate) const fn is_utf8_cont(b: u8) -> bool {
+    (b & 0xC0) == 0x80
+}
+
 /// Decodes a single `Unit` at `pos` without checking whether `pos` is a unit boundary.
 ///
 /// Only RFC 3629 UTF-8 sequences (no overlongs, no surrogates `U+D800..=U+DFFF`,
@@ -15,36 +20,26 @@ pub fn decode_unit_raw(bytes: &[u8], pos: usize) -> Option<(Unit, usize)> {
     if b0 < 0x80 {
         return Some((Unit::Char(b0 as char), 1));
     }
-    let width = match b0 {
-        0xC2..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF4 => 4,
-        _ => return Some((Unit::Raw(b0), 1)),
-    };
-    let Some(end) = pos.checked_add(width) else {
-        return Some((Unit::Raw(b0), 1));
-    };
-    let Some(seq) = bytes.get(pos..end) else {
-        return Some((Unit::Raw(b0), 1));
-    };
-    let Ok(s) = core::str::from_utf8(seq) else {
-        return Some((Unit::Raw(b0), 1));
-    };
-    let ch = s.chars().next().expect("non-empty valid utf-8");
-    Some((Unit::Char(ch), width))
+    let window = &bytes[pos..bytes.len().min(pos + 4)];
+    let chunk = window.utf8_chunks().next()?;
+    if let Some(ch) = chunk.valid().chars().next() {
+        Some((Unit::Char(ch), ch.len_utf8()))
+    } else {
+        Some((Unit::Raw(b0), 1))
+    }
 }
 
 /// Returns `true` if `pos` is a valid `Unit` boundary within `slice` (which itself
 /// starts and ends on valid `Unit` boundaries).
 #[must_use]
-pub fn is_boundary_in_slice(slice: &[u8], pos: usize) -> bool {
+pub(crate) fn is_boundary_in_slice(slice: &[u8], pos: usize) -> bool {
     if pos == 0 || pos == slice.len() {
         return true;
     }
     if pos > slice.len() {
         return false;
     }
-    if (slice[pos] & 0xC0) != 0x80 {
+    if !is_utf8_cont(slice[pos]) {
         return true;
     }
     let max_back = pos.min(3);
@@ -69,7 +64,7 @@ pub fn decode_in_slice(slice: &[u8], pos: usize) -> Option<(Unit, usize)> {
 }
 
 #[must_use]
-pub fn floor_in_slice(slice: &[u8], pos: usize) -> usize {
+pub(crate) fn floor_in_slice(slice: &[u8], pos: usize) -> usize {
     let mut p = pos.min(slice.len());
     while p > 0 && !is_boundary_in_slice(slice, p) {
         p -= 1;
@@ -78,7 +73,7 @@ pub fn floor_in_slice(slice: &[u8], pos: usize) -> usize {
 }
 
 #[must_use]
-pub fn ceil_in_slice(slice: &[u8], pos: usize) -> usize {
+pub(crate) fn ceil_in_slice(slice: &[u8], pos: usize) -> usize {
     let mut p = pos.min(slice.len());
     while p < slice.len() && !is_boundary_in_slice(slice, p) {
         p += 1;
@@ -96,7 +91,7 @@ pub fn prev_in_slice(slice: &[u8], pos: usize) -> usize {
 }
 
 #[must_use]
-pub fn next_in_slice(slice: &[u8], pos: usize) -> usize {
+pub(crate) fn next_in_slice(slice: &[u8], pos: usize) -> usize {
     let p = pos.min(slice.len());
     if p >= slice.len() {
         return slice.len();
@@ -147,11 +142,38 @@ pub(crate) struct SeamMerge {
     pub(crate) k_right: usize,
     pub(crate) abs_insert_left: usize,
     pub(crate) abs_insert_right: usize,
-    pub(crate) left_merged: Vec<u8>,
-    pub(crate) right_merged: Vec<u8>,
+    left_merged: [u8; 4],
+    left_merged_len: u8,
+    right_merged: [u8; 4],
+    right_merged_len: u8,
+}
+
+impl SeamMerge {
+    pub(crate) fn left_bytes(&self) -> &[u8] {
+        &self.left_merged[..usize::from(self.left_merged_len)]
+    }
+
+    pub(crate) fn right_bytes(&self) -> &[u8] {
+        &self.right_merged[..usize::from(self.right_merged_len)]
+    }
 }
 
 /// Computes `k_left`, `k_right`, and merged UTF-8 bytes for an edit seam.
+fn try_assemble_char(parts: &[&[u8]]) -> Option<([u8; 4], u8)> {
+    let total: usize = parts.iter().map(|p| p.len()).sum();
+    if total > 4 {
+        return None;
+    }
+    let mut cand = [0u8; 4];
+    let mut offset = 0usize;
+    for part in parts {
+        cand[offset..offset + part.len()].copy_from_slice(part);
+        offset += part.len();
+    }
+    matches!(decode_unit_raw(&cand[..total], 0), Some((Unit::Char(_), len)) if len == total)
+        .then_some((cand, total as u8))
+}
+
 #[must_use]
 pub(crate) fn compute_seam_merge(
     left_raw: &[u8],
@@ -163,24 +185,20 @@ pub(crate) fn compute_seam_merge(
     if insert_total <= 2 && !left_raw.is_empty() && !right_raw.is_empty() {
         for kl in (1..=left_raw.len()).rev() {
             for kr in (1..=right_raw.len()).rev() {
-                let total = kl + insert_total + kr;
-                if total > 4 {
-                    continue;
-                }
-                let mut cand = [0u8; 4];
-                cand[..kl].copy_from_slice(&left_raw[left_raw.len() - kl..]);
-                cand[kl..kl + insert_total].copy_from_slice(&insert_head[..insert_total]);
-                cand[kl + insert_total..total].copy_from_slice(&right_raw[..kr]);
-                if let Some((Unit::Char(_), len)) = decode_unit_raw(&cand[..total], 0)
-                    && len == total
-                {
+                if let Some((cand, len)) = try_assemble_char(&[
+                    &left_raw[left_raw.len() - kl..],
+                    &insert_head[..insert_total],
+                    &right_raw[..kr],
+                ]) {
                     return SeamMerge {
                         k_left: kl,
                         k_right: kr,
                         abs_insert_left: insert_total,
                         abs_insert_right: 0,
-                        left_merged: cand[..total].to_vec(),
-                        right_merged: Vec::new(),
+                        left_merged: cand,
+                        left_merged_len: len,
+                        right_merged: [0u8; 4],
+                        right_merged_len: 0,
                     };
                 }
             }
@@ -189,21 +207,19 @@ pub(crate) fn compute_seam_merge(
 
     let mut k_left = 0;
     let mut abs_insert_left = 0;
-    let mut left_merged = Vec::new();
+    let mut left_merged = [0u8; 4];
+    let mut left_merged_len = 0u8;
     if !left_raw.is_empty() && insert_total > 0 {
         'left_search: for kl in 1..=left_raw.len() {
             let max_ai = insert_head.len().min(4 - kl);
             for ai in (1..=max_ai).rev() {
-                let total = kl + ai;
-                let mut cand = [0u8; 4];
-                cand[..kl].copy_from_slice(&left_raw[left_raw.len() - kl..]);
-                cand[kl..total].copy_from_slice(&insert_head[..ai]);
-                if let Some((Unit::Char(_), len)) = decode_unit_raw(&cand[..total], 0)
-                    && len == total
+                if let Some((cand, len)) =
+                    try_assemble_char(&[&left_raw[left_raw.len() - kl..], &insert_head[..ai]])
                 {
                     k_left = kl;
                     abs_insert_left = ai;
-                    left_merged = cand[..total].to_vec();
+                    left_merged = cand;
+                    left_merged_len = len;
                     break 'left_search;
                 }
             }
@@ -213,23 +229,21 @@ pub(crate) fn compute_seam_merge(
     let rem_insert = insert_total - abs_insert_left;
     let mut k_right = 0;
     let mut abs_insert_right = 0;
-    let mut right_merged = Vec::new();
+    let mut right_merged = [0u8; 4];
+    let mut right_merged_len = 0u8;
     if rem_insert > 0 && !right_raw.is_empty() {
         let avail_tail = insert_tail.len().min(rem_insert);
         let tail_slice = &insert_tail[insert_tail.len() - avail_tail..];
         'right_search: for ar in 1..=avail_tail {
             let max_kr = right_raw.len().min(4 - ar);
             for kr in (1..=max_kr).rev() {
-                let total = ar + kr;
-                let mut cand = [0u8; 4];
-                cand[..ar].copy_from_slice(&tail_slice[avail_tail - ar..]);
-                cand[ar..total].copy_from_slice(&right_raw[..kr]);
-                if let Some((Unit::Char(_), len)) = decode_unit_raw(&cand[..total], 0)
-                    && len == total
+                if let Some((cand, len)) =
+                    try_assemble_char(&[&tail_slice[avail_tail - ar..], &right_raw[..kr]])
                 {
                     k_right = kr;
                     abs_insert_right = ar;
-                    right_merged = cand[..total].to_vec();
+                    right_merged = cand;
+                    right_merged_len = len;
                     break 'right_search;
                 }
             }
@@ -242,6 +256,8 @@ pub(crate) fn compute_seam_merge(
         abs_insert_left,
         abs_insert_right,
         left_merged,
+        left_merged_len,
         right_merged,
+        right_merged_len,
     }
 }

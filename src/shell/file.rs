@@ -1,8 +1,8 @@
 //! File I/O for the shell: reads, atomic saves, and disk state (§8, A2, A12).
 
-use crate::core::{DiskState, Doc, Eol, EolStreamDecoder, RawFile, Read as FileRead};
+use crate::core::{DiskState, Doc, Eol, EolStreamDecoder, RawFile};
 use std::fs::{self, File, OpenOptions, Permissions};
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,7 +18,7 @@ pub fn atomic_write_with(
     prefix: &str,
     suffix: &str,
     permissions: Option<Permissions>,
-    write_fn: impl FnOnce(&mut File) -> io::Result<()>,
+    write_fn: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
 ) -> io::Result<()> {
     let dir = target
         .parent()
@@ -29,26 +29,21 @@ pub fn atomic_write_with(
     let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!("{prefix}{name}.{pid}_{seq}{suffix}"));
 
-    let result =
-        write_with_and_sync(&tmp, permissions, write_fn).and_then(|()| fs::rename(&tmp, target));
+    let result = (|| {
+        let f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let mut w = BufWriter::with_capacity(64 * 1024, f);
+        write_fn(&mut w)?;
+        w.flush()?;
+        w.get_ref().sync_all()?;
+        if let Some(perms) = permissions {
+            let _ = fs::set_permissions(&tmp, perms);
+        }
+        fs::rename(&tmp, target)
+    })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
-}
-
-fn write_with_and_sync(
-    tmp: &Path,
-    permissions: Option<Permissions>,
-    write_fn: impl FnOnce(&mut File) -> io::Result<()>,
-) -> io::Result<()> {
-    let mut f = OpenOptions::new().write(true).create_new(true).open(tmp)?;
-    write_fn(&mut f)?;
-    f.sync_all()?;
-    if let Some(perms) = permissions {
-        let _ = fs::set_permissions(tmp, perms);
-    }
-    Ok(())
 }
 
 fn state_of(meta: &fs::Metadata) -> DiskState {
@@ -67,15 +62,15 @@ pub fn disk_state(path: &Path) -> DiskState {
 }
 
 /// Reads `path` in 64 KiB blocks directly into a `Doc` B-Tree without allocating a flat buffer.
-/// A missing file is `Read::Missing`. A file longer than `max_size` is not read: `doc` is empty
+/// A missing file is `None`. A file longer than `max_size` is not read: `doc` is empty
 /// and `len` reports its size.
 ///
 /// # Errors
 /// Returns `io::Error` if reading file metadata or blocks, or allocating the document, fails.
-pub fn read_raw(path: &Path, max_size: u64) -> io::Result<FileRead> {
+pub fn read_raw(path: &Path, max_size: u64) -> io::Result<Option<RawFile>> {
     let mut file = match File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(FileRead::Missing),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
     let meta = file.metadata()?;
@@ -84,7 +79,7 @@ pub fn read_raw(path: &Path, max_size: u64) -> io::Result<FileRead> {
     } else {
         read_streamed(&mut file, meta.len())?
     };
-    Ok(FileRead::Found(RawFile {
+    Ok(Some(RawFile {
         len: meta.len(),
         disk: state_of(&meta),
         doc,
@@ -92,25 +87,36 @@ pub fn read_raw(path: &Path, max_size: u64) -> io::Result<FileRead> {
     }))
 }
 
-/// Streams at most `n` bytes in 64 KiB chunks into a fallibly allocated document.
-fn read_streamed(file: &mut File, n: u64) -> io::Result<(Doc, Option<Eol>)> {
-    let mut limited = Read::by_ref(file).take(n);
-    let mut decoder = EolStreamDecoder::new();
-    let mut buf = [0u8; 64 * 1024];
+/// Streams `reader` in 64 KiB buffered chunks through a fallible accumulator `step`.
+pub(crate) fn read_doc_chunks<B, E>(
+    reader: impl Read,
+    mut acc: B,
+    mut step: impl FnMut(B, &[u8]) -> Result<B, E>,
+) -> io::Result<B> {
+    let mut reader = BufReader::with_capacity(64 * 1024, reader);
     loop {
-        let read = match limited.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
+        let buf = match reader.fill_buf() {
+            Ok(buf) => buf,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        decoder = decoder
-            .try_push_chunk(&buf[..read])
-            .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        if buf.is_empty() {
+            return Ok(acc);
+        }
+        let len = buf.len();
+        acc = step(acc, buf).map_err(|_| io::ErrorKind::OutOfMemory)?;
+        reader.consume(len);
     }
-    decoder
-        .try_finish()
-        .map_err(|_| io::ErrorKind::OutOfMemory.into())
+}
+
+/// Streams at most `n` bytes in 64 KiB chunks into a fallibly allocated document.
+fn read_streamed(file: &mut File, n: u64) -> io::Result<(Doc, Option<Eol>)> {
+    let limited = Read::by_ref(file).take(n);
+    read_doc_chunks(limited, EolStreamDecoder::new(), |d, chunk| {
+        d.try_push_chunk(chunk)
+    })?
+    .try_finish()
+    .map_err(|_| io::ErrorKind::OutOfMemory.into())
 }
 
 /// Writes `bytes` to a temporary file beside the target, then renames it over
@@ -118,6 +124,7 @@ fn read_streamed(file: &mut File, n: u64) -> io::Result<(Doc, Option<Eol>)> {
 ///
 /// # Errors
 /// Returns `io::Error` if canonicalization or atomic file writing fails.
+#[cfg(any(test, feature = "test-support"))]
 pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
     save_doc(path, Eol::Lf, &crate::core::Doc::from_bytes(bytes))
 }
@@ -153,13 +160,11 @@ pub fn save_doc(path: &Path, eol: Eol, doc: &crate::core::Doc) -> io::Result<Dis
         path.to_path_buf()
     };
     let permissions = fs::metadata(&target).ok().map(|m| m.permissions());
-    atomic_write_with(&target, ".", ".tmp", permissions, |f| {
-        let mut w = BufWriter::with_capacity(64 * 1024, f);
+    atomic_write_with(&target, ".", ".tmp", permissions, |w| {
         write_doc_slices(doc, |chunk| match eol {
             Eol::Lf => w.write_all(chunk),
-            Eol::Crlf => write_crlf_slice(&mut w, chunk),
-        })?;
-        w.flush()
+            Eol::Crlf => write_crlf_slice(w, chunk),
+        })
     })?;
     Ok(disk_state(&target))
 }
@@ -208,9 +213,8 @@ mod tests {
         let path = dir.path().join("big.txt");
         fs::write(&path, b"0123456789").unwrap();
 
-        let read = read_raw(&path, 4).unwrap();
-        let FileRead::Found(raw) = read else {
-            panic!("expected Found");
+        let Some(raw) = read_raw(&path, 4).unwrap() else {
+            panic!("expected Some");
         };
         assert_eq!(raw.len, 10);
         assert_eq!(raw.doc, Doc::default());
@@ -241,8 +245,8 @@ mod tests {
         bytes.extend_from_slice("가".as_bytes()); // bytes 131070..131073 straddle 131072
         fs::write(&path, &bytes).unwrap();
 
-        let FileRead::Found(raw) = read_raw(&path, 1 << 20).unwrap() else {
-            panic!("expected Found");
+        let Some(raw) = read_raw(&path, 1 << 20).unwrap() else {
+            panic!("expected Some");
         };
         assert_eq!(raw.doc, Doc::from_bytes(&bytes));
         assert_eq!(raw.doc.decode_at(65_535), Some((Unit::Char('é'), 2)));

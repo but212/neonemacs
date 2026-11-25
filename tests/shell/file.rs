@@ -53,7 +53,7 @@ fn external_change_asks_before_overwrite() {
 
     fs::write(&path, b"external change").unwrap();
     ed = keys(ed, "C-x C-s");
-    assert!(matches!(ed.mode(), Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))));
+    assert!(matches!(ed.mode(), Mode::Confirm { kind: Confirm::SaveExternal(_), .. }));
     assert_eq!(fs::read(&path).unwrap(), b"external change");
 
     ed = keys(ed, "n");
@@ -126,7 +126,7 @@ fn quit_asks_only_with_unsaved_changes() {
     let dirty = visit(editor(), &path);
     let mut dirty = typ(dirty, "x");
     dirty = keys(dirty, "C-x C-c");
-    assert!(matches!(dirty.mode(), Mode::Confirm(q) if matches!(q.kind, Confirm::QuitUnsaved)));
+    assert!(matches!(dirty.mode(), Mode::Confirm { kind: Confirm::QuitUnsaved, .. }));
     assert!(!dirty.quit());
     dirty = keys(dirty, "n");
     assert!(!dirty.quit());
@@ -159,7 +159,7 @@ fn file_commands_find_goto_revert_write() {
     ed = keys(ed, "RET");
     assert!(matches!(
         ed.mode(),
-        Mode::Confirm(q) if matches!(q.kind, Confirm::RevertModified(_))
+        Mode::Confirm { kind: Confirm::RevertModified(_), .. }
     ));
     ed = keys(ed, "y");
     assert_eq!(text(&ed), "one\ntwo\nthree\n");
@@ -189,7 +189,7 @@ fn write_file_over_existing_file_asks_first() {
     ed = keys(ed, "RET");
     assert!(matches!(
         ed.mode(),
-        Mode::Confirm(q) if matches!(q.kind, Confirm::OverwriteFile { .. })
+        Mode::Confirm { kind: Confirm::OverwriteFile { .. }, .. }
     ));
     assert_eq!(fs::read(&other).unwrap(), b"precious");
 
@@ -215,7 +215,7 @@ fn save_detects_file_created_after_opening_missing_path() {
 
     fs::write(&path, b"theirs").unwrap();
     ed = keys(ed, "C-x C-s");
-    assert!(matches!(ed.mode(), Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))));
+    assert!(matches!(ed.mode(), Mode::Confirm { kind: Confirm::SaveExternal(_), .. }));
     assert_eq!(fs::read(&path).unwrap(), b"theirs");
 }
 

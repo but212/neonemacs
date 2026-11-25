@@ -3,7 +3,6 @@
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::{ControlFlow, Range};
@@ -14,6 +13,20 @@ use weave_tree::utf8::{decode_in_slice, decode_unit_raw, prev_in_slice};
 // Edited documents can have slices as small as a byte. Bound the overlap copied at
 // each seam by the edit chunk size, not by the maximum size of a loaded slice.
 const MAX_LITERAL_OVERLAP_NEEDLE: usize = CHUNK_CAP;
+
+fn scan_doc<T>(
+    text: &Doc,
+    range: Range<usize>,
+    reverse: bool,
+    scan: impl FnMut(&[u8]) -> ControlFlow<T>,
+) -> Result<Option<T>, crate::DocError> {
+    let flow = if reverse {
+        text.try_for_each_slice_rev(range, scan)
+    } else {
+        text.try_for_each_slice(range, scan)
+    }?;
+    Ok(flow.break_value())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Class {
@@ -291,15 +304,7 @@ fn find_long_literal(
         }
         ControlFlow::Continue(())
     };
-    let flow = if reverse {
-        text.try_for_each_slice_rev(range, scan)
-    } else {
-        text.try_for_each_slice(range, scan)
-    };
-    match flow.ok()? {
-        ControlFlow::Break(hit) => Some(hit),
-        ControlFlow::Continue(()) => None,
-    }
+    scan_doc(text, range, reverse, scan).ok().flatten()
 }
 
 fn find_literal_forward(text: &Doc, needle: &[u8], from: usize) -> Option<(usize, usize)> {
@@ -354,10 +359,7 @@ fn find_literal_forward(text: &Doc, needle: &[u8], from: usize) -> Option<(usize
         })
         .ok()?;
 
-    match flow {
-        ControlFlow::Break(hit) => Some(hit),
-        ControlFlow::Continue(()) => None,
-    }
+    flow.break_value()
 }
 
 fn find_literal_backward(text: &Doc, needle: &[u8], from: usize) -> Option<(usize, usize)> {
@@ -423,10 +425,7 @@ fn find_literal_backward(text: &Doc, needle: &[u8], from: usize) -> Option<(usiz
         })
         .ok()?;
 
-    match flow {
-        ControlFlow::Break(hit) => Some(hit),
-        ControlFlow::Continue(()) => None,
-    }
+    flow.break_value()
 }
 
 fn find_bol_forward(text: &Doc, pat: &Pattern, from: usize, fold: bool) -> Option<(usize, usize)> {
@@ -452,10 +451,7 @@ fn find_bol_forward(text: &Doc, pat: &Pattern, from: usize, fold: bool) -> Optio
             ControlFlow::Continue(())
         })
         .ok()?;
-    match flow {
-        ControlFlow::Break(hit) => Some(hit),
-        ControlFlow::Continue(()) => None,
-    }
+    flow.break_value()
 }
 
 fn find_bol_backward(text: &Doc, pat: &Pattern, from: usize, fold: bool) -> Option<(usize, usize)> {
@@ -552,15 +548,7 @@ fn find_by_unit(
         }
         ControlFlow::Continue(())
     };
-    let flow = if reverse {
-        text.try_for_each_slice_rev(range, scan)
-    } else {
-        text.try_for_each_slice(range, scan)
-    };
-    match flow.expect("search range is aligned") {
-        ControlFlow::Break(hit) => Some(hit),
-        ControlFlow::Continue(()) => None,
-    }
+    scan_doc(text, range, reverse, scan).expect("search range is aligned")
 }
 
 /// Replacement text for a regex match: `&` is the matched text, `\&` is a literal `&`.
@@ -575,7 +563,7 @@ pub fn expand_replacement(replacement: &str, matched: &[u8]) -> Vec<u8> {
                 out.push(b'&');
             }
             '&' => out.extend_from_slice(matched),
-            _ => out.extend_from_slice(c.to_string().as_bytes()),
+            _ => out.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes()),
         }
     }
     out

@@ -4,7 +4,7 @@ use super::{COMMANDS, mutate_editor};
 use crate::core::Editor;
 use crate::core::effect::Event;
 use crate::core::is_builtin;
-use crate::shell::{perform_in, step_in};
+use crate::shell::{perform_in, with_editor_cell};
 use mlua::{Function, Lua, Scope, Table};
 use std::cell::{Cell, RefCell};
 
@@ -47,7 +47,7 @@ pub(super) fn install_command_api<'lua, 'scope>(
             }
             depth.set(depth.get() + 1);
             let result = if is_builtin(&name) {
-                let effects = step_in(cell, Event::Run(name));
+                let effects = with_editor_cell(cell, |ed| crate::core::step(ed, Event::Run(name)));
                 perform_in(cell, Some(lua), effects);
                 Ok(())
             } else {

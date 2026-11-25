@@ -33,12 +33,6 @@ pub fn keys(mut ed: Editor, s: &str) -> Editor {
     ed
 }
 
-/// Sets the mark at point the way a user without a key for it does: `M-x set-mark-command RET`.
-#[must_use]
-pub fn set_mark(ed: Editor) -> Editor {
-    keys(typ(keys(ed, "M-x"), "set-mark-command"), "RET")
-}
-
 /// Types `s` as plain characters. A newline is RET.
 #[must_use]
 pub fn typ(mut ed: Editor, s: &str) -> Editor {
@@ -62,12 +56,7 @@ pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Eff
 /// Streams all bytes of `doc` into a `Vec<u8>` for test assertions.
 #[must_use]
 pub fn doc_bytes(doc: &crate::core::Doc) -> Vec<u8> {
-    let mut out = Vec::with_capacity(doc.total_bytes());
-    let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
-        out.extend_from_slice(chunk);
-        std::ops::ControlFlow::<()>::Continue(())
-    });
-    out
+    crate::core::doc_range_bytes(doc, 0..doc.total_bytes())
 }
 
 /// The text of the selected buffer.

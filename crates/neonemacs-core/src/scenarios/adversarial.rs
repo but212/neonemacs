@@ -13,7 +13,7 @@ fn empty_buffer_all_builtins_do_not_panic() {
     for (name, builtin) in BUILTINS {
         let ed = editor();
         let fx = Vec::new();
-        let (result_ed, _) = builtin.run(ed, fx);
+        let (result_ed, _) = builtin(ed, fx);
         // Editor must still have a valid buffer and valid point
         assert_eq!(
             result_ed.window().point,
@@ -34,18 +34,18 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
 
     // Force point into the middle of a 3-byte UTF-8 character (point = 1 or 2)
     let bad_ed = ed.with_window(|w| Window { point: 1, ..w });
-    let (after_fwd, _) = forward_char.run(bad_ed, Vec::new());
+    let (after_fwd, _) = forward_char(bad_ed, Vec::new());
     // next_boundary from 1 should safely snap or move to next character boundary (3)
     assert_eq!(point(&after_fwd), 3);
 
     let bad_ed2 = typ(editor(), "가나다").with_window(|w| Window { point: 1, ..w });
-    let (after_del, _) = delete_char.run(bad_ed2, Vec::new());
+    let (after_del, _) = delete_char(bad_ed2, Vec::new());
     // Deleting from middle of unit should delete to boundary without panic
     assert!(point(&after_del) <= after_del.buffer().text().total_bytes());
 
     // Force point way past end of buffer (e.g. 9999)
     let oob_ed = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
-    let (after_bkwd, _) = delete_backward_char.run(oob_ed, Vec::new());
+    let (after_bkwd, _) = delete_backward_char(oob_ed, Vec::new());
     assert!(point(&after_bkwd) <= after_bkwd.buffer().text().total_bytes());
 
     let ed = typ(editor(), "abc").move_point(9999);
@@ -160,26 +160,26 @@ fn kill_ring_empty_and_illegal_operations() {
     let kill_ring_save = find("kill-ring-save").unwrap();
 
     // 1. Yank on empty kill ring
-    let (ed1, _) = yank.run(editor(), Vec::new());
+    let (ed1, _) = yank(editor(), Vec::new());
     assert_eq!(ed1.message(), "Kill ring is empty");
 
     // 2. Yank-pop when last command was not yank
-    let (ed2, _) = yank_pop.run(editor(), Vec::new());
+    let (ed2, _) = yank_pop(editor(), Vec::new());
     assert_eq!(ed2.message(), "Previous command was not a yank");
 
     // 3. Kill-region without mark
-    let (ed3, _) = kill_region.run(editor(), Vec::new());
+    let (ed3, _) = kill_region(editor(), Vec::new());
     assert_eq!(ed3.message(), "The mark is not set now");
 
     // 4. Kill-ring-save without mark
-    let (ed4, _) = kill_ring_save.run(editor(), Vec::new());
+    let (ed4, _) = kill_ring_save(editor(), Vec::new());
     assert_eq!(ed4.message(), "The mark is not set now");
 
     // 5. Normal kill-ring-save (M-w) with mark sets kill ring but keeps text
     let mut ed5 = typ(editor(), "hello world");
     ed5 = set_mark(keys(ed5, "C-a"));
     ed5 = keys(ed5, "C-f C-f C-f C-f C-f"); // mark "hello"
-    let (ed5, _) = kill_ring_save.run(ed5, Vec::new());
+    let (ed5, _) = kill_ring_save(ed5, Vec::new());
     assert_eq!(text(&ed5), "hello world");
     assert_eq!(
         ed5.kill_ring().entries(),
@@ -221,7 +221,7 @@ fn view_mode_toggle_and_protection() {
     assert!(!ed.buffer().view_only());
 
     // Toggle view-mode ON
-    let (mut ed, _) = view_mode.run(ed, Vec::new());
+    let (mut ed, _) = view_mode(ed, Vec::new());
     assert!(ed.buffer().view_only());
     assert_eq!(ed.message(), "View mode on");
 
@@ -231,7 +231,7 @@ fn view_mode_toggle_and_protection() {
     assert_eq!(ed.message(), "Buffer is read-only");
 
     // Toggle view-mode OFF
-    let (mut ed, _) = view_mode.run(ed, Vec::new());
+    let (mut ed, _) = view_mode(ed, Vec::new());
     assert!(!ed.buffer().view_only());
     assert_eq!(ed.message(), "View mode off");
 
@@ -246,27 +246,27 @@ fn buffer_prompt_hostile_names_and_lifecycle() {
     let kill_buffer = find("kill-buffer").unwrap();
 
     // 1. switch-to-buffer with empty name is no-op
-    let (ed, _) = switch_to_buffer.run(editor(), Vec::new());
+    let (ed, _) = switch_to_buffer(editor(), Vec::new());
     assert!(matches!(ed.mode(), Mode::Prompt(_)));
     let ed = keys(ed, "RET");
     assert_eq!(ed.buffers().len(), 1);
 
     // 2. switch-to-buffer with new name creates buffer
-    let (ed, _) = switch_to_buffer.run(ed, Vec::new());
+    let (ed, _) = switch_to_buffer(ed, Vec::new());
     let ed = typ(ed, "novel_buf");
     let ed = keys(ed, "RET");
     assert_eq!(ed.buffers().len(), 2);
     assert_eq!(ed.buffer().name(), "novel_buf");
 
     // 3. kill-buffer with nonexistent name reports error
-    let (ed, _) = kill_buffer.run(ed, Vec::new());
+    let (ed, _) = kill_buffer(ed, Vec::new());
     let ed = typ(ed, "ghost_buf");
     let ed = keys(ed, "RET");
     assert_eq!(ed.message(), "No buffer named ghost_buf");
     assert_eq!(ed.buffers().len(), 2);
 
     // 4. kill-buffer with empty input targets current buffer
-    let (ed, _) = kill_buffer.run(ed, Vec::new());
+    let (ed, _) = kill_buffer(ed, Vec::new());
     let ed = keys(ed, "RET");
     assert_eq!(ed.buffers().len(), 1);
     assert_ne!(ed.buffer().name(), "novel_buf");
@@ -279,7 +279,7 @@ fn split_window_right_and_motion_boundaries() {
     let mut ed = typ(editor(), "single line");
 
     // split_window_right
-    let (ed_split, _) = split_window_right.run(ed, Vec::new());
+    let (ed_split, _) = split_window_right(ed, Vec::new());
     assert_eq!(ed_split.leaf_count(), 2);
 
     // motion boundary messages
@@ -311,7 +311,7 @@ fn hostile_fuzz_sequence_no_panic() {
     }
 
     // Must never panic, buffer must remain intact and valid UTF-8
-    assert!(!ed.buffers().is_empty());
+    assert!(ed.buffers().len() >= 1);
     assert!(ed.window().point <= ed.buffer().text().total_bytes());
 }
 
@@ -384,24 +384,24 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
 
     // Create multiple buffers including Korean multibyte names
     let switch_to_buffer = find("switch-to-buffer").unwrap();
-    let (e, _) = switch_to_buffer.run(ed, Vec::new());
+    let (e, _) = switch_to_buffer(ed, Vec::new());
     let e = typ(e, "work_log_2026");
     ed = keys(e, "RET");
 
-    let (e, _) = switch_to_buffer.run(ed, Vec::new());
+    let (e, _) = switch_to_buffer(ed, Vec::new());
     let e = typ(e, "work_log_archive");
     ed = keys(e, "RET");
 
-    let (e, _) = switch_to_buffer.run(ed, Vec::new());
+    let (e, _) = switch_to_buffer(ed, Vec::new());
     let e = typ(e, "한글_문서_1");
     ed = keys(e, "RET");
 
-    let (e, _) = switch_to_buffer.run(ed, Vec::new());
+    let (e, _) = switch_to_buffer(ed, Vec::new());
     let e = typ(e, "한글_문서_2");
     ed = keys(e, "RET");
 
     // 1. Buffer completion on "work_l" expands to common prefix "work_log_"
-    let (e, _) = switch_to_buffer.run(ed, Vec::new());
+    let (e, _) = switch_to_buffer(ed, Vec::new());
     let e = typ(e, "work_l");
     let mut e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
@@ -420,7 +420,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     assert_eq!(ed.buffer().name(), "work_log_2026");
 
     // 3. Multibyte UTF-8 buffer completion on "한글_"
-    let (e, _) = switch_to_buffer.run(ed, Vec::new());
+    let (e, _) = switch_to_buffer(ed, Vec::new());
     let e = typ(e, "한글_");
     let mut e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
@@ -439,7 +439,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
     assert_eq!(ed.buffer().name(), "한글_문서_1");
 
     // 4. Buffer completion with no match
-    let (e, _) = switch_to_buffer.run(ed, Vec::new());
+    let (e, _) = switch_to_buffer(ed, Vec::new());
     let e = typ(e, "nonexistent_prefix_999");
     let e = keys(e, "TAB");
     assert_eq!(e.message(), "No match");
@@ -447,7 +447,7 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
 
     // 5. kill-buffer with completion
     let kill_buffer = find("kill-buffer").unwrap();
-    let (e, _) = kill_buffer.run(ed, Vec::new());
+    let (e, _) = kill_buffer(ed, Vec::new());
     let e = typ(e, "work_log_a");
     let e = keys(e, "TAB");
     if let Mode::Prompt(p) = e.mode() {
@@ -542,7 +542,7 @@ fn isearch_backward_extends_pattern_at_position_zero_and_current_match() {
     // 1. Backward search from 0 typing letters must not immediately fail
     let mut ed = typ(editor(), "hello world");
     ed = ed.move_point(0);
-    let (after_start, _) = isearch_backward.run(ed, Vec::new());
+    let (after_start, _) = isearch_backward(ed, Vec::new());
     ed = after_start;
     assert!(matches!(ed.mode(), Mode::Isearch(_)));
     ed = typ(ed, "h");
@@ -558,7 +558,7 @@ fn isearch_backward_extends_pattern_at_position_zero_and_current_match() {
     // 2. Extending pattern on a match found by backward search must stay on current match
     let mut ed2 = typ(editor(), "test test");
     ed2 = ed2.move_point(9);
-    let (after_start2, _) = isearch_backward.run(ed2, Vec::new());
+    let (after_start2, _) = isearch_backward(ed2, Vec::new());
     ed2 = after_start2;
     ed2 = typ(ed2, "t");
     assert_eq!(point(&ed2), 8);
@@ -591,7 +591,7 @@ fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
     assert_eq!(ed.buffer().text().total_bytes(), 25);
     ed = ed.move_point(25);
 
-    let (after_start, _) = isearch_backward.run(ed, Vec::new());
+    let (after_start, _) = isearch_backward(ed, Vec::new());
     ed = after_start;
     assert!(matches!(ed.mode(), Mode::Isearch(_)));
 

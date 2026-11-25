@@ -5,7 +5,6 @@
 
 extern crate alloc;
 
-pub mod cursor;
 pub mod summary;
 mod tree;
 pub mod utf8;
@@ -14,10 +13,7 @@ use alloc::vec::Vec;
 use core::ops::{ControlFlow, Range};
 use triomphe::{AllocError, Arc};
 
-pub use cursor::{Cursor, Slices, Units};
-pub use summary::{LineBreakMetric, LineBreaks, Metric, Summary, Utf16CodeUnits, Utf16Metric};
-
-use self::cursor::{CursorFrame, advance_internal_past, push_leftmost};
+pub use summary::{LineBreaks, Summary};
 
 use self::tree::{join, split_at, try_delete_in_place, try_from_slices, try_insert_in_place};
 use self::utf8::{
@@ -62,13 +58,13 @@ pub(crate) enum SliceNode<S: Summary> {
 
 /// Pure value-passing immutable text B-Tree parameterized by [`Summary`].
 #[derive(Clone, Debug, Default)]
-pub struct WeaveTree<S: Summary = ()> {
+pub struct WeaveTree<S: Summary> {
     pub(crate) root: Option<ChildEntry<S>>,
 }
 
 /// Structural edit operation for both core input and undo inverse.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Replace<S: Summary = ()> {
+pub struct Replace<S: Summary> {
     pub offset: usize,
     pub delete_len: usize,
     pub insert: WeaveTree<S>,
@@ -101,34 +97,27 @@ impl<S: Summary> InsertSource<'_, S> {
         }
     }
 
-    fn head_bytes3(&self) -> ([u8; 3], usize) {
+    fn edge_bytes3(&self, from_tail: bool) -> ([u8; 3], usize) {
         match self {
             Self::Bytes(b) => {
                 let n = b.len().min(3);
                 let mut out = [0u8; 3];
-                out[..n].copy_from_slice(&b[..n]);
-                (out, n)
-            }
-            Self::Tree(d) => {
-                let n = d.total_bytes().min(3);
-                (d.read_small_range(0..n), n)
-            }
-        }
-    }
-
-    fn tail_bytes3(&self) -> ([u8; 3], usize) {
-        match self {
-            Self::Bytes(b) => {
-                let n = b.len().min(3);
-                let mut out = [0u8; 3];
-                out[..n].copy_from_slice(&b[b.len() - n..]);
+                let src = if from_tail {
+                    &b[b.len() - n..]
+                } else {
+                    &b[..n]
+                };
+                out[..n].copy_from_slice(src);
                 (out, n)
             }
             Self::Tree(d) => {
                 let total = d.total_bytes();
-                let start = total.saturating_sub(3);
-                let n = total - start;
-                (d.read_small_range(start..total), n)
+                let (start, end) = if from_tail {
+                    (total.saturating_sub(3), total)
+                } else {
+                    (0, total.min(3))
+                };
+                (d.read_small_range::<3>(start..end), end - start)
             }
         }
     }
@@ -155,14 +144,13 @@ impl<S: Summary> InsertSource<'_, S> {
 fn trailing_utf8_prefix_len(bytes: &[u8]) -> usize {
     let len = bytes.len();
     let mut cont = 0usize;
-    while cont < 3 && cont < len && (bytes[len - 1 - cont] & 0xC0) == 0x80 {
+    while cont < 3 && cont < len && utf8::is_utf8_cont(bytes[len - 1 - cont]) {
         cont += 1;
     }
     if cont == len || cont == 3 {
         return 0;
     }
-    let lead_idx = len - 1 - cont;
-    let expected = match bytes[lead_idx] {
+    let expected = match bytes[len - 1 - cont] {
         0xC2..=0xDF => 2,
         0xE0..=0xEF => 3,
         0xF0..=0xF4 => 4,
@@ -174,7 +162,7 @@ fn trailing_utf8_prefix_len(bytes: &[u8]) -> usize {
 
 /// Incrementally collects 16 KiB `ByteSlice`s and builds a `WeaveTree` bottom-up.
 #[derive(Debug)]
-pub struct WeaveTreeBuilder<S: Summary = ()> {
+pub struct WeaveTreeBuilder<S: Summary> {
     slices: Vec<ByteSlice<S>>,
     pending: [u8; 3],
     pending_len: usize,
@@ -202,6 +190,15 @@ impl<S: Summary> WeaveTreeBuilder<S> {
             .expect("cannot allocate document slices")
     }
 
+    fn try_emit_and_buffer_tail(mut self, bytes: &[u8]) -> Result<Self, AllocError> {
+        let keep = trailing_utf8_prefix_len(bytes);
+        let emit_len = bytes.len() - keep;
+        self.slices = try_append_slices(self.slices, &bytes[..emit_len])?;
+        self.pending_len = keep;
+        self.pending[..keep].copy_from_slice(&bytes[emit_len..]);
+        Ok(self)
+    }
+
     pub fn try_push_bytes(mut self, bytes: &[u8]) -> Result<Self, AllocError> {
         if bytes.is_empty() {
             return Ok(self);
@@ -211,7 +208,7 @@ impl<S: Summary> WeaveTreeBuilder<S> {
             let cont = rest
                 .iter()
                 .take(3)
-                .take_while(|&&b| (b & 0xC0) == 0x80)
+                .take_while(|&&b| utf8::is_utf8_cont(b))
                 .count();
             let mut bridge = [0u8; 6];
             bridge[..self.pending_len].copy_from_slice(&self.pending[..self.pending_len]);
@@ -219,21 +216,11 @@ impl<S: Summary> WeaveTreeBuilder<S> {
             let bridge_len = self.pending_len + cont;
             rest = &rest[cont..];
             if rest.is_empty() {
-                let keep = trailing_utf8_prefix_len(&bridge[..bridge_len]);
-                let emit_len = bridge_len - keep;
-                self.slices = try_append_slices(self.slices, &bridge[..emit_len])?;
-                self.pending_len = keep;
-                self.pending[..keep].copy_from_slice(&bridge[emit_len..bridge_len]);
-                return Ok(self);
+                return self.try_emit_and_buffer_tail(&bridge[..bridge_len]);
             }
             self.slices = try_append_slices(self.slices, &bridge[..bridge_len])?;
         }
-        let keep = trailing_utf8_prefix_len(rest);
-        let emit_len = rest.len() - keep;
-        self.slices = try_append_slices(self.slices, &rest[..emit_len])?;
-        self.pending_len = keep;
-        self.pending[..keep].copy_from_slice(&rest[emit_len..]);
-        Ok(self)
+        self.try_emit_and_buffer_tail(rest)
     }
 
     #[must_use]
@@ -253,15 +240,10 @@ impl<S: Summary> WeaveTree<S> {
     /// Constructs a `WeaveTree` from a raw byte slice (`root: None` if empty).
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self::try_from_bytes(bytes).expect("cannot allocate document tree")
-    }
-
-    /// Fallible byte-slice constructor returning `AllocError` on OOM.
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, AllocError> {
-        let slices = try_append_slices(Vec::new(), bytes)?;
-        Ok(Self {
-            root: try_from_slices(slices)?,
-        })
+        let slices = try_append_slices(Vec::new(), bytes).expect("cannot allocate document tree");
+        Self {
+            root: try_from_slices(slices).expect("cannot allocate document tree"),
+        }
     }
 
     /// Pure structural transition: consumes `self` and returns `(next_tree, inverse_edit)`.
@@ -334,8 +316,8 @@ impl<S: Summary> WeaveTree<S> {
 
         let (left_raw, left_raw_len) = self.trailing_raw_bytes3(offset);
         let (right_raw, right_raw_len) = self.leading_raw_bytes3(end);
-        let (insert_head, insert_head_len) = insert.head_bytes3();
-        let (insert_tail, insert_tail_len) = insert.tail_bytes3();
+        let (insert_head, insert_head_len) = insert.edge_bytes3(false);
+        let (insert_tail, insert_tail_len) = insert.edge_bytes3(true);
         let seam = compute_seam_merge(
             &left_raw[..left_raw_len],
             &insert_head[..insert_head_len],
@@ -344,6 +326,7 @@ impl<S: Summary> WeaveTree<S> {
             &right_raw[..right_raw_len],
         );
 
+        let mut tree = self;
         if delete_len == 0
             && seam.k_left == 0
             && seam.k_right == 0
@@ -351,47 +334,30 @@ impl<S: Summary> WeaveTree<S> {
             && seam.abs_insert_right == 0
             && let InsertSource::Bytes(bytes) = insert
             && !bytes.is_empty()
-            && bytes.len() <= CHUNK_CAP.min(1024)
+            && bytes.len() <= 1024
+            && let Some(root) = tree.root.take()
         {
-            if let Some(root) = self.root {
-                match try_insert_in_place(root, offset, bytes) {
-                    Ok(updated_root) => {
-                        return Ok((
-                            Self {
-                                root: Some(updated_root),
-                            },
-                            Replace {
-                                offset,
-                                delete_len: insert_len,
-                                insert: Self::default(),
-                            },
-                        ));
-                    }
-                    Err(orig_root) => {
-                        return Self {
-                            root: Some(orig_root),
-                        }
-                        .apply_cow(offset, delete_len, insert, seam);
-                    }
+            match try_insert_in_place(root, offset, bytes) {
+                Ok(updated_root) => {
+                    return Ok((
+                        Self {
+                            root: Some(updated_root),
+                        },
+                        Replace {
+                            offset,
+                            delete_len: insert_len,
+                            insert: Self::default(),
+                        },
+                    ));
                 }
-            } else {
-                return Ok((
-                    Self::from_bytes(bytes),
-                    Replace {
-                        offset,
-                        delete_len: insert_len,
-                        insert: Self::default(),
-                    },
-                ));
+                Err(orig_root) => tree.root = Some(orig_root),
             }
-        }
-
-        if delete_len > 0
-            && delete_len <= CHUNK_CAP.min(1024)
+        } else if delete_len > 0
+            && delete_len <= 1024
             && insert_len == 0
             && seam.k_left == 0
             && seam.k_right == 0
-            && let Some(root) = self.root
+            && let Some(root) = tree.root.take()
         {
             match try_delete_in_place(root, offset, delete_len) {
                 Ok((updated_root, deleted)) => {
@@ -406,16 +372,11 @@ impl<S: Summary> WeaveTree<S> {
                         },
                     ));
                 }
-                Err(orig_root) => {
-                    return Self {
-                        root: Some(orig_root),
-                    }
-                    .apply_cow(offset, delete_len, insert, seam);
-                }
+                Err(orig_root) => tree.root = Some(orig_root),
             }
         }
 
-        self.apply_cow(offset, delete_len, insert, seam)
+        tree.apply_cow(offset, delete_len, insert, seam)
     }
 
     fn apply_cow(
@@ -444,8 +405,8 @@ impl<S: Summary> WeaveTree<S> {
             (None, rest)
         };
 
-        let left_seam_root = Self::from_bytes(&seam.left_merged).root;
-        let right_seam_root = Self::from_bytes(&seam.right_merged).root;
+        let left_seam_root = Self::from_bytes(seam.left_bytes()).root;
+        let right_seam_root = Self::from_bytes(seam.right_bytes()).root;
         let trimmed_insert = insert.into_trimmed_root(seam.abs_insert_left, seam.abs_insert_right);
         let mid_root = join(left_seam_root, join(trimmed_insert, right_seam_root));
 
@@ -502,23 +463,15 @@ impl<S: Summary> WeaveTree<S> {
         Ok(Self { root: mid })
     }
 
-    /// Returns the root `Summary` (or `S::default()` when empty).
+    /// Returns total metric units (`0` when empty).
     #[must_use]
-    pub fn summary(&self) -> S {
-        self.root
-            .as_ref()
-            .map_or_else(S::default, |r| r.summary.clone())
+    pub fn total_metric(&self) -> usize {
+        self.root.as_ref().map_or(0, |r| r.summary.measure())
     }
 
-    /// Returns total metric units under `M` (`0` when empty).
-    #[must_use]
-    pub fn total_metric<M: Metric<S>>(&self) -> usize {
-        self.root.as_ref().map_or(0, |r| M::measure(&r.summary))
-    }
-
-    /// Maps a metric coordinate `pos` under `M` to its starting byte offset.
-    pub fn metric_to_byte<M: Metric<S>>(&self, pos: usize) -> Result<usize, DocError> {
-        let total_m = self.total_metric::<M>();
+    /// Maps a metric coordinate `pos` to its starting byte offset.
+    pub fn metric_to_byte(&self, pos: usize) -> Result<usize, DocError> {
+        let total_m = self.total_metric();
         if pos > total_m {
             return Err(DocError::OutOfBounds {
                 offset: pos,
@@ -540,7 +493,7 @@ impl<S: Summary> WeaveTree<S> {
             match cur.node.as_ref() {
                 SliceNode::Internal { children } => {
                     for child in children {
-                        let cm = M::measure(&child.summary);
+                        let cm = child.summary.measure();
                         if rem <= cm {
                             cur = child;
                             break;
@@ -551,22 +504,22 @@ impl<S: Summary> WeaveTree<S> {
                 }
                 SliceNode::Leaf { slices } => {
                     for slice in slices {
-                        let sm = M::measure(&slice.summary);
+                        let sm = slice.summary.measure();
                         if rem <= sm {
                             let bytes = &slice.buf[slice.range.clone()];
-                            return Ok(byte_acc + M::to_byte_offset(bytes, rem));
+                            return Ok(byte_acc + S::to_byte_offset(bytes, rem));
                         }
                         rem -= sm;
                         byte_acc += slice.range.len();
                     }
-                    unreachable!("Metric invariant guarantees match");
+                    unreachable!("Summary invariant guarantees match");
                 }
             }
         }
     }
 
-    /// Maps a valid `Unit`-boundary byte offset to its metric coordinate under `M`.
-    pub fn byte_to_metric<M: Metric<S>>(&self, offset: usize) -> Result<usize, DocError> {
+    /// Maps a valid `Unit`-boundary byte offset to its metric coordinate.
+    pub fn byte_to_metric(&self, offset: usize) -> Result<usize, DocError> {
         let total = self.total_bytes();
         if offset > total {
             return Err(DocError::OutOfBounds {
@@ -582,59 +535,11 @@ impl<S: Summary> WeaveTree<S> {
             return Ok(0);
         };
         if offset == total {
-            return Ok(M::measure(&root.summary));
+            return Ok(root.summary.measure());
         }
-        let mut cur = root;
-        let mut rem_bytes = offset;
-        let mut metric_acc = 0usize;
-        loop {
-            match cur.node.as_ref() {
-                SliceNode::Internal { children } => {
-                    for child in children {
-                        if rem_bytes < child.bytes {
-                            cur = child;
-                            break;
-                        }
-                        rem_bytes -= child.bytes;
-                        metric_acc += M::measure(&child.summary);
-                    }
-                }
-                SliceNode::Leaf { slices } => {
-                    for slice in slices {
-                        let len = slice.range.len();
-                        if rem_bytes < len {
-                            let bytes = &slice.buf[slice.range.clone()];
-                            return Ok(metric_acc + M::from_byte_offset(bytes, rem_bytes));
-                        }
-                        rem_bytes -= len;
-                        metric_acc += M::measure(&slice.summary);
-                    }
-                    return Ok(metric_acc);
-                }
-            }
-        }
-    }
-
-    /// Returns a bidirectional [`Slices`] iterator over the entire tree.
-    #[must_use]
-    pub fn slices(&self) -> Slices<'_, S> {
-        Slices::new(self, 0..self.total_bytes()).expect("full range is valid")
-    }
-
-    /// Returns a bidirectional [`Slices`] iterator over `range`.
-    pub fn slices_range(&self, range: Range<usize>) -> Result<Slices<'_, S>, DocError> {
-        Slices::new(self, range)
-    }
-
-    /// Returns a bidirectional [`Units`] iterator over the entire tree.
-    #[must_use]
-    pub fn units(&self) -> Units<'_, S> {
-        Units::new(self, 0..self.total_bytes()).expect("full range is valid")
-    }
-
-    /// Returns a bidirectional [`Units`] iterator over `range`.
-    pub fn units_range(&self, range: Range<usize>) -> Result<Units<'_, S>, DocError> {
-        Units::new(self, range)
+        let (slice, slice_start, metric_acc) = self.descend_to_byte(offset);
+        let bytes = &slice.buf[slice.range.clone()];
+        Ok(metric_acc + S::from_byte_offset(bytes, offset - slice_start))
     }
 
     /// Zero-copy forward streaming over `range` (`ControlFlow`-based, `D-05` compatible).
@@ -852,9 +757,15 @@ impl<S: Summary> WeaveTree<S> {
     }
 
     fn locate_slice(&self, offset: usize) -> (&ByteSlice<S>, usize) {
+        let (slice, base, _) = self.descend_to_byte(offset);
+        (slice, base)
+    }
+
+    fn descend_to_byte(&self, offset: usize) -> (&ByteSlice<S>, usize, usize) {
         let mut cur = self.root.as_ref().expect("offset < total_bytes");
         let mut rem = offset;
         let mut base = 0usize;
+        let mut metric_acc = 0usize;
         loop {
             match cur.node.as_ref() {
                 SliceNode::Internal { children } => {
@@ -865,16 +776,18 @@ impl<S: Summary> WeaveTree<S> {
                         }
                         rem -= child.bytes;
                         base += child.bytes;
+                        metric_acc += child.summary.measure();
                     }
                 }
                 SliceNode::Leaf { slices } => {
                     for slice in slices {
                         let len = slice.range.len();
                         if rem < len {
-                            return (slice, base);
+                            return (slice, base, metric_acc);
                         }
                         rem -= len;
                         base += len;
+                        metric_acc += slice.summary.measure();
                     }
                     unreachable!("offset < total_bytes");
                 }
@@ -883,15 +796,19 @@ impl<S: Summary> WeaveTree<S> {
     }
 
     fn trailing_raw_bytes3(&self, offset: usize) -> ([u8; 3], usize) {
+        let win_start = offset.saturating_sub(6);
+        let win_len = offset - win_start;
+        let buf = self.read_small_range::<6>(win_start..offset);
+        let win = &buf[..win_len];
         let mut rev = [0u8; 3];
         let mut len = 0usize;
-        let mut cur = offset;
+        let mut cur = win_len;
         while len < 3 && cur > 0 {
-            let prev = self.prev_boundary(cur);
+            let prev = prev_in_slice(win, cur);
             if cur - prev != 1 {
                 break;
             }
-            match self.decode_at(prev) {
+            match utf8::decode_unit_raw(win, prev) {
                 Some((Unit::Raw(b), 1)) => {
                     rev[len] = b;
                     len += 1;
@@ -905,16 +822,17 @@ impl<S: Summary> WeaveTree<S> {
     }
 
     fn leading_raw_bytes3(&self, offset: usize) -> ([u8; 3], usize) {
+        let win_end = (offset + 6).min(self.total_bytes());
+        let win_len = win_end.saturating_sub(offset);
+        let buf = self.read_small_range::<6>(offset..win_end);
+        let win = &buf[..win_len];
         let mut bytes = [0u8; 3];
         let mut len = 0usize;
-        let mut cur = offset;
-        let total = self.total_bytes();
-        while len < 3 && cur < total {
-            match self.decode_at(cur) {
+        while len < 3 && len < win_len {
+            match utf8::decode_unit_raw(win, len) {
                 Some((Unit::Raw(b), 1)) => {
                     bytes[len] = b;
                     len += 1;
-                    cur += 1;
                 }
                 _ => break,
             }
@@ -922,17 +840,17 @@ impl<S: Summary> WeaveTree<S> {
         (bytes, len)
     }
 
-    fn read_small_range(&self, range: Range<usize>) -> [u8; 3] {
-        let mut out = [0u8; 3];
+    fn read_small_range<const N: usize>(&self, range: Range<usize>) -> [u8; N] {
+        let mut out = [0u8; N];
         let mut written = 0usize;
         if range.start < range.end
             && let Some(root) = &self.root
         {
             let _ = Self::visit_slices::<false, _, _>(root, 0, &range, |chunk: &[u8]| {
-                let take = chunk.len().min(3 - written);
+                let take = chunk.len().min(N - written);
                 out[written..written + take].copy_from_slice(&chunk[..take]);
                 written += take;
-                if written >= 3 {
+                if written >= N {
                     ControlFlow::Break(())
                 } else {
                     ControlFlow::Continue(())
@@ -978,14 +896,17 @@ impl<S: Summary> WeaveTree<S> {
         });
     }
 
+    fn assert_entry_totals(entry: &ChildEntry<S>, bytes: usize, backing: usize, summary: S) {
+        assert_eq!(entry.bytes, bytes);
+        assert_eq!(entry.backing_bytes, backing);
+        assert!(entry.summary == summary);
+    }
+
     fn check_entry(entry: &ChildEntry<S>, is_root: bool) -> usize {
+        let min_fanout = if is_root { 1 } else { MIN_FANOUT };
         match entry.node.as_ref() {
             SliceNode::Leaf { slices } => {
-                if is_root {
-                    assert!((1..=MAX_FANOUT).contains(&slices.len()));
-                } else {
-                    assert!((MIN_FANOUT..=MAX_FANOUT).contains(&slices.len()));
-                }
+                assert!((min_fanout..=MAX_FANOUT).contains(&slices.len()));
                 let mut sum_bytes = 0usize;
                 let mut sum_backing = 0usize;
                 let mut sum_summary = S::default();
@@ -998,17 +919,12 @@ impl<S: Summary> WeaveTree<S> {
                     sum_backing = sum_backing.saturating_add(slice.buf.len());
                     sum_summary = sum_summary.combine(&slice.summary);
                 }
-                assert_eq!(entry.bytes, sum_bytes);
-                assert_eq!(entry.backing_bytes, sum_backing);
-                assert!(entry.summary == sum_summary);
+                Self::assert_entry_totals(entry, sum_bytes, sum_backing, sum_summary);
                 1
             }
             SliceNode::Internal { children } => {
-                if is_root {
-                    assert!((2..=MAX_FANOUT).contains(&children.len()));
-                } else {
-                    assert!((MIN_FANOUT..=MAX_FANOUT).contains(&children.len()));
-                }
+                let min_internal = if is_root { 2 } else { MIN_FANOUT };
+                assert!((min_internal..=MAX_FANOUT).contains(&children.len()));
                 let mut expected_depth = None;
                 let mut sum_bytes = 0usize;
                 let mut sum_backing = 0usize;
@@ -1023,9 +939,7 @@ impl<S: Summary> WeaveTree<S> {
                     sum_backing = sum_backing.saturating_add(child.backing_bytes);
                     sum_summary = sum_summary.combine(&child.summary);
                 }
-                assert_eq!(entry.bytes, sum_bytes);
-                assert_eq!(entry.backing_bytes, sum_backing);
-                assert!(entry.summary == sum_summary);
+                Self::assert_entry_totals(entry, sum_bytes, sum_backing, sum_summary);
                 expected_depth.expect("non-empty internal") + 1
             }
         }
@@ -1052,6 +966,70 @@ impl<S: Summary> PartialEq for WeaveTree<S> {
 
 impl<S: Summary> Eq for WeaveTree<S> {}
 
+#[derive(Clone, Debug)]
+enum CursorFrame<'a, S: Summary> {
+    Internal {
+        children: &'a [ChildEntry<S>],
+        idx: usize,
+        base: usize,
+    },
+    Leaf {
+        slices: &'a [ByteSlice<S>],
+        idx: usize,
+        in_slice: usize,
+    },
+}
+
+fn push_leftmost<'a, S: Summary>(
+    mut stack: Vec<CursorFrame<'a, S>>,
+    entry: &'a ChildEntry<S>,
+    base: usize,
+) -> Vec<CursorFrame<'a, S>> {
+    let mut cur = entry;
+    loop {
+        match cur.node.as_ref() {
+            SliceNode::Internal { children } => {
+                stack.push(CursorFrame::Internal {
+                    children,
+                    idx: 0,
+                    base,
+                });
+                cur = &children[0];
+            }
+            SliceNode::Leaf { slices } => {
+                stack.push(CursorFrame::Leaf {
+                    slices,
+                    idx: 0,
+                    in_slice: 0,
+                });
+                return stack;
+            }
+        }
+    }
+}
+
+fn advance_internal_past<S: Summary>(
+    mut stack: Vec<CursorFrame<'_, S>>,
+) -> Vec<CursorFrame<'_, S>> {
+    while let Some(CursorFrame::Internal {
+        children,
+        idx,
+        base,
+    }) = stack.last_mut()
+    {
+        let b = children[*idx].bytes;
+        *idx += 1;
+        *base += b;
+        if *idx < children.len() {
+            let next = &children[*idx];
+            let nb = *base;
+            return push_leftmost(stack, next, nb);
+        }
+        stack.pop();
+    }
+    stack
+}
+
 fn advance_eq_cursor<S: Summary>(
     mut stack: Vec<CursorFrame<'_, S>>,
     bytes_consumed: usize,
@@ -1060,7 +1038,7 @@ fn advance_eq_cursor<S: Summary>(
         slices,
         idx,
         in_slice,
-        slice_base,
+        ..
     }) = stack.last_mut()
     else {
         return stack;
@@ -1069,7 +1047,6 @@ fn advance_eq_cursor<S: Summary>(
     if *in_slice < slices[*idx].range.len() {
         return stack;
     }
-    *slice_base += slices[*idx].range.len();
     *idx += 1;
     *in_slice = 0;
     if *idx < slices.len() {

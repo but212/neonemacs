@@ -41,14 +41,20 @@ pub(crate) fn xdg_path(
     let base = xdg.filter(|s| !s.is_empty()).map_or_else(
         || {
             home.map(|h| {
-                fallback
-                    .iter()
-                    .fold(h.to_path_buf(), |acc, part| acc.join(part))
+                let mut p = h.to_path_buf();
+                p.extend(fallback);
+                p
             })
         },
         |xdg| Some(PathBuf::from(xdg)),
     )?;
     Some(base.join("neonemacs").join(file))
+}
+
+pub(crate) fn xdg_env_path(var: &str, fallback: &[&str], file: &str) -> Option<PathBuf> {
+    let xdg = env::var_os(var);
+    let home = home_dir();
+    xdg_path(xdg.as_deref(), home.as_deref(), fallback, file)
 }
 
 /// The echo-area message while a background shell command runs, before the spinner's first frame.
@@ -57,14 +63,14 @@ pub const RUNNING: &str = "[Running...]";
 /// What a refused second command adds to the running message.
 pub const BUSY_NOTICE: &str = "A shell command is already running";
 
-/// A running background shell command.
-pub type ShellTask = mpsc::Receiver<Result<String, String>>;
+/// Full message shown when a second shell command is refused while one is already running.
+pub const BUSY_MESSAGE: &str = "[Running...] A shell command is already running";
 
 /// The result of an interactive shell command dispatch.
 #[derive(Debug)]
 pub enum ShellOutcome {
     None,
-    Spawned(ShellTask),
+    Spawned(mpsc::Receiver<Result<String, String>>),
     BusyRejected,
     /// The caller must reload `init.lua`: only it can replace the Lua state.
     ReloadInit,
@@ -72,10 +78,10 @@ pub enum ShellOutcome {
 
 /// Runs `command` in a background thread without blocking the editor UI (I-24).
 #[must_use]
-pub fn spawn_shell(command: String, shell: ShellSpec) -> ShellTask {
+pub fn spawn_shell(command: String, shell: ShellSpec) -> mpsc::Receiver<Result<String, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let res = run_shell(&command, &shell);
+        let res = run_shell_capped(&command, &shell, MAX_SHELL_OUTPUT);
         let _ = tx.send(res);
     });
     rx
@@ -115,7 +121,7 @@ pub fn handle_interactive(
     let ed = perform_all(ed, lua, sync_effects);
     let ed = match &outcome {
         ShellOutcome::Spawned(_) => ed.set_message(RUNNING),
-        ShellOutcome::BusyRejected => ed.set_message(format!("{RUNNING} {BUSY_NOTICE}")),
+        ShellOutcome::BusyRejected => ed.set_message(BUSY_MESSAGE),
         ShellOutcome::None | ShellOutcome::ReloadInit => ed,
     };
     (ed, outcome)
@@ -142,7 +148,7 @@ pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
         perform_in(&cell, None, effects);
         Ok(())
     };
-    let ed = into_editor(cell);
+    let ed = cell.into_inner().expect("editor is in the cell (I-21)");
     match bound {
         Ok(()) => ed,
         Err(e) => ed.set_message(e.to_string()),
@@ -167,22 +173,14 @@ pub(crate) fn with_editor_cell<R>(
     out
 }
 
-/// Applies `event` to the editor in `cell`, then puts the new editor back. The cell is empty
-/// only during this call, since `step` never calls Lua (I-21). Returns the effects to perform.
-///
-/// # Panics
-/// Panics if `cell` does not contain an editor (violating I-21).
-pub fn step_in(cell: &RefCell<Option<Editor>>, event: Event) -> Effects {
-    with_editor_cell(cell, |ed| step(ed, event))
-}
-
 /// Performs `effects` against the editor in `cell`. Each event goes back to the core.
 /// No `RefCell` borrow is held while an effect runs (I-21).
 pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Effects) {
     for effect in effects {
-        let event = perform(cell, effect, lua);
-        let next = step_in(cell, event);
-        perform_in(cell, lua, next);
+        if let Some(event) = perform(cell, effect, lua) {
+            let next = with_editor_cell(cell, |ed| step(ed, event));
+            perform_in(cell, lua, next);
+        }
     }
 }
 
@@ -191,20 +189,19 @@ pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Ef
 pub fn run_source(ed: Editor, lua: &Lua, name: &str, source: &str) -> (Editor, mlua::Result<()>) {
     let cell = RefCell::new(Some(ed));
     let result = lua::with_api(lua, &cell, |lua| lua.load(source).set_name(name).exec());
-    (into_editor(cell), result)
+    (
+        cell.into_inner().expect("editor is in the cell (I-21)"),
+        result,
+    )
 }
 
-const fn into_editor(cell: RefCell<Option<Editor>>) -> Editor {
-    cell.into_inner().expect("editor is in the cell (I-21)")
-}
-
-/// Performs one effect and returns the single event that answers it (I-15).
+/// Performs one effect and returns the event that answers it, if any.
 ///
 /// # Panics
 /// Panics if `cell` does not contain an editor (violating I-21).
 #[must_use]
-pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>) -> Event {
-    match effect {
+pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>) -> Option<Event> {
+    let event = match effect {
         Effect::StatDisk { target, path } => Event::Disk {
             target,
             state: file::disk_state(Path::new(&path)),
@@ -232,11 +229,12 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
             }
         }
         Effect::RemoveWal { target } => {
-            match target {
-                WalTarget::Sibling(path) => wal::remove_wal(Path::new(&path)),
-                WalTarget::Slot(slot) => wal::remove_file(Path::new(&slot)),
-            }
-            Event::WalRemoved
+            let wp = match target {
+                WalTarget::Sibling(path) => wal::wal_path(Path::new(&path)),
+                WalTarget::Slot(slot) => PathBuf::from(slot),
+            };
+            let _ = std::fs::remove_file(&wp);
+            return None;
         }
         Effect::FlushWal { entries } => {
             let guard = cell.borrow();
@@ -286,24 +284,21 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                 line,
             }
         }
-        Effect::RunShell { command, shell } => Event::ShellDone(run_shell(&command, &shell)),
+        Effect::RunShell { command, shell } => {
+            Event::ShellDone(run_shell_capped(&command, &shell, MAX_SHELL_OUTPUT))
+        }
         Effect::RunLua { name } => Event::LuaDone(lua.map_or_else(
             || Err(format!("No command named {name}")),
             |lua| lua::call_lua(lua, &name).map_err(|e| e.to_string()),
         )),
         // Reached from a Lua command, which runs inside the state that a reload would replace.
-        Effect::ReloadInit => Event::InitLoaded(None),
-    }
+        Effect::ReloadInit => Event::InitLoaded(crate::core::effect::InitLoad::Ignored),
+    };
+    Some(event)
 }
 
 /// The most bytes of stdout or stderr that a shell command may produce before it is killed.
 const MAX_SHELL_OUTPUT: usize = 4 << 20;
-
-/// Runs `command` with the configured shell and returns its stdout followed by its stderr.
-/// A command that writes more than `MAX_SHELL_OUTPUT` bytes to either stream is killed.
-fn run_shell(command: &str, shell: &ShellSpec) -> Result<String, String> {
-    run_shell_capped(command, shell, MAX_SHELL_OUTPUT)
-}
 
 /// Reads at most `cap + 1` bytes of `stream` on a thread and sends them with `index`.
 fn spawn_reader(
@@ -360,7 +355,7 @@ fn run_shell_capped(command: &str, shell: &ShellSpec, cap: usize) -> Result<Stri
 mod tests {
     use super::*;
     use crate::core::effect::{ReadTarget, StatTarget};
-    use crate::core::{DiskState, Read};
+    use crate::core::DiskState;
 
     #[test]
     fn effect_round_trip_yields_one_event_each() {
@@ -383,11 +378,11 @@ mod tests {
         );
         assert_eq!(
             stat,
-            Event::Disk {
+            Some(Event::Disk {
                 target: StatTarget::Save(id),
                 path: path.clone(),
                 state: DiskState::Unknown
-            }
+            })
         );
         let write = perform(
             &cell,
@@ -399,10 +394,10 @@ mod tests {
         );
         assert!(matches!(
             write,
-            Event::Written {
+            Some(Event::Written {
                 result: Ok(DiskState::Known { size: 2, .. }),
                 ..
-            }
+            })
         ));
         let read = perform(
             &cell,
@@ -415,10 +410,10 @@ mod tests {
         );
         assert!(matches!(
             read,
-            Event::FileRead {
-                result: Ok(Read::Found(_)),
+            Some(Event::FileRead {
+                result: Ok(Some(_)),
                 ..
-            }
+            })
         ));
         let shell = perform(
             &cell,
@@ -428,7 +423,7 @@ mod tests {
             },
             None,
         );
-        assert!(matches!(shell, Event::ShellDone(Ok(s)) if s.starts_with("hi")));
+        assert!(matches!(shell, Some(Event::ShellDone(Ok(s))) if s.starts_with("hi")));
         let lua_missing = perform(
             &cell,
             Effect::RunLua {
@@ -438,7 +433,7 @@ mod tests {
         );
         assert_eq!(
             lua_missing,
-            Event::LuaDone(Err("No command named nope".to_owned()))
+            Some(Event::LuaDone(Err("No command named nope".to_owned())))
         );
     }
 

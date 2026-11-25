@@ -102,7 +102,7 @@ impl RecoveredDelta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct WalDeltaLog {
+pub(crate) struct WalDeltaLog {
     base: WalBaseDigest,
     edits: Vec<Replace>,
     bytes: usize,
@@ -350,7 +350,9 @@ impl Buffer {
         self.undo = UndoLog::new();
         self.epoch = self.epoch.wrapping_add(1);
         self.wal_deltas = None;
-        self.snap_anchors()
+        self.saved_point = self.text.floor_boundary(self.saved_point);
+        self.mark = self.mark.map(|m| self.text.floor_boundary(m));
+        self
     }
 
     #[must_use]
@@ -433,14 +435,13 @@ impl Buffer {
                 inv
             }
             Edit::InsertInline { offset, data } => {
-                let slice = data.as_slice();
                 let forward = self.wal_deltas.is_some().then(|| crate::Replace {
                     offset,
                     delete_len: 0,
-                    insert: crate::Doc::from_bytes(slice),
+                    insert: crate::Doc::from_bytes(data.as_slice()),
                 });
                 let (next_self, inv) =
-                    self.apply_text_edit(forward, |doc| doc.replace(offset, 0, slice));
+                    self.apply_text_edit(forward, |doc| doc.replace(offset, 0, data.as_slice()));
                 let Some(inv) = inv else {
                     return (next_self, None);
                 };
@@ -465,14 +466,6 @@ impl Buffer {
         let (undo, dropped) = self.undo.record(inverse, undo_limit, clean_epoch);
         self.undo = undo;
         (self, Some(dropped))
-    }
-
-    /// Snaps `saved_point` and `mark` to valid UTF-8 unit boundaries within the current text (I-01, I-25).
-    #[must_use]
-    pub fn snap_anchors(mut self) -> Self {
-        self.saved_point = self.text.floor_boundary(self.saved_point);
-        self.mark = self.mark.map(|m| self.text.floor_boundary(m));
-        self
     }
 }
 
@@ -509,11 +502,6 @@ impl BufferPool {
         self.buffers.len()
     }
 
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.buffers.is_empty()
-    }
-
     pub fn iter(&self) -> core::slice::Iter<'_, Buffer> {
         self.buffers.iter()
     }
@@ -528,11 +516,6 @@ impl BufferPool {
             .iter()
             .position(|b| b.id == id)
             .expect("window refers to a live buffer (I-08)")
-    }
-
-    #[must_use]
-    pub fn get(&self, index: usize) -> Option<&Buffer> {
-        self.buffers.get(index)
     }
 
     #[must_use]
@@ -592,19 +575,7 @@ impl BufferPool {
         self
     }
 
-    /// Restores the content of the buffer visiting `path` from a WAL snapshot (I-23).
-    #[must_use]
-    pub fn restore_content(
-        self,
-        path: &str,
-        doc: Doc,
-        eol: Eol,
-        line: Option<usize>,
-    ) -> (Self, Option<BufferId>) {
-        self.install_recovered(path, doc, eol, line, None)
-    }
-
-    fn install_recovered(
+    pub(crate) fn install_recovered(
         self,
         path: &str,
         doc: Doc,
@@ -704,9 +675,10 @@ mod tests {
         // I-08, I-42
         let pool = BufferPool::new();
         assert_eq!(pool.len(), 1);
-        assert_eq!(pool.get(0).unwrap().name(), SCRATCH_NAME);
-        assert_eq!(pool.get(0).unwrap().id(), BufferId(0));
-        assert!(pool.get(0).unwrap().backing().is_scratch());
+        let first = pool.iter().next().unwrap();
+        assert_eq!(first.name(), SCRATCH_NAME);
+        assert_eq!(first.id(), BufferId(0));
+        assert!(first.backing().is_scratch());
 
         let (pool, replacement) = pool.kill(BufferId(0));
         assert_eq!(pool.len(), 1);
@@ -782,10 +754,11 @@ mod tests {
             pool.get_by_id(id).wal_deltas().map(|(_, edits)| edits),
             Some(&[][..])
         );
-        let (pool, restored) = pool.restore_content(
+        let (pool, restored) = pool.install_recovered(
             path.as_str(),
             Doc::from_bytes(b"recovered draft"),
             Eol::Lf,
+            None,
             None,
         );
         assert_eq!(restored, Some(id));

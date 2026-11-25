@@ -54,6 +54,24 @@ fn ascii_printable_run(bytes: &[u8]) -> usize {
     i
 }
 
+fn advance_width(bytes: &[u8], mut col: usize, m: Metrics) -> usize {
+    let mut i = 0;
+    while i < bytes.len() {
+        let run = ascii_printable_run(&bytes[i..]);
+        if run > 0 {
+            col += run;
+            i += run;
+            continue;
+        }
+        let Some((unit, n)) = decode_in_slice(bytes, i) else {
+            break;
+        };
+        col += unit_width(unit, col, m);
+        i += n;
+    }
+    col
+}
+
 /// Display column of `pos` relative to the start of its line.
 #[must_use]
 pub fn column(text: &Doc, pos: usize, tab: Metrics) -> usize {
@@ -61,20 +79,7 @@ pub fn column(text: &Doc, pos: usize, tab: Metrics) -> usize {
     let start = line_start(text, pos);
     let mut col = 0;
     let _ = text.try_for_each_slice(start..pos, |chunk| {
-        let mut i = 0;
-        while i < chunk.len() {
-            let run = ascii_printable_run(&chunk[i..]);
-            if run > 0 {
-                col += run;
-                i += run;
-                continue;
-            }
-            let Some((unit, n)) = decode_in_slice(chunk, i) else {
-                break;
-            };
-            col += unit_width(unit, col, tab);
-            i += n;
-        }
+        col = advance_width(chunk, col, tab);
         ControlFlow::<()>::Continue(())
     });
     col
@@ -115,43 +120,19 @@ pub(crate) fn pos_and_column(text: &Doc, line: usize, col: usize, tab: Metrics) 
     (p, c)
 }
 
-/// Position on the line starting at `line` whose column is at most `col`.
-#[must_use]
-pub fn pos_at_column(text: &Doc, line: usize, col: usize, tab: Metrics) -> usize {
-    pos_and_column(text, line, col, tab).0
-}
-
 /// Columns occupied by `unit` when it starts at column `col`.
 #[must_use]
 pub fn unit_width(unit: Unit, col: usize, m: Metrics) -> usize {
     match unit {
         Unit::Char('\t') => m.tab - col % m.tab,
-        Unit::Char(c) => m.char(c),
-        // Raw bytes are Latin-1 characters for display (§8).
-        Unit::Raw(b) => m.char(char::from(b)),
+        _ => m.char(crate::unit_char(unit)),
     }
 }
 
 /// Display columns occupied by string `s`, starting at column 0.
 #[must_use]
 pub fn str_width(s: &str, m: Metrics) -> usize {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let mut col = 0;
-    while i < bytes.len() {
-        let run = ascii_printable_run(&bytes[i..]);
-        if run > 0 {
-            col += run;
-            i += run;
-            continue;
-        }
-        let Some(c) = s[i..].chars().next() else {
-            break;
-        };
-        col += unit_width(Unit::Char(c), col, m);
-        i += c.len_utf8();
-    }
-    col
+    advance_width(s.as_bytes(), 0, m)
 }
 
 #[cfg(test)]
@@ -201,7 +182,7 @@ mod tests {
         let t = Doc::from_bytes("\u{203B}x".as_bytes());
         assert_eq!(column(&t, 3, wide), 2);
         assert_eq!(column(&t, 3, narrow), 1);
-        assert_eq!(pos_at_column(&t, 0, 2, wide), 3);
+        assert_eq!(pos_and_column(&t, 0, 2, wide).0, 3);
     }
 
     #[test]
@@ -211,8 +192,8 @@ mod tests {
         assert_eq!(column(&t, 1, M8), 1);
         assert_eq!(column(&t, 2, M8), 8);
         assert_eq!(column(&t, 5, M8), 10);
-        assert_eq!(pos_at_column(&t, 0, 9, M8), 2);
-        assert_eq!(pos_at_column(&t, 0, 10, M8), 5);
+        assert_eq!(pos_and_column(&t, 0, 9, M8).0, 2);
+        assert_eq!(pos_and_column(&t, 0, 10, M8).0, 5);
     }
 
     #[test]

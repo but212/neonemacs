@@ -31,7 +31,7 @@ pub enum InitSource {
 
 /// Reads `init.lua` from the path that `xdg` and `home` give. Only a missing file is `Absent`.
 fn read_init(xdg: Option<&OsStr>, home: Option<&Path>) -> InitSource {
-    let Some(path) = lua::config_path(xdg, home) else {
+    let Some(path) = crate::shell::xdg_path(xdg, home, &[".config"], "init.lua") else {
         return InitSource::Absent;
     };
     match fs::read(&path) {
@@ -139,7 +139,7 @@ pub fn start(cwd: PathBuf, source: InitSource) -> mlua::Result<(Editor, Lua)> {
     let (ed, lua, load) = configure(cwd, source)?;
     let ed = match load {
         InitLoad::Rejected(text) => record_init_error(ed, &text),
-        InitLoad::Absent | InitLoad::Applied => ed,
+        InitLoad::Absent | InitLoad::Applied | InitLoad::Ignored => ed,
     };
     Ok((ed, lua))
 }

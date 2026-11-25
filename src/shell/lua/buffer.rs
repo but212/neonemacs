@@ -33,24 +33,10 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
         "get_text",
         scope.create_function(|lua, (start, end): (Option<usize>, Option<usize>)| {
             let ed = editor_ref(cell);
-            let text = ed.buffer().text();
-            let len = text.total_bytes();
-            let s = start.unwrap_or(0).min(len);
-            let e = end.unwrap_or(len).min(len);
-            if s >= e {
-                return lua.create_string("");
-            }
-            let mut offset = text.floor_boundary(s);
-            let mut bytes = Vec::with_capacity(e - s);
-            let _ = text
-                .try_for_each_slice(offset..text.ceil_boundary(e), |chunk| {
-                    let lo = s.saturating_sub(offset);
-                    let hi = (e - offset).min(chunk.len());
-                    bytes.extend_from_slice(&chunk[lo..hi]);
-                    offset += chunk.len();
-                    std::ops::ControlFlow::<()>::Continue(())
-                })
-                .expect("stream range is aligned to unit boundaries");
+            let bytes = neonemacs_core::doc_range_bytes(
+                ed.buffer().text(),
+                start.unwrap_or(0)..end.unwrap_or(usize::MAX),
+            );
             lua.create_string(&bytes)
         })?,
     )?;
@@ -124,7 +110,8 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
             let ed = editor_ref(cell);
             let prefix = ed
                 .syntax_registry()
-                .line_comment_for_filename(ed.buffer().name())
+                .find_by_filename(ed.buffer().name())
+                .and_then(|d| d.line_comment.as_deref())
                 .map(str::to_owned);
             Ok(prefix)
         })?,

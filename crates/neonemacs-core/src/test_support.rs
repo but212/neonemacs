@@ -103,12 +103,7 @@ pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Eff
 /// Streams all bytes of `doc` into a `Vec<u8>` for test assertions.
 #[must_use]
 pub fn doc_bytes(doc: &Doc) -> Vec<u8> {
-    let mut out = Vec::with_capacity(doc.total_bytes());
-    let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
-        out.extend_from_slice(chunk);
-        core::ops::ControlFlow::<()>::Continue(())
-    });
-    out
+    crate::doc_range_bytes(doc, 0..doc.total_bytes())
 }
 
 /// Streams `doc` with `eol` conversion into a `Vec<u8>` for test assertions.

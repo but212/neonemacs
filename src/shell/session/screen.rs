@@ -7,50 +7,6 @@ use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetFor
 use crossterm::{cursor, queue, terminal};
 use std::io::{self, Write};
 
-/// What the terminal shows now: the rows last drawn, and the size they were drawn for.
-#[derive(Default)]
-pub(super) struct Screen {
-    prev_rows: Vec<Vec<Cell>>,
-    size: (usize, usize),
-}
-
-impl Screen {
-    /// Draws the rows of `frame` that differ from the last frame, then the cursor. A new size
-    /// redraws everything.
-    fn paint(
-        &mut self,
-        frame: Frame,
-        out: &mut impl Write,
-        cols: usize,
-        rows: usize,
-    ) -> io::Result<()> {
-        if (cols, rows) != self.size {
-            self.prev_rows.clear();
-            self.size = (cols, rows);
-        }
-        for (row, cells) in frame.rows.iter().enumerate() {
-            if self.prev_rows.get(row) != Some(cells) {
-                queue!(
-                    out,
-                    cursor::MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX))
-                )?;
-                print_styled_row(out, cells)?;
-            }
-        }
-        queue!(
-            out,
-            cursor::MoveTo(
-                u16::try_from(frame.cursor.0).unwrap_or(u16::MAX),
-                u16::try_from(frame.cursor.1).unwrap_or(u16::MAX),
-            ),
-            cursor::Show
-        )?;
-        out.flush()?;
-        self.prev_rows = frame.rows;
-        Ok(())
-    }
-}
-
 impl ShellSession {
     /// Draws changed rows to the terminal.
     ///
@@ -73,7 +29,42 @@ impl ShellSession {
     ) -> io::Result<()> {
         update_editor(&mut self.ed, |ed| render::scroll(ed, cols, rows));
         let frame = render::frame(&self.ed, cols, rows);
-        self.screen.paint(frame, out, cols, rows)
+        self.paint(frame, out, cols, rows)
+    }
+
+    /// Draws the rows of `frame` that differ from the last frame, then the cursor. A new size
+    /// redraws everything.
+    fn paint(
+        &mut self,
+        frame: Frame,
+        out: &mut impl Write,
+        cols: usize,
+        rows: usize,
+    ) -> io::Result<()> {
+        if (cols, rows) != self.screen_size {
+            self.prev_rows.clear();
+            self.screen_size = (cols, rows);
+        }
+        for (row, cells) in frame.rows.iter().enumerate() {
+            if self.prev_rows.get(row) != Some(cells) {
+                queue!(
+                    out,
+                    cursor::MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX))
+                )?;
+                print_styled_row(out, cells)?;
+            }
+        }
+        queue!(
+            out,
+            cursor::MoveTo(
+                u16::try_from(frame.cursor.0).unwrap_or(u16::MAX),
+                u16::try_from(frame.cursor.1).unwrap_or(u16::MAX),
+            ),
+            cursor::Show
+        )?;
+        out.flush()?;
+        self.prev_rows = frame.rows;
+        Ok(())
     }
 }
 

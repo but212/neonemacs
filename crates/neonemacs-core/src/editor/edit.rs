@@ -2,10 +2,11 @@
 //! to a buffer goes through it, so the read-only check, undo, and anchor moves stay in one place.
 
 use super::{Buffer, Editor, LastCommand, Window};
+use crate::Unit;
 use crate::config::Toggles;
 use crate::effect::Effects;
 use crate::undo::{Edit, RecordedEdit};
-use crate::width::column;
+use crate::width::{column, unit_width};
 use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 
@@ -26,7 +27,7 @@ impl Editor {
         let span = edit.span;
         let mut dropped_res = None;
         let undo_limit = self.settings.config.undo_limit;
-        self.documents.buffers = self.documents.buffers.with_buffer(id, |buf| {
+        self.buffers = self.buffers.with_buffer(id, |buf| {
             let (buf, dropped) = buf.apply_recorded(edit, |a| span.remap(a), undo_limit);
             dropped_res = dropped;
             buf
@@ -36,14 +37,14 @@ impl Editor {
         }
 
         // The yank offsets describe the text before this edit, so the yank ends here (I-38).
-        if matches!(self.interaction.last, LastCommand::Yank { .. }) {
-            self.interaction.last = LastCommand::Other;
+        if matches!(self.last, LastCommand::Yank { .. }) {
+            self.last = LastCommand::Other;
         }
-        self.documents.edit_seq = self.documents.edit_seq.wrapping_add(1);
+        self.edit_seq = self.edit_seq.wrapping_add(1);
 
-        let text = self.documents.buffers.get_by_id(id).text();
+        let text = self.buffers.get_by_id(id).text();
         let anchor = |a| text.floor_boundary(span.remap(a));
-        self.documents.windows = self.documents.windows.map_windows(&|w| {
+        self.windows = self.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
                     point: anchor(w.point),
@@ -89,8 +90,8 @@ impl Editor {
             return ed;
         }
         let max = ed.config().kill_ring_max;
-        let ed = if ed.interaction.prev == LastCommand::Kill
-            || ed.interaction.last == LastCommand::Kill
+        let ed = if ed.prev == LastCommand::Kill
+            || ed.last == LastCommand::Kill
         {
             ed.with_kill_ring(|kr| kr.append_last(killed))
         } else {
@@ -120,15 +121,15 @@ impl Editor {
 
     #[must_use]
     pub const fn begin_command(mut self) -> Self {
-        self.interaction.prev = self.interaction.last;
-        self.interaction.last = LastCommand::Other;
+        self.prev = self.last;
+        self.last = LastCommand::Other;
         self
     }
 
     /// Closes the undo group after a command, unless the command was an insert.
     #[must_use]
     pub fn end_command(self) -> Self {
-        if matches!(self.interaction.last, LastCommand::Insert { .. }) {
+        if matches!(self.last, LastCommand::Insert { .. }) {
             self
         } else {
             self.boundary()
@@ -138,7 +139,7 @@ impl Editor {
     /// Inserts a typed character at point. Up to `amalgamating-undo-limit` characters share an undo group.
     #[must_use]
     pub fn self_insert(mut self, c: char) -> Self {
-        let count = match self.interaction.prev {
+        let count = match self.prev {
             LastCommand::Insert { count }
                 if count < self.settings.config.amalgamating_undo_limit =>
             {
@@ -153,10 +154,9 @@ impl Editor {
         let (ed, applied, len) =
             if c == '\t' && self.settings.config.toggles.contains(Toggles::EXPAND_TABS) {
                 let m = self.settings.config.metrics();
-                let tab = m.tab;
                 let col = column(self.buffer().text(), at, m);
-                let spaces = tab - col % tab;
-                let bytes = " ".repeat(spaces).into_bytes();
+                let spaces = unit_width(Unit::Char('\t'), col, m);
+                let bytes = alloc::vec![b' '; spaces];
                 let (ed, applied) = self.apply(Edit::insert(at, bytes));
                 (ed, applied, spaces)
             } else {
@@ -173,7 +173,7 @@ impl Editor {
             point: at + len,
             ..w
         });
-        ed.interaction.last = LastCommand::Insert { count };
+        ed.last = LastCommand::Insert { count };
         ed
     }
 
@@ -184,12 +184,12 @@ impl Editor {
         let mut ed = self.boundary();
         let id = ed.window().buffer;
         let groups = ed.buffer_by_id(id).undo().groups().len();
-        let idx = match ed.interaction.prev {
+        let idx = match ed.prev {
             LastCommand::Undo { next } => next.checked_sub(1),
             _ => groups.checked_sub(1),
         };
         let Some(idx) = idx else {
-            "No further undo information".clone_into(&mut ed.interaction.message);
+            "No further undo information".clone_into(&mut ed.message);
             return (ed, fx);
         };
         let (clean_epoch, inverses) = {
@@ -215,7 +215,7 @@ impl Editor {
             fx.extend(ed.remove_wal_effect(id));
             ed = ed.with_buffer(id, Buffer::restore_clean);
         }
-        ed.interaction.last = LastCommand::Undo {
+        ed.last = LastCommand::Undo {
             next: idx.saturating_sub(dropped),
         };
         (ed, fx)
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(text(&ed), "é");
         assert_eq!(ed.window().point, 2);
         assert_eq!(ed.edit_seq(), seq);
-        assert_eq!(ed.interaction.last, LastCommand::Yank { start: 0, end: 2 });
+        assert_eq!(ed.last, LastCommand::Yank { start: 0, end: 2 });
         assert!(!ed.buffer().modified());
         assert!(ed.buffer().undo().groups().is_empty());
     }
@@ -532,7 +532,7 @@ mod tests {
         let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
         let (ed, applied) = ed.apply(Edit::insert(0, b"x".as_slice()));
         assert!(applied.is_none());
-        assert_eq!(ed.interaction.message, "Buffer is read-only");
+        assert_eq!(ed.message, "Buffer is read-only");
     }
 
     #[test]
@@ -540,7 +540,7 @@ mod tests {
         let ed = editor_with("hello").with_current_buffer(|b| b.set_view_only(true));
         let ed = ed.delete_only(2, 2);
         assert_eq!(text(&ed), "hello");
-        assert_eq!(ed.interaction.message, "");
+        assert_eq!(ed.message, "");
     }
 
     #[test]

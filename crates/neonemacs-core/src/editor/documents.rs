@@ -2,10 +2,7 @@
 //! `edit_seq` belongs here, so `Editor::apply` changes it in the same group it changes buffers
 //! and windows (I-31). Fields are visible only to `editor`.
 
-use crate::buffer::BufferPool;
-use crate::window::{Window, WindowManager};
 use crate::{Doc, Replace};
-use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The kill ring: killed text, newest last, with ring rotation for `yank-pop`.
@@ -82,28 +79,6 @@ impl KillRing {
     #[must_use]
     pub const fn len(&self) -> usize {
         self.entries.len()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Documents {
-    pub(super) buffers: BufferPool,
-    pub(super) windows: WindowManager,
-    pub(super) kill_ring: KillRing,
-    pub(super) edit_seq: u64,
-    /// Where the unsaved text of the scratch buffer is kept. `None` keeps it in memory only (I-43).
-    pub(super) scratch_slot: Option<String>,
-}
-
-impl Documents {
-    pub fn new(initial_window: Window) -> Self {
-        Self {
-            buffers: BufferPool::new(),
-            windows: WindowManager::new(initial_window),
-            kill_ring: KillRing::new(),
-            edit_seq: 0,
-            scratch_slot: None,
-        }
     }
 }
 

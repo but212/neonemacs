@@ -12,6 +12,7 @@ use crate::undo::Edit;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
+#[cfg(test)]
 use alloc::vec::Vec;
 
 pub(crate) fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
@@ -34,7 +35,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Isearch(mut s) = ed.mode().clone() else {
         return (ed, fx);
     };
-    if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
+    if key.is_cancel() {
         let ed = ed
             .set_mode(Mode::normal())
             .move_point(s.origin)
@@ -71,16 +72,19 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 
 /// Searches from `from` in the direction of `s` and moves point to the match.
 /// With `wrap`, a miss restarts at the other end of the buffer.
+fn compile_pattern(kind: MatchKind, text: &str) -> Result<Pattern, String> {
+    match kind {
+        MatchKind::Regex => Pattern::regex(text),
+        MatchKind::Literal => Ok(Pattern::literal(text)),
+    }
+}
+
 fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor, Isearch) {
     if s.text.is_empty() {
         s.found = None;
         return (ed.set_message("I-search: "), s);
     }
-    let pattern = match s.kind {
-        MatchKind::Regex => Pattern::regex(&s.text),
-        MatchKind::Literal => Ok(Pattern::literal(&s.text)),
-    };
-    let pattern = match pattern {
+    let pattern = match compile_pattern(s.kind, &s.text) {
         Ok(p) => p,
         Err(e) => {
             s.found = None;
@@ -153,16 +157,13 @@ pub fn start_query_replace(
     if pattern.is_empty() {
         return (ed, Err("empty pattern".to_owned()));
     }
-    let pattern = match kind {
-        MatchKind::Regex => match Pattern::regex(pattern) {
-            Ok(p) => p,
-            Err(e) => return (ed, Err(e)),
-        },
-        MatchKind::Literal => Pattern::literal(pattern),
+    let pattern = match compile_pattern(kind, pattern) {
+        Ok(p) => p,
+        Err(e) => return (ed, Err(e)),
     };
     let fold = ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH);
     let from = ed.window().point;
-    let Some(current) = next_match(&ed, &pattern, fold, from) else {
+    let Some(current) = search::find_forward(ed.buffer().text(), &pattern, from, fold) else {
         return (ed.set_message("No match"), Ok(()));
     };
     let q = QueryReplace {
@@ -177,13 +178,6 @@ pub fn start_query_replace(
         .set_mode(Mode::QueryReplace(q))
         .set_message("Query replacing from point (y, n, !, q)");
     (ed, Ok(()))
-}
-
-fn next_match(ed: &Editor, pattern: &Pattern, fold: bool, from: usize) -> Option<(usize, usize)> {
-    if from > ed.buffer().text().total_bytes() {
-        return None;
-    }
-    search::find_forward(ed.buffer().text(), pattern, from, fold)
 }
 
 /// Answers for query-replace: `y`/SPC replace, `n`/DEL skip, `!` replace the rest,
@@ -224,24 +218,12 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
                     break;
                 };
                 q.count += 1;
-                current = next_match(&ed, &q.pattern, q.fold, from);
+                current = search::find_forward(ed.buffer().text(), &q.pattern, from, q.fold);
             }
             finish(ed, &q)
         }
-        (Some('q' | '\n'), _)
-        | (
-            None,
-            Key {
-                code: Code::Char('g'),
-                ctrl: true,
-                meta: false,
-            }
-            | Key {
-                code: Code::Esc,
-                ctrl: false,
-                meta: false,
-            },
-        ) => finish(ed, &q),
+        (Some('q' | '\n'), _) => finish(ed, &q),
+        (None, k) if k.is_cancel() => finish(ed, &q),
         _ => ed.set_message("Answer y, n, !, or q"),
     }
 }
@@ -256,11 +238,7 @@ fn replace_match(
 ) -> (Editor, Option<usize>) {
     let replacement = match q.kind {
         MatchKind::Regex => {
-            let mut matched = Vec::with_capacity(end.saturating_sub(start));
-            let _ = ed.buffer().text().try_for_each_slice(start..end, |chunk| {
-                matched.extend_from_slice(chunk);
-                core::ops::ControlFlow::<()>::Continue(())
-            });
+            let matched = crate::doc_range_bytes(ed.buffer().text(), start..end);
             search::expand_replacement(&q.replacement, &matched)
         }
         MatchKind::Literal => q.replacement.as_bytes().to_vec(),
@@ -295,7 +273,7 @@ fn resume(ed: &Editor, after: usize, matched_empty: bool) -> usize {
 }
 
 fn step(ed: Editor, q: QueryReplace, from: usize) -> Editor {
-    match next_match(&ed, &q.pattern, q.fold, from) {
+    match search::find_forward(ed.buffer().text(), &q.pattern, from, q.fold) {
         Some(current) => ed.set_mode(Mode::QueryReplace(QueryReplace { current, ..q })),
         None => finish(ed, &q),
     }
@@ -449,8 +427,7 @@ mod tests {
         let ed = typ(editor(), "x1 x22");
         let ed = keys(ed, "C-a");
         let (ed, _) = crate::commands::find("isearch-forward-regexp")
-            .unwrap()
-            .run(ed, Vec::new());
+            .unwrap()(ed, Vec::new());
         let ed = typ(ed, "x[0-9]*");
         assert_eq!(point(&ed), 2);
     }

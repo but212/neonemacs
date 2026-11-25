@@ -2,7 +2,7 @@
 //! Decouples routing and command execution lifecycle from Editor state management.
 
 use crate::commands;
-use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prefix, Question};
+use crate::editor::{Buffer, CANCEL_MESSAGE, Confirm, Editor, Mode, Prefix};
 use crate::effect::{Effect, Effects};
 use crate::keymap::{Code, Key, KeyAliases};
 use alloc::borrow::ToOwned;
@@ -19,9 +19,10 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
             let prefix = *prefix;
             handle_normal_key(ed, prefix, key, fx)
         }
-        Mode::Confirm(question) => {
-            let question = question.clone();
-            answer(ed, question, key, fx)
+        Mode::Confirm { kind, text } => {
+            let kind = kind.clone();
+            let text = text.clone();
+            answer(ed, kind, &text, key, fx)
         }
         Mode::Isearch(_) => commands::isearch_key(ed, key, fx),
         Mode::QueryReplace(_) => (commands::query_key(ed, key), fx),
@@ -50,16 +51,16 @@ pub fn answer_char(aliases: &KeyAliases, key: Key) -> Option<char> {
 /// Answers a yes-or-no question. `y` confirms; `n`, `C-g`, and `Esc` cancel. Any other key
 /// leaves the question open and repeats it (I-46).
 #[must_use]
-pub fn answer(mut ed: Editor, question: Question, key: Key, fx: Effects) -> (Editor, Effects) {
+pub fn answer(mut ed: Editor, kind: Confirm, text: &str, key: Key, fx: Effects) -> (Editor, Effects) {
     let choice = answer_char(ed.key_aliases(), key);
     if choice == Some('y') {
         ed = ed.set_mode(Mode::normal());
-        return commands::confirmed(ed, question.kind, fx);
+        return commands::confirmed(ed, kind, fx);
     }
-    ed = if choice == Some('n') || key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
+    ed = if choice == Some('n') || key.is_cancel() {
         ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE)
     } else {
-        ed.set_message(format!("Please answer y or n. {}", question.text))
+        ed.set_message(format!("Please answer y or n. {text}"))
     };
     (ed, fx)
 }
@@ -137,7 +138,7 @@ pub fn run_named(ed: Editor, name: &str, mut fx: Effects) -> (Editor, Effects) {
         ed
     };
     if let Some(run) = commands::find(name) {
-        command(ed, fx, |e, fx| run.run(e, fx))
+        command(ed, fx, run)
     } else {
         let ed = ed.begin_command();
         fx.push(Effect::RunLua {
@@ -211,7 +212,7 @@ mod tests {
         assert_eq!(text(&ed), "x", "aliased ㅜ cancels");
         assert_eq!(ed.message(), "Quit");
         let ed = press(asking(), Key::plain(Code::Char('ㅛ')));
-        assert!(matches!(ed.mode(), Mode::Confirm(_)), "no alias, no answer");
+        assert!(matches!(ed.mode(), Mode::Confirm { .. }), "no alias, no answer");
     }
 
     #[test]
@@ -299,7 +300,7 @@ mod tests {
     fn other_keys_keep_the_question_and_say_so() {
         for key in [Key::plain(Code::Enter), Key::plain(Code::Char('x'))] {
             let ed = press(asking(), key);
-            assert!(matches!(ed.mode(), Mode::Confirm(_)));
+            assert!(matches!(ed.mode(), Mode::Confirm { .. }));
             assert_eq!(ed.message(), "Please answer y or n. Kill? (y or n)");
             // A second wrong key does not stack the hint.
             let ed = press(ed, Key::plain(Code::Char('z')));

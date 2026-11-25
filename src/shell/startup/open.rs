@@ -37,20 +37,6 @@ pub fn restore_scratch(ed: Editor) -> Editor {
     ed.append_message(note)
 }
 
-/// Opens one file in the background. Its notice (recovered, stale WAL, refused, unreadable) is
-/// left in the echo area.
-fn open_one(ed: Editor, lua: Option<&mlua::Lua>, arg: &FileArg) -> Editor {
-    let Some(raw_path) = arg.path.to_str() else {
-        return ed.append_message(format!(
-            "Cannot open {}: path is not valid UTF-8",
-            arg.path.display()
-        ));
-    };
-    let path = ed.resolve_path(raw_path);
-    let fx = request_open(&ed, path.as_str(), arg.line, false, Vec::new());
-    perform_all(ed, lua, fx)
-}
-
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
 ///
 /// The notices of all files follow the earlier message (for example an `init.lua` error), joined
@@ -61,7 +47,17 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
     let mut notes = Vec::new();
 
     for f in files {
-        ed = open_one(ed.clear_message(), lua, f);
+        ed = ed.clear_message();
+        ed = if let Some(raw_path) = f.path.to_str() {
+            let path = ed.resolve_path(raw_path);
+            let fx = request_open(&ed, path.as_str(), f.line, false, Vec::new());
+            perform_all(ed, lua, fx)
+        } else {
+            ed.append_message(format!(
+                "Cannot open {}: path is not valid UTF-8",
+                f.path.display()
+            ))
+        };
         if !ed.message().is_empty() {
             notes.push(ed.message().to_owned());
         }
@@ -72,7 +68,7 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
         ed = ed.append_message(note);
     }
 
-    match ed.buffers().get(first_new).map(Buffer::id) {
+    match ed.buffers().iter().nth(first_new).map(Buffer::id) {
         Some(id) => switch_to(ed, id),
         None => ed,
     }

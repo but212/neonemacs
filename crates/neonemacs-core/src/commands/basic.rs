@@ -2,7 +2,7 @@
 
 use crate::editor::{Buffer, BufferId, Confirm, Dir, Editor, LastCommand, Window};
 use crate::effect::Effects;
-use crate::width::{column, pos_at_column};
+use crate::width::{column, pos_and_column};
 use crate::window::WindowManager;
 use crate::{Doc, line_end, line_start, line_to_offset, offset_to_line, total_lines};
 
@@ -63,7 +63,7 @@ fn vertical(ed: Editor, down: bool) -> Editor {
     } else {
         (line > 0).then(|| line_to_offset(text, line - 1).expect("line - 1 < total_lines"))
     };
-    let target_pos = target.map(|start| pos_at_column(text, start, goal, m));
+    let target_pos = target.map(|start| pos_and_column(text, start, goal, m).0);
     let ed = if let Some(pos) = target_pos {
         ed.move_point(pos)
     } else {
@@ -77,18 +77,12 @@ fn vertical(ed: Editor, down: bool) -> Editor {
     ed.set_last(LastCommand::Vertical { col: goal })
 }
 
-/// Start of the line `n` lines before the line holding `start`; stops at the first line.
-fn lines_back(text: &Doc, start: usize, n: usize) -> usize {
-    let b = text.floor_boundary(start.min(text.total_bytes()));
-    let line = offset_to_line(text, b).expect("floor_boundary is valid");
-    line_to_offset(text, line.saturating_sub(n)).expect("line < total_lines")
-}
-
 /// `recenter` (C-l): puts the line holding point on the middle row. Text and point are unchanged.
 pub(crate) fn recenter(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let half = ed.window().height / 2;
     let text = ed.buffer().text();
-    let top = lines_back(text, ed.window().point, half);
+    let line = crate::line_at(text, ed.window().point);
+    let top = line_to_offset(text, line.saturating_sub(half)).expect("line < total_lines");
     (ed.with_window(|w| Window { top, ..w }), fx)
 }
 
@@ -119,31 +113,40 @@ pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed.delete_only(p, end), fx)
 }
 
-pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
+fn with_region(
+    ed: Editor,
+    fx: Effects,
+    f: impl FnOnce(Editor, Effects, usize, usize) -> (Editor, Effects),
+) -> (Editor, Effects) {
     let Some((start, end)) = region(&ed) else {
         return (ed.set_message("The mark is not set now"), fx);
     };
-    if start >= end {
-        return (ed, fx);
-    }
-    let ed = ed.kill_range(start, end);
-    let ed = ed.with_current_buffer(|b| b.set_mark(None));
-    (ed, fx)
+    f(ed, fx, start, end)
+}
+
+pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    with_region(ed, fx, |ed, fx, start, end| {
+        if start >= end {
+            return (ed, fx);
+        }
+        let ed = ed.kill_range(start, end);
+        let ed = ed.with_current_buffer(|b| b.set_mark(None));
+        (ed, fx)
+    })
 }
 
 pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let Some((start, end)) = region(&ed) else {
-        return (ed.set_message("The mark is not set now"), fx);
-    };
-    let text = ed.buffer().text();
-    let start = text.floor_boundary(start);
-    let end = text.floor_boundary(end);
-    let doc = text.slice(start..end).unwrap_or_default();
-    let max = ed.config().kill_ring_max;
-    let ed = ed
-        .with_kill_ring(|kr| kr.push(doc, max))
-        .with_current_buffer(Buffer::deactivate_mark);
-    (ed, fx)
+    with_region(ed, fx, |ed, fx, start, end| {
+        let text = ed.buffer().text();
+        let start = text.floor_boundary(start);
+        let end = text.floor_boundary(end);
+        let doc = text.slice(start..end).unwrap_or_default();
+        let max = ed.config().kill_ring_max;
+        let ed = ed
+            .with_kill_ring(|kr| kr.push(doc, max))
+            .with_current_buffer(Buffer::deactivate_mark);
+        (ed, fx)
+    })
 }
 
 pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -204,14 +207,6 @@ pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
-pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (split(ed, Dir::Below), fx)
-}
-
-pub(crate) fn split_window_right(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (split(ed, Dir::Right), fx)
-}
-
 /// Replaces the selected leaf with a split of two windows that show the same buffer.
 pub(crate) fn split(ed: Editor, dir: Dir) -> Editor {
     ed.with_windows(|wm| wm.split(dir))
@@ -243,9 +238,14 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
     })
 }
 
+pub(crate) fn kill_buffer_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
+    fx.extend(ed.remove_wal_effect(id));
+    (ed.kill_buffer_id(id), fx)
+}
+
 /// Kills buffer `id`. A modified buffer asks first.
 #[must_use]
-pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
+pub fn kill_buffer(ed: Editor, id: BufferId, fx: Effects) -> (Editor, Effects) {
     if ed.buffer_by_id(id).modified() {
         (
             ed.confirm(
@@ -255,8 +255,7 @@ pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
             fx,
         )
     } else {
-        fx.extend(ed.remove_wal_effect(id));
-        (ed.kill_buffer_id(id), fx)
+        kill_buffer_now(ed, id, fx)
     }
 }
 
@@ -472,7 +471,7 @@ mod tests {
     #[test]
     fn windows_keep_independent_points() {
         let ed = typ(editor(), "abcd");
-        let ed = run_command(ed, split_window_below);
+        let ed = run_command(ed, |e, fx| (split(e, Dir::Below), fx));
         assert_eq!(ed.leaf_count(), 2);
         let ed = ed.with_window(|w| Window { point: 3, ..w });
         let ed = run_command(ed, other_window);
@@ -520,7 +519,7 @@ mod tests {
         let (ed, _) = kill_buffer(ed, other, Vec::new());
         assert!(matches!(
             ed.mode(),
-            Mode::Confirm(q) if matches!(q.kind, Confirm::KillModified(_))
+            Mode::Confirm { kind: Confirm::KillModified(_), .. }
         ));
         let ed = keys(ed, "n");
         assert_eq!(ed.buffers().len(), 2);

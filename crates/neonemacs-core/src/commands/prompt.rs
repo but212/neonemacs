@@ -30,7 +30,12 @@ pub fn completions(ed: &Editor, prefix: &str) -> Vec<(String, String)> {
         .iter()
         .map(|(n, _)| *n)
         .filter(|n| n.starts_with(prefix))
-        .chain(ed.commands().completions(prefix))
+        .chain(
+            ed.commands()
+                .iter()
+                .map(String::as_str)
+                .filter(|n| n.starts_with(prefix)),
+        )
         .collect();
 
     names
@@ -110,7 +115,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Prompt(mut p) = ed.mode().clone() else {
         return (ed, fx);
     };
-    if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
+    if key.is_cancel() {
         let ed = ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE);
         return (ed, fx);
     }

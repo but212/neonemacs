@@ -1,7 +1,7 @@
 //! Terminal input and mode management: converts a crossterm key event into the editor's `Key` (I-12)
 //! and restores raw mode/alternate screen on drop or panic (§13).
 
-use crate::core::{Code, Key, ctrl_key};
+use crate::core::{Code, Key};
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
@@ -53,7 +53,7 @@ impl Drop for TerminalGuard {
 pub const fn from_terminal(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     let meta = mods.contains(KeyModifiers::ALT);
     let key = match code {
-        KeyCode::Char(c) if mods.contains(KeyModifiers::CONTROL) => ctrl_key(c),
+        KeyCode::Char(c) if mods.contains(KeyModifiers::CONTROL) => Key::ctrl(c),
         KeyCode::Char(c) => Key::plain(Code::Char(c)),
         KeyCode::Enter => Key::plain(Code::Enter),
         KeyCode::Tab => Key::plain(Code::Tab),

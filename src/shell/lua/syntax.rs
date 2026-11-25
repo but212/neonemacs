@@ -26,16 +26,13 @@ pub(super) fn install_syntax_api<'lua, 'scope>(
 }
 
 fn parse_string_list(spec: &Table, key: &str) -> mlua::Result<Vec<String>> {
-    let mut list = Vec::new();
-    if let Ok(table) = spec.get::<Table>(key) {
-        for item in table.sequence_values::<String>() {
-            let s = item.map_err(|_| {
-                mlua::Error::RuntimeError(format!("{key} must be an array of strings"))
-            })?;
-            list.push(s);
-        }
-    }
-    Ok(list)
+    let Ok(table) = spec.get::<Table>(key) else {
+        return Ok(Vec::new());
+    };
+    table
+        .sequence_values::<String>()
+        .collect::<mlua::Result<Vec<_>>>()
+        .map_err(|_| mlua::Error::RuntimeError(format!("{key} must be an array of strings")))
 }
 
 fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
@@ -99,7 +96,8 @@ mod tests {
     }
 
     fn comment_in<'a>(reg: &'a SyntaxRegistry, file: &str) -> Option<&'a str> {
-        reg.line_comment_for_filename(file)
+        reg.find_by_filename(file)
+            .and_then(|d| d.line_comment.as_deref())
     }
 
     #[test]

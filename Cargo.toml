@@ -33,7 +33,6 @@ tempfile = "3"
 lto = true
 codegen-units = 1
 opt-level = "s"
-incremental = true
 panic = "abort"
 debug = "full"
 split-debuginfo = "packed"

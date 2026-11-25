@@ -161,12 +161,6 @@ impl SyntaxRegistry {
             .iter()
             .find(|l| l.extensions.iter().any(|e| e == ext))
     }
-
-    #[must_use]
-    pub fn line_comment_for_filename<'a>(&'a self, filename: &str) -> Option<&'a str> {
-        self.find_by_filename(filename)
-            .and_then(|d| d.line_comment.as_deref())
-    }
 }
 
 use core::ops::{ControlFlow, Range};
@@ -285,11 +279,7 @@ impl<'a> LineLexer<'a> {
         if let Some(prefix) = self.comment_bytes
             && self.bytes[self.pos..].starts_with(prefix)
         {
-            let pos = self.pos;
-            let slots = &mut self.out[pos..];
-            for slot in slots {
-                *slot = TokenKind::Comment;
-            }
+            self.out[self.pos..].fill(TokenKind::Comment);
             (self, true)
         } else {
             (self, false)
@@ -361,11 +351,7 @@ impl<'a> LineLexer<'a> {
             None
         };
         if let Some(kind) = target_kind {
-            let end = self.pos;
-            let slots = &mut self.out[start..end];
-            for slot in slots {
-                *slot = kind;
-            }
+            self.out[start..self.pos].fill(kind);
         }
         (self, true)
     }
@@ -402,7 +388,7 @@ const fn is_ident_start_byte(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
 
-const fn is_ident_byte(b: u8) -> bool {
+pub(crate) const fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 

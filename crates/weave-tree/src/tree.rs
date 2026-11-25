@@ -8,36 +8,46 @@ use crate::{
     ByteSlice, CHUNK_CAP, ChildEntry, MAX_FANOUT, MAX_SLICE_BYTES, MIN_FANOUT, SliceNode, Summary,
 };
 
-#[must_use]
-pub(crate) fn summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> ChildEntry<S> {
-    try_summarize_leaf(slices).expect("cannot allocate document leaf")
-}
-
-fn try_summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> Result<ChildEntry<S>, AllocError> {
-    let (bytes, backing_bytes, summary) = recompute_leaf_summary(&slices);
+fn try_summarize_node<T, S: Summary>(
+    items: Vec<T>,
+    metrics: impl Fn(&T) -> (usize, usize, &S),
+    wrap: impl FnOnce(Vec<T>) -> SliceNode<S>,
+) -> Result<ChildEntry<S>, AllocError> {
+    let (bytes, backing_bytes, summary) = recompute_summary(&items, metrics);
     Ok(ChildEntry {
-        node: Arc::try_new(SliceNode::Leaf { slices })?,
+        node: Arc::try_new(wrap(items))?,
         bytes,
         backing_bytes,
         summary,
     })
 }
 
-#[must_use]
-pub(crate) fn summarize_internal<S: Summary>(children: Vec<ChildEntry<S>>) -> ChildEntry<S> {
-    try_summarize_internal(children).expect("cannot allocate document node")
+fn try_summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> Result<ChildEntry<S>, AllocError> {
+    try_summarize_node(
+        slices,
+        |s| (s.range.len(), s.buf.len(), &s.summary),
+        |slices| SliceNode::Leaf { slices },
+    )
 }
 
 fn try_summarize_internal<S: Summary>(
     children: Vec<ChildEntry<S>>,
 ) -> Result<ChildEntry<S>, AllocError> {
-    let (bytes, backing_bytes, summary) = recompute_internal_summary(&children);
-    Ok(ChildEntry {
-        node: Arc::try_new(SliceNode::Internal { children })?,
-        bytes,
-        backing_bytes,
-        summary,
-    })
+    try_summarize_node(
+        children,
+        |c| (c.bytes, c.backing_bytes, &c.summary),
+        |children| SliceNode::Internal { children },
+    )
+}
+
+#[must_use]
+pub(crate) fn summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> ChildEntry<S> {
+    try_summarize_leaf(slices).expect("cannot allocate document leaf")
+}
+
+#[must_use]
+pub(crate) fn summarize_internal<S: Summary>(children: Vec<ChildEntry<S>>) -> ChildEntry<S> {
+    try_summarize_internal(children).expect("cannot allocate document node")
 }
 
 #[must_use]
@@ -126,22 +136,24 @@ fn merge_two_slices<S: Summary>(a: ByteSlice<S>, b: ByteSlice<S>) -> ByteSlice<S
     }
 }
 
-fn rightmost_slice<S: Summary>(entry: &ChildEntry<S>) -> &ByteSlice<S> {
+fn edge_slice<S: Summary>(entry: &ChildEntry<S>, from_right: bool) -> &ByteSlice<S> {
     let mut cur = entry;
     loop {
         match cur.node.as_ref() {
-            SliceNode::Leaf { slices } => return slices.last().expect("non-empty leaf"),
-            SliceNode::Internal { children } => cur = children.last().expect("non-empty internal"),
-        }
-    }
-}
-
-fn leftmost_slice<S: Summary>(entry: &ChildEntry<S>) -> &ByteSlice<S> {
-    let mut cur = entry;
-    loop {
-        match cur.node.as_ref() {
-            SliceNode::Leaf { slices } => return &slices[0],
-            SliceNode::Internal { children } => cur = &children[0],
+            SliceNode::Leaf { slices } => {
+                return if from_right {
+                    slices.last().expect("non-empty leaf")
+                } else {
+                    &slices[0]
+                };
+            }
+            SliceNode::Internal { children } => {
+                cur = if from_right {
+                    children.last().expect("non-empty internal")
+                } else {
+                    &children[0]
+                };
+            }
         }
     }
 }
@@ -153,130 +165,105 @@ fn child_len<S: Summary>(entry: &ChildEntry<S>) -> usize {
     }
 }
 
-fn rebalance_last_child<S: Summary>(
-    mut children: Vec<ChildEntry<S>>,
-    last: Option<ChildEntry<S>>,
+fn rebalance_pair<T: Clone, S: Summary>(
+    left: &[T],
+    right: &[T],
+    steal_from_left: bool,
+    summarize: fn(Vec<T>) -> ChildEntry<S>,
+    mut out: Vec<ChildEntry<S>>,
 ) -> Vec<ChildEntry<S>> {
-    let Some(last_entry) = last else {
-        return children;
-    };
-    if child_len(&last_entry) >= MIN_FANOUT || children.is_empty() {
-        children.push(last_entry);
-        return children;
+    if steal_from_left && left.len() > MIN_FANOUT {
+        let mut new_l = left.to_vec();
+        let mut new_r = Vec::with_capacity(right.len() + 1);
+        new_r.push(new_l.pop().expect("left > MIN_FANOUT"));
+        new_r.extend_from_slice(right);
+        out.push(summarize(new_l));
+        out.push(summarize(new_r));
+    } else if !steal_from_left && right.len() > MIN_FANOUT {
+        let mut new_l = left.to_vec();
+        let mut new_r = right.to_vec();
+        new_l.push(new_r.remove(0));
+        out.push(summarize(new_l));
+        out.push(summarize(new_r));
+    } else {
+        let mut merged = left.to_vec();
+        merged.extend_from_slice(right);
+        out.push(summarize(merged));
     }
-    let prev = children.pop().expect("non-empty children");
-    match (prev.node.as_ref(), last_entry.node.as_ref()) {
-        (SliceNode::Leaf { slices: p_slices }, SliceNode::Leaf { slices: l_slices }) => {
-            if p_slices.len() > MIN_FANOUT {
-                let mut new_p = p_slices.clone();
-                let mut new_l = Vec::with_capacity(l_slices.len() + 1);
-                new_l.push(new_p.pop().expect("p_slices > MIN_FANOUT"));
-                new_l.extend_from_slice(l_slices);
-                children.push(summarize_leaf(new_p));
-                children.push(summarize_leaf(new_l));
-            } else {
-                let mut merged = p_slices.clone();
-                merged.extend_from_slice(l_slices);
-                children.push(summarize_leaf(merged));
-            }
-        }
-        (SliceNode::Internal { children: p_ch }, SliceNode::Internal { children: l_ch }) => {
-            if p_ch.len() > MIN_FANOUT {
-                let mut new_p = p_ch.clone();
-                let mut new_l = Vec::with_capacity(l_ch.len() + 1);
-                new_l.push(new_p.pop().expect("p_ch > MIN_FANOUT"));
-                new_l.extend_from_slice(l_ch);
-                children.push(summarize_internal(new_p));
-                children.push(summarize_internal(new_l));
-            } else {
-                let mut merged = p_ch.clone();
-                merged.extend_from_slice(l_ch);
-                children.push(summarize_internal(merged));
-            }
-        }
-        _ => unreachable!("D-02 uniform leaf depth"),
-    }
-    children
-}
-
-fn rebalance_first_child<S: Summary>(
-    first: Option<ChildEntry<S>>,
-    mut children: Vec<ChildEntry<S>>,
-) -> Vec<ChildEntry<S>> {
-    let Some(first_entry) = first else {
-        return children;
-    };
-    if child_len(&first_entry) >= MIN_FANOUT || children.is_empty() {
-        let mut out = Vec::with_capacity(children.len() + 1);
-        out.push(first_entry);
-        out.extend(children);
-        return out;
-    }
-    let next = children.remove(0);
-    let mut out = Vec::with_capacity(children.len() + 2);
-    match (first_entry.node.as_ref(), next.node.as_ref()) {
-        (SliceNode::Leaf { slices: f_slices }, SliceNode::Leaf { slices: n_slices }) => {
-            if n_slices.len() > MIN_FANOUT {
-                let mut new_f = f_slices.clone();
-                let mut new_n = n_slices.clone();
-                new_f.push(new_n.remove(0));
-                out.push(summarize_leaf(new_f));
-                out.push(summarize_leaf(new_n));
-            } else {
-                let mut merged = f_slices.clone();
-                merged.extend_from_slice(n_slices);
-                out.push(summarize_leaf(merged));
-            }
-        }
-        (SliceNode::Internal { children: f_ch }, SliceNode::Internal { children: n_ch }) => {
-            if n_ch.len() > MIN_FANOUT {
-                let mut new_f = f_ch.clone();
-                let mut new_n = n_ch.clone();
-                new_f.push(new_n.remove(0));
-                out.push(summarize_internal(new_f));
-                out.push(summarize_internal(new_n));
-            } else {
-                let mut merged = f_ch.clone();
-                merged.extend_from_slice(n_ch);
-                out.push(summarize_internal(merged));
-            }
-        }
-        _ => unreachable!("D-02 uniform leaf depth"),
-    }
-    out.extend(children);
     out
 }
 
-fn pop_rightmost_slice<S: Summary>(entry: ChildEntry<S>) -> (Option<ChildEntry<S>>, ByteSlice<S>) {
-    match entry.node.as_ref() {
-        SliceNode::Leaf { slices } => {
-            let mut rest = slices.clone();
-            let last = rest.pop().expect("non-empty leaf");
-            (non_empty_leaf(rest), last)
+fn rebalance_adjacent<S: Summary>(
+    left: &ChildEntry<S>,
+    right: &ChildEntry<S>,
+    steal_from_left: bool,
+    out: Vec<ChildEntry<S>>,
+) -> Vec<ChildEntry<S>> {
+    match (left.node.as_ref(), right.node.as_ref()) {
+        (SliceNode::Leaf { slices: l }, SliceNode::Leaf { slices: r }) => {
+            rebalance_pair(l, r, steal_from_left, summarize_leaf, out)
         }
-        SliceNode::Internal { children } => {
-            let mut rest = children.clone();
-            let last = rest.pop().expect("non-empty internal");
-            let (new_last, popped) = pop_rightmost_slice(last);
-            let balanced = rebalance_last_child(rest, new_last);
-            (from_children_list(balanced), popped)
+        (SliceNode::Internal { children: l }, SliceNode::Internal { children: r }) => {
+            rebalance_pair(l, r, steal_from_left, summarize_internal, out)
         }
+        _ => unreachable!("D-02 uniform leaf depth"),
     }
 }
 
-fn pop_leftmost_slice<S: Summary>(entry: ChildEntry<S>) -> (ByteSlice<S>, Option<ChildEntry<S>>) {
+fn rebalance_edge_child<S: Summary>(
+    mut children: Vec<ChildEntry<S>>,
+    edge: Option<ChildEntry<S>>,
+    from_right: bool,
+) -> Vec<ChildEntry<S>> {
+    let Some(edge_entry) = edge else {
+        return children;
+    };
+    if child_len(&edge_entry) >= MIN_FANOUT || children.is_empty() {
+        if from_right {
+            children.push(edge_entry);
+            return children;
+        }
+        let mut out = Vec::with_capacity(children.len() + 1);
+        out.push(edge_entry);
+        out.extend(children);
+        return out;
+    }
+    if from_right {
+        let prev = children.pop().expect("non-empty children");
+        rebalance_adjacent(&prev, &edge_entry, true, children)
+    } else {
+        let next = children.remove(0);
+        let out = Vec::with_capacity(children.len() + 2);
+        let mut out = rebalance_adjacent(&edge_entry, &next, false, out);
+        out.extend(children);
+        out
+    }
+}
+
+fn pop_edge_slice<S: Summary>(
+    entry: ChildEntry<S>,
+    from_right: bool,
+) -> (Option<ChildEntry<S>>, ByteSlice<S>) {
     match entry.node.as_ref() {
         SliceNode::Leaf { slices } => {
             let mut rest = slices.clone();
-            let first = rest.remove(0);
-            (first, non_empty_leaf(rest))
+            let slice = if from_right {
+                rest.pop().expect("non-empty leaf")
+            } else {
+                rest.remove(0)
+            };
+            (non_empty_leaf(rest), slice)
         }
         SliceNode::Internal { children } => {
             let mut rest = children.clone();
-            let first = rest.remove(0);
-            let (popped, new_first) = pop_leftmost_slice(first);
-            let balanced = rebalance_first_child(new_first, rest);
-            (popped, from_children_list(balanced))
+            let child = if from_right {
+                rest.pop().expect("non-empty internal")
+            } else {
+                rest.remove(0)
+            };
+            let (new_edge, popped) = pop_edge_slice(child, from_right);
+            let balanced = rebalance_edge_child(rest, new_edge, from_right);
+            (from_children_list(balanced), popped)
         }
     }
 }
@@ -368,9 +355,9 @@ pub(crate) fn join<S: Summary>(
         (l, None) => return l,
         (None, r) => return r,
     };
-    if can_merge_slices(rightmost_slice(&l), leftmost_slice(&r)) {
-        let (l_rest, a) = pop_rightmost_slice(l);
-        let (b, r_rest) = pop_leftmost_slice(r);
+    if can_merge_slices(edge_slice(&l, true), edge_slice(&r, false)) {
+        let (l_rest, a) = pop_edge_slice(l, true);
+        let (r_rest, b) = pop_edge_slice(r, false);
         let merged = summarize_leaf(vec![merge_two_slices(a, b)]);
         return join_trees_raw(l_rest, join_trees_raw(Some(merged), r_rest));
     }
@@ -526,28 +513,75 @@ pub(crate) fn split_at<S: Summary>(
     )
 }
 
-fn recompute_leaf_summary<S: Summary>(slices: &[ByteSlice<S>]) -> (usize, usize, S) {
+fn recompute_summary<T, S: Summary>(
+    items: &[T],
+    metrics: impl Fn(&T) -> (usize, usize, &S),
+) -> (usize, usize, S) {
     let mut bytes = 0usize;
     let mut backing_bytes = 0usize;
     let mut summary = S::default();
-    for s in slices {
-        bytes += s.range.len();
-        backing_bytes = backing_bytes.saturating_add(s.buf.len());
-        summary = summary.combine(&s.summary);
+    for item in items {
+        let (b, bb, s) = metrics(item);
+        bytes += b;
+        backing_bytes = backing_bytes.saturating_add(bb);
+        summary = summary.combine(s);
     }
     (bytes, backing_bytes, summary)
 }
 
-fn recompute_internal_summary<S: Summary>(children: &[ChildEntry<S>]) -> (usize, usize, S) {
-    let mut bytes = 0usize;
-    let mut backing_bytes = 0usize;
-    let mut summary = S::default();
-    for c in children {
-        bytes += c.bytes;
-        backing_bytes = backing_bytes.saturating_add(c.backing_bytes);
-        summary = summary.combine(&c.summary);
+fn mutate_internal_child<S: Summary, R>(
+    mut entry: ChildEntry<S>,
+    offset: usize,
+    inclusive_end: bool,
+    f: impl FnOnce(ChildEntry<S>, usize) -> Result<(ChildEntry<S>, R), ChildEntry<S>>,
+) -> Result<(ChildEntry<S>, R), ChildEntry<S>> {
+    let Some(SliceNode::Internal { children }) = Arc::get_mut(&mut entry.node) else {
+        return Err(entry);
+    };
+    let mut acc = 0usize;
+    let mut target_idx = None;
+    for (idx, child) in children.iter().enumerate() {
+        let hit = if inclusive_end {
+            offset <= acc + child.bytes
+        } else {
+            offset < acc + child.bytes
+        };
+        if hit {
+            target_idx = Some(idx);
+            break;
+        }
+        acc += child.bytes;
     }
-    (bytes, backing_bytes, summary)
+    let Some(idx) = target_idx else {
+        return Err(entry);
+    };
+    let child = children.remove(idx);
+    match f(child, offset - acc) {
+        Ok((updated, out)) => {
+            children.insert(idx, updated);
+            let (total_bytes, total_backing, total_summary) =
+                recompute_summary(children, |c| (c.bytes, c.backing_bytes, &c.summary));
+            entry.bytes = total_bytes;
+            entry.backing_bytes = total_backing;
+            entry.summary = total_summary;
+            Ok((entry, out))
+        }
+        Err(orig) => {
+            children.insert(idx, orig);
+            Err(entry)
+        }
+    }
+}
+
+fn with_refreshed_leaf_entry<S: Summary>(mut entry: ChildEntry<S>) -> ChildEntry<S> {
+    if let SliceNode::Leaf { slices } = entry.node.as_ref() {
+        let (total_bytes, total_backing, total_summary) =
+            recompute_summary(slices, |s| (s.range.len(), s.buf.len(), &s.summary));
+        entry.bytes = total_bytes;
+        entry.backing_bytes = total_backing;
+        entry.summary = total_summary;
+    }
+    entry
 }
 
 pub(crate) fn try_insert_in_place<S: Summary>(
@@ -555,68 +589,35 @@ pub(crate) fn try_insert_in_place<S: Summary>(
     offset: usize,
     bytes: &[u8],
 ) -> Result<ChildEntry<S>, ChildEntry<S>> {
-    let Some(node) = Arc::get_mut(&mut entry.node) else {
+    if matches!(entry.node.as_ref(), SliceNode::Internal { .. }) {
+        return mutate_internal_child(entry, offset, true, |child, local_off| {
+            try_insert_in_place(child, local_off, bytes).map(|updated| (updated, ()))
+        })
+        .map(|(updated, ())| updated);
+    }
+    let Some(SliceNode::Leaf { slices }) = Arc::get_mut(&mut entry.node) else {
         return Err(entry);
     };
-    match node {
-        SliceNode::Leaf { slices } => {
-            let mut acc = 0usize;
-            for slice in slices.iter_mut() {
-                let len = slice.range.len();
-                if offset <= acc + len {
-                    let local = offset - acc;
-                    if local == len
-                        && len + bytes.len() <= MAX_SLICE_BYTES
-                        && let Some(buf) = Arc::get_mut(&mut slice.buf)
-                    {
-                        buf.truncate(slice.range.end);
-                        buf.extend_from_slice(bytes);
-                        slice.range.end += bytes.len();
-                        slice.summary = slice.summary.combine(&S::from_slice(bytes));
-                        let (total_bytes, total_backing, total_summary) =
-                            recompute_leaf_summary(slices);
-                        entry.bytes = total_bytes;
-                        entry.backing_bytes = total_backing;
-                        entry.summary = total_summary;
-                        return Ok(entry);
-                    }
-                    return Err(entry);
-                }
-                acc += len;
+    let mut acc = 0usize;
+    for slice in slices.iter_mut() {
+        let len = slice.range.len();
+        if offset <= acc + len {
+            let local = offset - acc;
+            if local == len
+                && len + bytes.len() <= MAX_SLICE_BYTES
+                && let Some(buf) = Arc::get_mut(&mut slice.buf)
+            {
+                buf.truncate(slice.range.end);
+                buf.extend_from_slice(bytes);
+                slice.range.end += bytes.len();
+                slice.summary = slice.summary.combine(&S::from_slice(bytes));
+                return Ok(with_refreshed_leaf_entry(entry));
             }
-            Err(entry)
+            return Err(entry);
         }
-        SliceNode::Internal { children } => {
-            let mut acc = 0usize;
-            let mut target_idx = None;
-            for (idx, child) in children.iter().enumerate() {
-                if offset <= acc + child.bytes {
-                    target_idx = Some(idx);
-                    break;
-                }
-                acc += child.bytes;
-            }
-            let Some(idx) = target_idx else {
-                return Err(entry);
-            };
-            let child = children.remove(idx);
-            match try_insert_in_place(child, offset - acc, bytes) {
-                Ok(updated) => {
-                    children.insert(idx, updated);
-                    let (total_bytes, total_backing, total_summary) =
-                        recompute_internal_summary(children);
-                    entry.bytes = total_bytes;
-                    entry.backing_bytes = total_backing;
-                    entry.summary = total_summary;
-                    Ok(entry)
-                }
-                Err(orig) => {
-                    children.insert(idx, orig);
-                    Err(entry)
-                }
-            }
-        }
+        acc += len;
     }
+    Err(entry)
 }
 
 pub(crate) fn try_delete_in_place<S: Summary>(
@@ -624,83 +625,43 @@ pub(crate) fn try_delete_in_place<S: Summary>(
     offset: usize,
     delete_len: usize,
 ) -> Result<(ChildEntry<S>, Vec<u8>), ChildEntry<S>> {
-    let Some(node) = Arc::get_mut(&mut entry.node) else {
+    if matches!(entry.node.as_ref(), SliceNode::Internal { .. }) {
+        return mutate_internal_child(entry, offset, false, |child, local_off| {
+            try_delete_in_place(child, local_off, delete_len)
+        });
+    }
+    let Some(SliceNode::Leaf { slices }) = Arc::get_mut(&mut entry.node) else {
         return Err(entry);
     };
-    match node {
-        SliceNode::Leaf { slices } => {
-            let mut acc = 0usize;
-            for slice in slices.iter_mut() {
-                let len = slice.range.len();
-                if offset < acc + len {
-                    let local_start = offset - acc;
-                    let local_end = local_start + delete_len;
-                    if local_end <= len
-                        && delete_len < len
-                        && (local_end == len || local_start == 0)
-                    {
-                        let abs_start = slice.range.start + local_start;
-                        let abs_end = slice.range.start + local_end;
-                        let deleted = slice.buf[abs_start..abs_end].to_vec();
-                        if local_end == len {
-                            let left_end = abs_start;
-                            let kept_range = slice.range.start..left_end;
-                            let (kept_s, _) =
-                                slice.summary.split_pair(&slice.buf[kept_range], &deleted);
-                            slice.range.end -= delete_len;
-                            if let Some(buf) = Arc::get_mut(&mut slice.buf) {
-                                buf.truncate(slice.range.end);
-                            }
-                            slice.summary = kept_s;
-                        } else {
-                            let kept_range = abs_end..slice.range.end;
-                            let (_, kept_s) =
-                                slice.summary.split_pair(&deleted, &slice.buf[kept_range]);
-                            slice.range.start += delete_len;
-                            slice.summary = kept_s;
-                        }
-                        let (total_bytes, total_backing, total_summary) =
-                            recompute_leaf_summary(slices);
-                        entry.bytes = total_bytes;
-                        entry.backing_bytes = total_backing;
-                        entry.summary = total_summary;
-                        return Ok((entry, deleted));
+    let mut acc = 0usize;
+    for slice in slices.iter_mut() {
+        let len = slice.range.len();
+        if offset < acc + len {
+            let local_start = offset - acc;
+            let local_end = local_start + delete_len;
+            if local_end <= len && delete_len < len && (local_end == len || local_start == 0) {
+                let abs_start = slice.range.start + local_start;
+                let abs_end = slice.range.start + local_end;
+                let deleted = slice.buf[abs_start..abs_end].to_vec();
+                if local_end == len {
+                    let kept_range = slice.range.start..abs_start;
+                    let (kept_s, _) = slice.summary.split_pair(&slice.buf[kept_range], &deleted);
+                    slice.range.end -= delete_len;
+                    if let Some(buf) = Arc::get_mut(&mut slice.buf) {
+                        buf.truncate(slice.range.end);
                     }
-                    return Err(entry);
+                    slice.summary = kept_s;
+                } else {
+                    let kept_range = abs_end..slice.range.end;
+                    let (_, kept_s) = slice.summary.split_pair(&deleted, &slice.buf[kept_range]);
+                    slice.range.start += delete_len;
+                    slice.summary = kept_s;
                 }
-                acc += len;
+                return Ok((with_refreshed_leaf_entry(entry), deleted));
             }
-            Err(entry)
+            return Err(entry);
         }
-        SliceNode::Internal { children } => {
-            let mut acc = 0usize;
-            let mut target_idx = None;
-            for (idx, child) in children.iter().enumerate() {
-                if offset < acc + child.bytes {
-                    target_idx = Some(idx);
-                    break;
-                }
-                acc += child.bytes;
-            }
-            let Some(idx) = target_idx else {
-                return Err(entry);
-            };
-            let child = children.remove(idx);
-            match try_delete_in_place(child, offset - acc, delete_len) {
-                Ok((updated, deleted)) => {
-                    children.insert(idx, updated);
-                    let (total_bytes, total_backing, total_summary) =
-                        recompute_internal_summary(children);
-                    entry.bytes = total_bytes;
-                    entry.backing_bytes = total_backing;
-                    entry.summary = total_summary;
-                    Ok((entry, deleted))
-                }
-                Err(orig) => {
-                    children.insert(idx, orig);
-                    Err(entry)
-                }
-            }
-        }
+        acc += len;
     }
+    Err(entry)
 }

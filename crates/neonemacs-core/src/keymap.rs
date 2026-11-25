@@ -41,7 +41,31 @@ impl Key {
 
     #[must_use]
     pub const fn ctrl(c: char) -> Self {
-        ctrl_key(c)
+        let code = match c.to_ascii_lowercase() {
+            '_' | '/' | '7' => Code::Char('_'),
+            other => Code::Char(other),
+        };
+        Self {
+            code,
+            ctrl: true,
+            meta: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_cancel(self) -> bool {
+        matches!(
+            self,
+            Self {
+                code: Code::Char('g'),
+                ctrl: true,
+                meta: false
+            } | Self {
+                code: Code::Esc,
+                ctrl: false,
+                meta: false
+            }
+        )
     }
 
     #[must_use]
@@ -85,19 +109,6 @@ impl Key {
             Code::End => "end",
         });
         s
-    }
-}
-
-#[must_use]
-pub const fn ctrl_key(c: char) -> Key {
-    let code = match c.to_ascii_lowercase() {
-        '_' | '/' | '7' => Code::Char('_'),
-        other => Code::Char(other),
-    };
-    Key {
-        code,
-        ctrl: true,
-        meta: false,
     }
 }
 
@@ -168,11 +179,23 @@ fn parse_key(tok: &str) -> Result<Key, String> {
         },
     };
     let key = match (code, ctrl) {
-        (Code::Char(c), true) => ctrl_key(c),
+        (Code::Char(c), true) => make_key(c, true, meta),
         (_, true) => return Err(format!("C- cannot apply to: {tok}")),
-        (_, false) => Key::plain(code),
+        (_, false) => {
+            let base = Key::plain(code);
+            if meta { base.with_meta() } else { base }
+        }
     };
-    Ok(if meta { key.with_meta() } else { key })
+    Ok(key)
+}
+
+fn make_key(c: char, ctrl: bool, meta: bool) -> Key {
+    let base = if ctrl {
+        Key::ctrl(c)
+    } else {
+        Key::plain(Code::Char(c))
+    };
+    if meta { base.with_meta() } else { base }
 }
 
 /// One ASCII graphic character (`!`..=`~`): what a key alias stands for (I-48).
@@ -232,12 +255,7 @@ impl KeyAliases {
             return None;
         };
         let to = self.get(c)?;
-        let base = if key.ctrl {
-            ctrl_key(to)
-        } else {
-            Key::plain(Code::Char(to))
-        };
-        Some(if key.meta { base.with_meta() } else { base })
+        Some(make_key(to, key.ctrl, key.meta))
     }
 }
 

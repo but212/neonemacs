@@ -1,7 +1,9 @@
 //! Buffer backing, and the buffer that a file read produces. Pure: the bytes come from the shell.
 
 use crate::Doc;
-use crate::eol::{Eol, EolStreamDecoder};
+use crate::eol::Eol;
+#[cfg(test)]
+use crate::eol::EolStreamDecoder;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -93,12 +95,7 @@ impl FilePath {
         if has_root {
             out.push('/');
         }
-        for (i, seg) in segments.iter().enumerate() {
-            if i > 0 {
-                out.push('/');
-            }
-            out.push_str(seg);
-        }
+        out.push_str(&segments.join("/"));
         Self(out)
     }
 
@@ -117,13 +114,6 @@ pub(crate) fn file_name(path: &str) -> Option<&str> {
         .filter(|&s| s != "." && s != "..")
 }
 
-/// What a file read found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Read {
-    Missing,
-    Found(RawFile),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawFile {
     /// Length on disk, which can exceed `doc.total_bytes()`.
@@ -136,6 +126,7 @@ pub struct RawFile {
 }
 
 impl RawFile {
+    #[cfg(test)]
     #[must_use]
     pub fn from_bytes(len: u64, disk: DiskState, raw: &[u8]) -> Self {
         let (doc, eol) = EolStreamDecoder::new().push_chunk(raw).finish();
@@ -242,47 +233,29 @@ pub struct Loaded {
     pub eol: Eol,
 }
 
-/// A file longer than `max-file-size`. It is refused, never loaded in part (I-04).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TooLarge {
-    pub len: u64,
-    pub max: u64,
-}
-
-impl TooLarge {
-    /// The echo-area message for a refused file.
-    #[must_use]
-    pub fn message(self) -> String {
-        format!(
-            "File too large: {} bytes (max-file-size {})",
-            self.len, self.max
-        )
-    }
-}
-
 /// Builds the buffer for a file read. A file longer than `max_size` is refused (I-04).
 /// A missing file is an empty buffer with unknown disk state.
 ///
 /// # Errors
-/// Returns `TooLarge` if the raw file length exceeds `max_size`.
+/// Returns an echo-area message if the raw file length exceeds `max_size`.
 pub fn loaded_from(
     path: &FilePath,
-    read: Read,
+    read: Option<RawFile>,
     max_size: u64,
     default_eol: Eol,
-) -> Result<Loaded, TooLarge> {
+) -> Result<Loaded, String> {
     match read {
-        Read::Missing => Ok(Loaded {
+        None => Ok(Loaded {
             text: Doc::default(),
             backing: Backing::file(path.clone(), DiskState::Unknown),
             eol: default_eol,
         }),
-        Read::Found(raw) => {
+        Some(raw) => {
             if raw.len > max_size {
-                return Err(TooLarge {
-                    len: raw.len,
-                    max: max_size,
-                });
+                return Err(format!(
+                    "File too large: {} bytes (max-file-size {})",
+                    raw.len, max_size
+                ));
             }
             let eol = raw.eol.unwrap_or(default_eol);
             Ok(Loaded {
@@ -300,11 +273,11 @@ mod tests {
 
     use super::*;
 
-    fn found(len: u64, bytes: &[u8]) -> Read {
-        Read::Found(RawFile::from_bytes(len, DiskState::Unknown, bytes))
+    fn found(len: u64, bytes: &[u8]) -> Option<RawFile> {
+        Some(RawFile::from_bytes(len, DiskState::Unknown, bytes))
     }
 
-    fn load(read: Read, max_size: u64) -> Loaded {
+    fn load(read: Option<RawFile>, max_size: u64) -> Loaded {
         loaded_from(&FilePath::resolve("", "f"), read, max_size, Eol::Lf).unwrap()
     }
 
@@ -366,10 +339,10 @@ mod tests {
     #[test]
     fn missing_file_uses_default_eol_and_unknown_disk_state() {
         let path = FilePath::resolve("", "new.txt");
-        let crlf = loaded_from(&path, Read::Missing, 4, Eol::Crlf).unwrap();
+        let crlf = loaded_from(&path, None, 4, Eol::Crlf).unwrap();
         assert_eq!(crlf.eol, Eol::Crlf);
 
-        let loaded = load(Read::Missing, 1 << 20);
+        let loaded = load(None, 1 << 20);
         assert_eq!(loaded.eol, Eol::Lf);
         assert_eq!(loaded.text.total_bytes(), 0);
         assert!(matches!(
@@ -385,19 +358,16 @@ mod tests {
     fn oversized_file_is_refused() {
         let big = FilePath::resolve("", "big.txt");
         let err = loaded_from(&big, found(10, b"0123"), 4, Eol::Lf).err();
-        assert_eq!(err, Some(TooLarge { len: 10, max: 4 }));
+        assert_eq!(
+            err.as_deref(),
+            Some("File too large: 10 bytes (max-file-size 4)")
+        );
     }
 
     #[test]
     fn file_at_size_limit_is_loaded_whole() {
         let loaded = load(found(4, b"0123"), 4);
         assert_eq!(loaded.text, Doc::from_bytes(b"0123"));
-    }
-
-    #[test]
-    fn too_large_message_names_the_limit() {
-        let err = TooLarge { len: 10, max: 4 };
-        assert_eq!(err.message(), "File too large: 10 bytes (max-file-size 4)");
     }
 
     #[test]
@@ -423,7 +393,7 @@ mod tests {
             mtime: Duration::ZERO,
             size: 3,
         };
-        let read = Read::Found(RawFile::from_bytes(3, disk, b"a\r\n"));
+        let read = Some(RawFile::from_bytes(3, disk, b"a\r\n"));
         let loaded = load(read, 1 << 20);
         assert_eq!(loaded.text.total_bytes(), 2);
         assert!(matches!(

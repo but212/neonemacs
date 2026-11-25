@@ -4,26 +4,25 @@ mod screen;
 #[cfg(test)]
 mod tests;
 
-use screen::Screen;
-
 use crate::core::CANCEL_MESSAGE;
 use crate::core::effect::{Event as CoreEvent, InitLoad};
+use crate::core::render::Cell;
 use crate::core::step;
 use crate::core::{Editor, Mode};
 use crate::shell::startup::{InitSource, configure, init_source};
 use crate::shell::terminal::from_terminal;
 use crate::shell::{
-    BUSY_NOTICE, RUNNING, ShellOutcome, ShellTask, handle, handle_interactive, perform_all,
+    BUSY_NOTICE, RUNNING, ShellOutcome, handle, handle_interactive, perform_all,
 };
 use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use mlua::Lua;
 use std::io::{self, Write};
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{self, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// State of an active background shell command.
 pub struct ActiveShell {
-    pub task: ShellTask,
+    pub task: mpsc::Receiver<Result<String, String>>,
     pub(super) tick: usize,
     /// Set when a second command was refused because this one is still running.
     already_running: bool,
@@ -33,7 +32,7 @@ pub struct ActiveShell {
 
 impl ActiveShell {
     #[must_use]
-    pub fn new(task: ShellTask) -> Self {
+    pub fn new(task: mpsc::Receiver<Result<String, String>>) -> Self {
         Self {
             task,
             tick: 0,
@@ -45,7 +44,7 @@ impl ActiveShell {
     /// Records that a second command was refused. The refusal left its own message (I-24).
     pub fn set_already_running(&mut self) {
         self.already_running = true;
-        self.shown = format!("{RUNNING} {BUSY_NOTICE}");
+        self.shown = crate::shell::BUSY_MESSAGE.to_owned();
     }
 
     /// The command's result, once it has one. A worker that vanished without a result is an error.
@@ -92,7 +91,8 @@ pub struct ShellSession {
     /// When the core is told that input has been idle: one second after the last edit that left
     /// unsaved text, or after a failed flush. `None` when no WAL is due (I-23).
     wal_deadline: Option<Instant>,
-    screen: Screen,
+    prev_rows: Vec<Vec<Cell>>,
+    screen_size: (usize, usize),
 }
 
 pub(super) fn update_editor(slot: &mut Editor, f: impl FnOnce(Editor) -> Editor) {
@@ -109,7 +109,8 @@ impl ShellSession {
             lua,
             active_shell: None,
             wal_deadline: None,
-            screen: Screen::default(),
+            prev_rows: Vec::new(),
+            screen_size: (0, 0),
         }
     }
 
@@ -123,10 +124,10 @@ impl ShellSession {
                 *lua_slot = lua;
                 (ed.adopt_settings(fresh), load)
             }
-            Ok((_, _, load @ InitLoad::Rejected(_))) => (ed, load),
+            Ok((_, _, load @ (InitLoad::Rejected(_) | InitLoad::Ignored))) => (ed, load),
             Err(e) => (ed, InitLoad::Rejected(e.to_string())),
         };
-        let (ed, fx) = step(ed, CoreEvent::InitLoaded(Some(load)));
+        let (ed, fx) = step(ed, CoreEvent::InitLoaded(load));
         self.ed = perform_all(ed, Some(&self.lua), fx);
     }
 
@@ -141,6 +142,11 @@ impl ShellSession {
             .iter()
             .any(crate::core::Buffer::is_wal_dirty)
     }
+    fn update_ed(&mut self, f: impl FnOnce(Editor, &Lua) -> Editor) {
+        let lua = &self.lua;
+        update_editor(&mut self.ed, |ed| f(ed, lua));
+    }
+
     /// Handles a terminal event (e.g. key press).
     pub fn handle_event(&mut self, event: &TermEvent) {
         self.handle_event_at(event, Instant::now());
@@ -155,8 +161,7 @@ impl ShellSession {
             let prev_seq = self.ed.edit_seq();
             let shell_busy = self.active_shell.is_some();
             let mut outcome = ShellOutcome::None;
-            let lua = &self.lua;
-            update_editor(&mut self.ed, |ed| {
+            self.update_ed(|ed, lua| {
                 let (new_ed, out) =
                     handle_interactive(ed, Some(lua), CoreEvent::Key(key), shell_busy);
                 outcome = out;
@@ -182,11 +187,6 @@ impl ShellSession {
         }
     }
 
-    /// Periodic tick for background tasks and idle WAL scheduling (I-23, I-24).
-    pub fn tick(&mut self) {
-        self.tick_at(Instant::now());
-    }
-
     /// Periodic tick at an explicit timestamp `now` (I-23, I-24).
     pub fn tick_at(&mut self, now: Instant) {
         // 1. Check background shell task (only in Normal mode so active Prompt/Isearch/QueryReplace
@@ -197,14 +197,11 @@ impl ShellSession {
             match active.poll() {
                 Some(result) => {
                     self.active_shell = None;
-                    let lua = &self.lua;
-                    update_editor(&mut self.ed, |ed| {
-                        handle(ed, Some(lua), CoreEvent::ShellDone(result))
-                    });
+                    self.update_ed(|ed, lua| handle(ed, Some(lua), CoreEvent::ShellDone(result)));
                 }
                 None if active.owns(self.ed.message()) => {
                     let status = active.format_status();
-                    update_editor(&mut self.ed, |ed| ed.set_message(status));
+                    self.update_ed(|ed, _| ed.set_message(status));
                 }
                 None => {}
             }
@@ -212,8 +209,7 @@ impl ShellSession {
 
         // 2. Idle WAL flush (1s after edit). The core decides what to write and what a failure shows.
         if self.wal_deadline.is_some_and(|due| now >= due) {
-            let lua = &self.lua;
-            update_editor(&mut self.ed, |ed| handle(ed, Some(lua), CoreEvent::Idle));
+            self.update_ed(|ed, lua| handle(ed, Some(lua), CoreEvent::Idle));
             // A buffer whose write failed stays dirty, so the flush is tried again after another second.
             self.wal_deadline = self.has_wal_dirty_file_buffer().then(|| now + WAL_IDLE);
         }
@@ -230,7 +226,7 @@ impl ShellSession {
                 return Ok(());
             }
 
-            self.tick();
+            self.tick_at(Instant::now());
 
             if event::poll(Duration::from_millis(50))? {
                 self.handle_event(&event::read()?);

@@ -12,9 +12,20 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
+/// Saves the current buffer. A file-backed buffer asks the shell for its disk state first
+/// (`StatDisk`); `disk_checked` then applies the external-change check (I-04).
+pub(crate) fn save_buffer(ed: Editor, mut fx: Effects) -> (Editor, Effects) {
     let id = ed.window().buffer;
-    save_buffer(ed, id, fx)
+    match ed.buffer_by_id(id).file_path() {
+        None => (ed.set_message("No file is visiting this buffer"), fx),
+        Some(path) => {
+            fx.push(Effect::StatDisk {
+                target: StatTarget::Save(id),
+                path: path.to_owned(),
+            });
+            (ed, fx)
+        }
+    }
 }
 
 pub(crate) fn save_buffers_kill_emacs(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -40,22 +51,6 @@ fn quit_question(names: &[&str]) -> String {
         let _ = write!(list, " +{}", names.len() - SHOWN);
     }
     format!("Modified: {list}; quit anyway? (y or n)")
-}
-
-/// Saves `id`. A file-backed buffer asks the shell for its disk state first (`StatDisk`);
-/// `disk_checked` then applies the external-change check (I-04).
-#[must_use]
-pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
-    match ed.buffer_by_id(id).file_path() {
-        None => (ed.set_message("No file is visiting this buffer"), fx),
-        Some(path) => {
-            fx.push(Effect::StatDisk {
-                target: StatTarget::Save(id),
-                path: path.to_owned(),
-            });
-            (ed, fx)
-        }
-    }
 }
 
 /// Applies the disk state the shell found for `path` (I-04).
@@ -127,11 +122,7 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
             }
             (ed.set_quit(true), fx)
         }
-        Confirm::KillModified(id) => {
-            let mut fx = fx;
-            fx.extend(ed.remove_wal_effect(id));
-            (ed.kill_buffer_id(id), fx)
-        }
+        Confirm::KillModified(id) => super::basic::kill_buffer_now(ed, id, fx),
         Confirm::RevertModified(id) => revert_now(ed, id, fx),
     }
 }
@@ -406,7 +397,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             ed.mode(),
-            crate::editor::Mode::Confirm(q) if q.kind == Confirm::OverwriteFile {
+            crate::editor::Mode::Confirm { kind, .. } if *kind == Confirm::OverwriteFile {
                 id,
                 path: "other.txt".to_owned()
             }
@@ -440,7 +431,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             changed.mode(),
-            crate::editor::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
+            crate::editor::Mode::Confirm { kind: Confirm::SaveExternal(_), .. }
         ));
     }
 
@@ -479,7 +470,7 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             asked.mode(),
-            crate::editor::Mode::Confirm(q) if matches!(q.kind, Confirm::SaveExternal(_))
+            crate::editor::Mode::Confirm { kind: Confirm::SaveExternal(_), .. }
         ));
 
         let (_, fx) = disk_checked(

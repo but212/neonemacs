@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use weave_tree::{LineBreakMetric, LineBreaks, WeaveTree};
+use weave_tree::{LineBreaks, WeaveTree};
 
 type Doc = WeaveTree<LineBreaks>;
 
@@ -247,15 +247,15 @@ fn bench_tree_and_lines(c: &mut Criterion) {
         );
     });
 
-    let mid_line = doc_1mb.total_metric::<LineBreakMetric>().div_ceil(2);
+    let mid_line = doc_1mb.total_metric().div_ceil(2);
     let mid_offset = doc_1mb
-        .metric_to_byte::<LineBreakMetric>(mid_line)
+        .metric_to_byte(mid_line)
         .expect("valid line");
 
     group.bench_function("line_to_offset_1mb", |b| {
         b.iter(|| {
             let off = doc_1mb
-                .metric_to_byte::<LineBreakMetric>(black_box(mid_line))
+                .metric_to_byte(black_box(mid_line))
                 .expect("valid line");
             black_box(off)
         });
@@ -264,7 +264,7 @@ fn bench_tree_and_lines(c: &mut Criterion) {
     group.bench_function("offset_to_line_1mb", |b| {
         b.iter(|| {
             let line = doc_1mb
-                .byte_to_metric::<LineBreakMetric>(black_box(mid_offset))
+                .byte_to_metric(black_box(mid_offset))
                 .expect("valid offset");
             black_box(line)
         });

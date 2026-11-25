@@ -11,7 +11,6 @@ use crate::file::Backing;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// Asks the shell to run `command`. The output comes back as `ShellDone`.
 pub(crate) fn run_shell(ed: &Editor, command: &str, mut fx: Effects) -> Effects {
@@ -32,13 +31,18 @@ pub fn shell_done(ed: Editor, result: Result<String, String>) -> Editor {
         Ok(output) => output,
         Err(e) => return ed.set_message(e),
     };
-    let text = output.replace("\r\n", "\n");
-    let trimmed = text.trim_end_matches('\n');
-    let lines: Vec<&str> = trimmed.lines().collect();
-    match lines.as_slice() {
-        [] => ed.set_message("(no output)"),
-        [only] => ed.set_message(*only),
-        _ => show_output(ed, trimmed),
+    let mut trimmed = output.as_str();
+    while let Some(s) = trimmed
+        .strip_suffix("\r\n")
+        .or_else(|| trimmed.strip_suffix('\n'))
+    {
+        trimmed = s;
+    }
+    let mut lines = trimmed.lines();
+    match (lines.next(), lines.next()) {
+        (None, _) => ed.set_message("(no output)"),
+        (Some(only), None) => ed.set_message(only),
+        (Some(_), Some(_)) => show_output(ed, &trimmed.replace("\r\n", "\n")),
     }
 }
 
@@ -48,14 +52,9 @@ fn fill_buffer(ed: Editor, id: BufferId, text: &str) -> Editor {
         .with_buffer(id, Buffer::mark_clean)
 }
 
-/// The buffer named `name` that the editor fills itself (`BufferPool::find_unbacked`).
-fn output_buffer(ed: &Editor, name: &str) -> Option<BufferId> {
-    ed.buffers().find_unbacked(name).map(Buffer::id)
-}
-
 /// Makes `text` the whole content of the buffer named `name`, which is created if it is missing.
 fn fill_named_buffer(ed: Editor, name: &str, text: &str) -> (Editor, BufferId) {
-    let (ed, id) = match output_buffer(&ed, name) {
+    let (ed, id) = match ed.buffers().find_unbacked(name).map(Buffer::id) {
         Some(id) => (ed, id),
         None => ed.add_buffer(name, Doc::default(), Backing::None),
     };
@@ -91,11 +90,6 @@ pub fn lua_done(ed: Editor, result: Result<(), String>) -> Editor {
 /// Holds the whole text of the last `init.lua` error. Open it with `switch-to-buffer`.
 const INIT_LOG: &str = "*init-log*";
 
-pub(crate) fn reload_init_cmd(ed: Editor, mut fx: Effects) -> (Editor, Effects) {
-    fx.push(Effect::ReloadInit);
-    (ed, fx)
-}
-
 /// Keeps the whole `text` of a rejected `init.lua` in `*init-log*`, without showing the buffer,
 /// and adds its first line to the echo area (I-55, I-56).
 #[must_use]
@@ -109,21 +103,21 @@ pub fn record_init_error(ed: Editor, text: &str) -> Editor {
 
 /// Empties `*init-log*` if it exists: the error it holds is no longer the current one.
 fn clear_init_log(ed: Editor) -> Editor {
-    match output_buffer(&ed, INIT_LOG) {
+    match ed.buffers().find_unbacked(INIT_LOG).map(Buffer::id) {
         Some(id) => fill_buffer(ed, id, ""),
         None => ed,
     }
 }
 
-/// Reports how `reload-init` ended. `None` means that the shell could not reload: the command
+/// Reports how `reload-init` ended. `Ignored` means that the shell could not reload: the command
 /// was run from Lua.
 #[must_use]
-pub fn init_loaded(ed: Editor, load: Option<InitLoad>) -> Editor {
+pub fn init_loaded(ed: Editor, load: InitLoad) -> Editor {
     match load {
-        Some(InitLoad::Applied) => clear_init_log(ed).set_message("Loaded init.lua"),
-        Some(InitLoad::Absent) => clear_init_log(ed).set_message("No init.lua"),
-        Some(InitLoad::Rejected(text)) => record_init_error(ed.clear_message(), &text),
-        None => ed.set_message("reload-init: not available from Lua"),
+        InitLoad::Applied => clear_init_log(ed).set_message("Loaded init.lua"),
+        InitLoad::Absent => clear_init_log(ed).set_message("No init.lua"),
+        InitLoad::Rejected(text) => record_init_error(ed.clear_message(), &text),
+        InitLoad::Ignored => ed.set_message("reload-init: not available from Lua"),
     }
 }
 
@@ -132,13 +126,16 @@ mod tests {
     use super::*;
     use crate::test_support::{editor, typ};
     use crate::window::Window;
+    use alloc::vec::Vec;
 
     #[test]
     fn the_effect_carries_the_configured_shell() {
         use crate::config::{Config, ShellSpec};
         let ed = crate::editor::Editor::new(Config {
-            shell_file_name: "pwsh".to_owned(),
-            shell_command_switch: "-Command".to_owned(),
+            shell: ShellSpec {
+                program: "pwsh".to_owned(),
+                switch: "-Command".to_owned(),
+            },
             ..Config::default()
         });
         let fx = run_shell(&ed, "echo hi", Vec::new());
@@ -277,11 +274,11 @@ traceback"
     fn init_loaded_reports_every_outcome() {
         let ed = init_loaded(
             editor().set_message("old"),
-            Some(InitLoad::Rejected(
+            InitLoad::Rejected(
                 "bad
 more"
                     .into(),
-            )),
+            ),
         );
         assert_eq!(ed.message(), "init.lua: bad");
         assert_eq!(
@@ -293,18 +290,18 @@ more"
             )
         );
 
-        let ok = init_loaded(ed.clone(), Some(InitLoad::Applied));
+        let ok = init_loaded(ed.clone(), InitLoad::Applied);
         assert_eq!(ok.message(), "Loaded init.lua");
         assert_eq!(init_log(&ok), Some(Vec::new()));
 
-        let none = init_loaded(ed, Some(InitLoad::Absent));
+        let none = init_loaded(ed, InitLoad::Absent);
         assert_eq!(none.message(), "No init.lua");
         assert_eq!(init_log(&none), Some(Vec::new()));
 
-        let fresh = init_loaded(editor(), Some(InitLoad::Applied));
+        let fresh = init_loaded(editor(), InitLoad::Applied);
         assert_eq!(init_log(&fresh), None);
 
-        let lua = init_loaded(editor(), None);
+        let lua = init_loaded(editor(), InitLoad::Ignored);
         assert_eq!(lua.message(), "reload-init: not available from Lua");
     }
 
@@ -320,7 +317,7 @@ more"
         let ed = ed.with_buffer(file, Buffer::mark_modified);
 
         let ed = record_init_error(ed, "bad");
-        let ed = init_loaded(ed, Some(InitLoad::Applied));
+        let ed = init_loaded(ed, InitLoad::Applied);
         let kept = ed.buffers().get_by_id(file);
         assert_eq!(*kept.text(), crate::Doc::from_bytes(b"mine"));
         assert!(kept.modified());
@@ -334,7 +331,8 @@ more"
 
     #[test]
     fn reload_init_asks_the_shell() {
-        let (_, fx) = reload_init_cmd(editor(), Vec::new());
+        let (_, fx) = crate::commands::find("reload-init")
+            .unwrap()(editor(), Vec::new());
         assert_eq!(fx, [Effect::ReloadInit]);
     }
 
