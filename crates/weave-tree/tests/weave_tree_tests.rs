@@ -1,8 +1,50 @@
 use proptest::prelude::*;
 use weave_tree::{
-    Cursor, DocError, LineBreakMetric, LineBreaks, MAX_SLICE_BYTES, Replace, Summary, Unit,
-    Utf16CodeUnits, Utf16Metric, WeaveTree, WeaveTreeBuilder,
+    Cursor, DocError, LineBreakMetric, LineBreaks, MAX_SLICE_BYTES, Replace, Slices, Summary, Unit,
+    Units, Utf16CodeUnits, Utf16Metric, WeaveTree, WeaveTreeBuilder,
 };
+
+fn collect_slices<S: Summary>(mut it: Slices<'_, S>) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let (next, Some(chunk)) = it.next() {
+        it = next;
+        out.extend_from_slice(chunk);
+    }
+    out
+}
+
+fn collect_slices_rev<S: Summary>(mut it: Slices<'_, S>) -> Vec<u8> {
+    let mut chunks = Vec::new();
+    while let (next, Some(chunk)) = it.next_back() {
+        it = next;
+        chunks.push(chunk);
+    }
+    chunks.reverse();
+    let mut out = Vec::new();
+    for chunk in chunks {
+        out.extend_from_slice(chunk);
+    }
+    out
+}
+
+fn collect_units<S: Summary>(mut it: Units<'_, S>) -> Vec<Unit> {
+    let mut out = Vec::new();
+    while let (next, Some(u)) = it.next() {
+        it = next;
+        out.push(u);
+    }
+    out
+}
+
+fn collect_units_rev<S: Summary>(mut it: Units<'_, S>) -> Vec<Unit> {
+    let mut out = Vec::new();
+    while let (next, Some(u)) = it.next_back() {
+        it = next;
+        out.push(u);
+    }
+    out.reverse();
+    out
+}
 
 #[test]
 fn unit_summary_and_utf16_metrics_work() {
@@ -51,25 +93,19 @@ fn cursor_and_iterators_traverse_multi_slice_tree() {
         .finish();
     tree.assert_invariants();
 
-    // Forward & reverse Slices iterator
-    let fwd_slices: Vec<u8> = tree.slices().flat_map(|s| s.iter().copied()).collect();
-    assert_eq!(fwd_slices, raw);
-
-    let mut rev_chunks: Vec<&[u8]> = tree.slices().rev().collect();
-    rev_chunks.reverse();
-    let rev_slices: Vec<u8> = rev_chunks
-        .into_iter()
-        .flat_map(|s| s.iter().copied())
-        .collect();
-    assert_eq!(rev_slices, raw);
+    // Forward & reverse Slices stream
+    assert_eq!(collect_slices(tree.slices()), raw);
+    assert_eq!(collect_slices_rev(tree.slices()), raw);
 
     // Double-ended Slices meeting in the middle
     let mut it = tree.slices();
     let mut left_acc = Vec::new();
     let mut right_acc = Vec::new();
-    while let Some(front) = it.next() {
+    while let (next, Some(front)) = it.next() {
         left_acc.extend_from_slice(front);
-        if let Some(back) = it.next_back() {
+        let (next, back) = next.next_back();
+        it = next;
+        if let Some(back) = back {
             right_acc.push(back.to_vec());
         }
     }
@@ -80,21 +116,22 @@ fn cursor_and_iterators_traverse_multi_slice_tree() {
     assert_eq!(left_acc, raw);
 
     // Units forward & reverse
-    let fwd_units: Vec<Unit> = tree.units().collect();
-    let mut rev_units: Vec<Unit> = tree.units().rev().collect();
-    rev_units.reverse();
+    let fwd_units = collect_units(tree.units());
+    let rev_units = collect_units_rev(tree.units());
     assert_eq!(fwd_units, rev_units);
     assert_eq!(fwd_units.last(), Some(&Unit::Raw(0xFF)));
 
     // Cursor seek_metric & prev_unit / next_unit
-    let mut cur = Cursor::new(&tree);
+    let cur = Cursor::new(&tree);
     let total_breaks = tree.total_metric::<LineBreakMetric>();
     assert!(total_breaks > 10);
-    cur.seek_metric::<LineBreakMetric>(5).unwrap();
+    let cur = cur.seek_metric::<LineBreakMetric>(5).unwrap();
     assert_eq!(cur.metric_offset::<LineBreakMetric>(), 5);
     let pos_5 = cur.byte_offset();
-    let u = cur.next_unit().unwrap();
-    assert_eq!(cur.prev_unit(), Some(u));
+    let (cur, u) = cur.next_unit();
+    let u = u.unwrap();
+    let (cur, prev_u) = cur.prev_unit();
+    assert_eq!(prev_u, Some(u));
     assert_eq!(cur.byte_offset(), pos_5);
 }
 
@@ -116,7 +153,7 @@ proptest! {
             next.assert_invariants();
             oracle.splice(off..off + del, ins.iter().copied());
 
-            let collected: Vec<u8> = next.slices().flat_map(|s| s.iter().copied()).collect();
+            let collected = collect_slices(next.slices());
             prop_assert_eq!(&collected, &oracle);
 
             // S-01: root summary equals from_slice on flattened bytes (no split_pair mismatch)
@@ -146,12 +183,11 @@ proptest! {
         let lo = tree.floor_boundary(a.min(b).min(tree.total_bytes()));
         let hi = tree.ceil_boundary(a.max(b).min(tree.total_bytes()));
 
-        let sub_bytes: Vec<u8> = tree.slices_range(lo..hi).unwrap().flat_map(|s| s.iter().copied()).collect();
+        let sub_bytes = collect_slices(tree.slices_range(lo..hi).unwrap());
         prop_assert_eq!(&sub_bytes, &data[lo..hi]);
 
-        let fwd: Vec<Unit> = tree.units_range(lo..hi).unwrap().collect();
-        let mut rev: Vec<Unit> = tree.units_range(lo..hi).unwrap().rev().collect();
-        rev.reverse();
+        let fwd = collect_units(tree.units_range(lo..hi).unwrap());
+        let rev = collect_units_rev(tree.units_range(lo..hi).unwrap());
         prop_assert_eq!(fwd, rev);
 
         // Replace<LineBreaks> smoke check

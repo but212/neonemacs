@@ -1,7 +1,6 @@
 //! Bidirectional B-Tree spine cursor and standard Rust iterators (`Slices`, `Units`).
 
 use alloc::vec::Vec;
-use core::iter::FusedIterator;
 use core::ops::Range;
 
 use crate::utf8::{decode_unit_raw, prev_in_slice};
@@ -37,26 +36,25 @@ impl<'a, S: Summary> Cursor<'a, S> {
     /// Creates a cursor positioned at byte offset `0`.
     #[must_use]
     pub fn new(tree: &'a WeaveTree<S>) -> Self {
-        let mut c = Self {
-            tree,
-            stack: Vec::new(),
-            byte_pos: 0,
+        let stack = match tree.root.as_ref() {
+            Some(root) => push_leftmost(Vec::new(), root, 0),
+            None => Vec::new(),
         };
-        if let Some(root) = tree.root.as_ref() {
-            push_leftmost(&mut c.stack, root, 0);
+        Self {
+            tree,
+            stack,
+            byte_pos: 0,
         }
-        c
     }
 
     /// Creates a cursor positioned at `byte_offset`, validating bounds and `Unit` boundary.
     pub fn at_byte(tree: &'a WeaveTree<S>, byte_offset: usize) -> Result<Self, DocError> {
-        let mut c = Self {
+        Self {
             tree,
             stack: Vec::new(),
             byte_pos: 0,
-        };
-        c.seek_byte(byte_offset)?;
-        Ok(c)
+        }
+        .seek_byte(byte_offset)
     }
 
     /// Creates a cursor positioned at `metric_offset` under `M`.
@@ -84,7 +82,7 @@ impl<'a, S: Summary> Cursor<'a, S> {
     }
 
     /// Moves the cursor to `byte_offset` in $O(\log P)$ time.
-    pub fn seek_byte(&mut self, byte_offset: usize) -> Result<(), DocError> {
+    pub fn seek_byte(mut self, byte_offset: usize) -> Result<Self, DocError> {
         let total = self.tree.total_bytes();
         if byte_offset > total {
             return Err(DocError::OutOfBounds {
@@ -101,17 +99,17 @@ impl<'a, S: Summary> Cursor<'a, S> {
         self.stack.clear();
         self.byte_pos = byte_offset;
         if byte_offset == total {
-            return Ok(());
+            return Ok(self);
         }
         let Some(root) = self.tree.root.as_ref() else {
-            return Ok(());
+            return Ok(self);
         };
-        descend_to_byte(&mut self.stack, root, 0, byte_offset);
-        Ok(())
+        self.stack = descend_to_byte(self.stack, root, 0, byte_offset);
+        Ok(self)
     }
 
     /// Moves the cursor to `metric_offset` under `M` in $O(\log P)$ time.
-    pub fn seek_metric<M: Metric<S>>(&mut self, metric_offset: usize) -> Result<(), DocError> {
+    pub fn seek_metric<M: Metric<S>>(self, metric_offset: usize) -> Result<Self, DocError> {
         let byte_offset = self.tree.metric_to_byte::<M>(metric_offset)?;
         self.seek_byte(byte_offset)
     }
@@ -133,7 +131,7 @@ impl<'a, S: Summary> Cursor<'a, S> {
     }
 
     /// Returns the remaining bytes in the current slice and advances to the start of the next slice.
-    pub fn next_slice(&mut self) -> Option<&'a [u8]> {
+    pub fn next_slice(mut self) -> (Self, Option<&'a [u8]>) {
         let Some(CursorFrame::Leaf {
             slices,
             idx,
@@ -141,7 +139,7 @@ impl<'a, S: Summary> Cursor<'a, S> {
             slice_base,
         }) = self.stack.last_mut()
         else {
-            return None;
+            return (self, None);
         };
         let slice = &slices[*idx];
         let rem = &slice.buf[slice.range.start + *in_slice..slice.range.end];
@@ -150,22 +148,24 @@ impl<'a, S: Summary> Cursor<'a, S> {
         *in_slice = 0;
         if *idx < slices.len() {
             *slice_base = self.byte_pos;
-            return Some(rem);
+            return (self, Some(rem));
         }
         self.stack.pop();
-        advance_internal_past(&mut self.stack);
-        Some(rem)
+        self.stack = advance_internal_past(self.stack);
+        (self, Some(rem))
     }
 
     /// Moves backward to the previous slice boundary (or start of the current slice if mid-slice)
     /// and returns the bytes traversed.
-    pub fn prev_slice(&mut self) -> Option<&'a [u8]> {
+    pub fn prev_slice(mut self) -> (Self, Option<&'a [u8]>) {
         if self.byte_pos == 0 {
-            return None;
+            return (self, None);
         }
         if self.stack.is_empty() {
-            let root = self.tree.root.as_ref()?;
-            push_rightmost(&mut self.stack, root, 0);
+            let Some(root) = self.tree.root.as_ref() else {
+                return (self, None);
+            };
+            self.stack = push_rightmost(self.stack, root, 0);
             if let Some(CursorFrame::Leaf {
                 slices,
                 idx,
@@ -176,9 +176,9 @@ impl<'a, S: Summary> Cursor<'a, S> {
                 let slice = &slices[*idx];
                 *in_slice = 0;
                 self.byte_pos = *slice_base;
-                return Some(&slice.buf[slice.range.clone()]);
+                return (self, Some(&slice.buf[slice.range.clone()]));
             }
-            return None;
+            return (self, None);
         }
 
         let Some(CursorFrame::Leaf {
@@ -188,14 +188,14 @@ impl<'a, S: Summary> Cursor<'a, S> {
             slice_base,
         }) = self.stack.last_mut()
         else {
-            return None;
+            return (self, None);
         };
         if *in_slice > 0 {
             let slice = &slices[*idx];
             let chunk = &slice.buf[slice.range.start..slice.range.start + *in_slice];
             *in_slice = 0;
             self.byte_pos = *slice_base;
-            return Some(chunk);
+            return (self, Some(chunk));
         }
         if *idx > 0 {
             *idx -= 1;
@@ -203,12 +203,14 @@ impl<'a, S: Summary> Cursor<'a, S> {
             *slice_base -= slice.range.len();
             *in_slice = 0;
             self.byte_pos = *slice_base;
-            return Some(&slice.buf[slice.range.clone()]);
+            return (self, Some(&slice.buf[slice.range.clone()]));
         }
         self.stack.pop();
-        if !retreat_internal_past(&mut self.stack) {
+        let (stack, ok) = retreat_internal_past(self.stack);
+        self.stack = stack;
+        if !ok {
             self.byte_pos = 0;
-            return None;
+            return (self, None);
         }
         if let Some(CursorFrame::Leaf {
             slices,
@@ -220,13 +222,13 @@ impl<'a, S: Summary> Cursor<'a, S> {
             let slice = &slices[*idx];
             *in_slice = 0;
             self.byte_pos = *slice_base;
-            return Some(&slice.buf[slice.range.clone()]);
+            return (self, Some(&slice.buf[slice.range.clone()]));
         }
-        None
+        (self, None)
     }
 
     /// Decodes and consumes the next [`Unit`] at the cursor, or `None` at EOF.
-    pub fn next_unit(&mut self) -> Option<Unit> {
+    pub fn next_unit(mut self) -> (Self, Option<Unit>) {
         let Some(CursorFrame::Leaf {
             slices,
             idx,
@@ -234,35 +236,39 @@ impl<'a, S: Summary> Cursor<'a, S> {
             slice_base,
         }) = self.stack.last_mut()
         else {
-            return None;
+            return (self, None);
         };
         let slice = &slices[*idx];
         let raw = &slice.buf[slice.range.clone()];
-        let (unit, len) = decode_unit_raw(raw, *in_slice)?;
+        let Some((unit, len)) = decode_unit_raw(raw, *in_slice) else {
+            return (self, None);
+        };
         *in_slice += len;
         self.byte_pos += len;
         if *in_slice < raw.len() {
-            return Some(unit);
+            return (self, Some(unit));
         }
         *idx += 1;
         *in_slice = 0;
         if *idx < slices.len() {
             *slice_base = self.byte_pos;
-            return Some(unit);
+            return (self, Some(unit));
         }
         self.stack.pop();
-        advance_internal_past(&mut self.stack);
-        Some(unit)
+        self.stack = advance_internal_past(self.stack);
+        (self, Some(unit))
     }
 
     /// Moves backward by one [`Unit`] and returns it, or `None` at byte `0`.
-    pub fn prev_unit(&mut self) -> Option<Unit> {
+    pub fn prev_unit(mut self) -> (Self, Option<Unit>) {
         if self.byte_pos == 0 {
-            return None;
+            return (self, None);
         }
         if self.stack.is_empty() {
-            let root = self.tree.root.as_ref()?;
-            push_rightmost(&mut self.stack, root, 0);
+            let Some(root) = self.tree.root.as_ref() else {
+                return (self, None);
+            };
+            self.stack = push_rightmost(self.stack, root, 0);
             if let Some(CursorFrame::Leaf {
                 slices,
                 idx,
@@ -275,8 +281,11 @@ impl<'a, S: Summary> Cursor<'a, S> {
         } else if let Some(CursorFrame::Leaf { in_slice, .. }) = self.stack.last()
             && *in_slice == 0
         {
-            let prev_len = self.step_to_prev_slice_end()?;
-            let _ = prev_len;
+            let (next_self, prev_len) = self.step_to_prev_slice_end();
+            self = next_self;
+            if prev_len.is_none() {
+                return (self, None);
+            }
         }
 
         let Some(CursorFrame::Leaf {
@@ -286,17 +295,19 @@ impl<'a, S: Summary> Cursor<'a, S> {
             ..
         }) = self.stack.last_mut()
         else {
-            return None;
+            return (self, None);
         };
         let raw = &slices[*idx].buf[slices[*idx].range.clone()];
         let prev = prev_in_slice(raw, *in_slice);
-        let (unit, len) = decode_unit_raw(raw, prev)?;
+        let Some((unit, len)) = decode_unit_raw(raw, prev) else {
+            return (self, None);
+        };
         *in_slice = prev;
         self.byte_pos -= len;
-        Some(unit)
+        (self, Some(unit))
     }
 
-    fn step_to_prev_slice_end(&mut self) -> Option<usize> {
+    fn step_to_prev_slice_end(mut self) -> (Self, Option<usize>) {
         let Some(CursorFrame::Leaf {
             slices,
             idx,
@@ -304,18 +315,20 @@ impl<'a, S: Summary> Cursor<'a, S> {
             slice_base,
         }) = self.stack.last_mut()
         else {
-            return None;
+            return (self, None);
         };
         if *idx > 0 {
             *idx -= 1;
             let len = slices[*idx].range.len();
             *slice_base -= len;
             *in_slice = len;
-            return Some(len);
+            return (self, Some(len));
         }
         self.stack.pop();
-        if !retreat_internal_past(&mut self.stack) {
-            return None;
+        let (stack, ok) = retreat_internal_past(self.stack);
+        self.stack = stack;
+        if !ok {
+            return (self, None);
         }
         if let Some(CursorFrame::Leaf {
             slices,
@@ -326,17 +339,17 @@ impl<'a, S: Summary> Cursor<'a, S> {
         {
             let len = slices[*idx].range.len();
             *in_slice = len;
-            return Some(len);
+            return (self, Some(len));
         }
-        None
+        (self, None)
     }
 }
 
 pub(crate) fn push_leftmost<'a, S: Summary>(
-    stack: &mut Vec<CursorFrame<'a, S>>,
+    mut stack: Vec<CursorFrame<'a, S>>,
     entry: &'a ChildEntry<S>,
     base: usize,
-) {
+) -> Vec<CursorFrame<'a, S>> {
     let mut cur = entry;
     let cur_base = base;
     loop {
@@ -356,17 +369,17 @@ pub(crate) fn push_leftmost<'a, S: Summary>(
                     in_slice: 0,
                     slice_base: cur_base,
                 });
-                return;
+                return stack;
             }
         }
     }
 }
 
 fn push_rightmost<'a, S: Summary>(
-    stack: &mut Vec<CursorFrame<'a, S>>,
+    mut stack: Vec<CursorFrame<'a, S>>,
     entry: &'a ChildEntry<S>,
     base: usize,
-) {
+) -> Vec<CursorFrame<'a, S>> {
     let mut cur = entry;
     let mut cur_base = base;
     loop {
@@ -391,18 +404,18 @@ fn push_rightmost<'a, S: Summary>(
                     in_slice: 0,
                     slice_base: last_base,
                 });
-                return;
+                return stack;
             }
         }
     }
 }
 
 fn descend_to_byte<'a, S: Summary>(
-    stack: &mut Vec<CursorFrame<'a, S>>,
+    mut stack: Vec<CursorFrame<'a, S>>,
     entry: &'a ChildEntry<S>,
     base: usize,
     offset: usize,
-) {
+) -> Vec<CursorFrame<'a, S>> {
     let mut cur = entry;
     let mut cur_base = base;
     let mut rem = offset - base;
@@ -433,7 +446,7 @@ fn descend_to_byte<'a, S: Summary>(
                             in_slice: rem,
                             slice_base: cur_base,
                         });
-                        return;
+                        return stack;
                     }
                     rem -= len;
                     cur_base += len;
@@ -444,7 +457,9 @@ fn descend_to_byte<'a, S: Summary>(
     }
 }
 
-pub(crate) fn advance_internal_past<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>) {
+pub(crate) fn advance_internal_past<S: Summary>(
+    mut stack: Vec<CursorFrame<'_, S>>,
+) -> Vec<CursorFrame<'_, S>> {
     while let Some(CursorFrame::Internal {
         children,
         idx,
@@ -457,14 +472,16 @@ pub(crate) fn advance_internal_past<S: Summary>(stack: &mut Vec<CursorFrame<'_, 
         if *idx < children.len() {
             let next = &children[*idx];
             let nb = *base;
-            push_leftmost(stack, next, nb);
-            return;
+            return push_leftmost(stack, next, nb);
         }
         stack.pop();
     }
+    stack
 }
 
-fn retreat_internal_past<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>) -> bool {
+fn retreat_internal_past<S: Summary>(
+    mut stack: Vec<CursorFrame<'_, S>>,
+) -> (Vec<CursorFrame<'_, S>>, bool) {
     while let Some(CursorFrame::Internal {
         children,
         idx,
@@ -477,15 +494,14 @@ fn retreat_internal_past<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>) -> boo
             *base -= b;
             let prev = &children[*idx];
             let pb = *base;
-            push_rightmost(stack, prev, pb);
-            return true;
+            return (push_rightmost(stack, prev, pb), true);
         }
         stack.pop();
     }
-    false
+    (stack, false)
 }
 
-/// Zero-copy bidirectional iterator over `&'a [u8]` chunks of a [`WeaveTree`].
+/// Zero-copy bidirectional value-passing stream over `&'a [u8]` chunks of a [`WeaveTree`].
 #[derive(Clone, Debug)]
 pub struct Slices<'a, S: Summary> {
     front: Cursor<'a, S>,
@@ -500,47 +516,51 @@ impl<'a, S: Summary> Slices<'a, S> {
             back: Cursor::at_byte(tree, range.end)?,
         })
     }
-}
 
-impl<'a, S: Summary> Iterator for Slices<'a, S> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Consumes and returns the next slice from the front, or `None` when exhausted.
+    #[must_use]
+    pub fn next(mut self) -> (Self, Option<&'a [u8]>) {
         let front_pos = self.front.byte_offset();
         let back_pos = self.back.byte_offset();
         if front_pos >= back_pos {
-            return None;
+            return (self, None);
         }
-        let chunk = self.front.next_slice()?;
+        let (next_front, chunk) = self.front.next_slice();
+        self.front = next_front;
+        let Some(chunk) = chunk else {
+            return (self, None);
+        };
         let avail = back_pos - front_pos;
         if chunk.len() > avail {
-            Some(&chunk[..avail])
+            (self, Some(&chunk[..avail]))
         } else {
-            Some(chunk)
+            (self, Some(chunk))
+        }
+    }
+
+    /// Consumes and returns the next slice from the back, or `None` when exhausted.
+    #[must_use]
+    pub fn next_back(mut self) -> (Self, Option<&'a [u8]>) {
+        let front_pos = self.front.byte_offset();
+        let back_pos = self.back.byte_offset();
+        if front_pos >= back_pos {
+            return (self, None);
+        }
+        let (next_back, chunk) = self.back.prev_slice();
+        self.back = next_back;
+        let Some(chunk) = chunk else {
+            return (self, None);
+        };
+        let avail = back_pos - front_pos;
+        if chunk.len() > avail {
+            (self, Some(&chunk[chunk.len() - avail..]))
+        } else {
+            (self, Some(chunk))
         }
     }
 }
 
-impl<S: Summary> DoubleEndedIterator for Slices<'_, S> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let front_pos = self.front.byte_offset();
-        let back_pos = self.back.byte_offset();
-        if front_pos >= back_pos {
-            return None;
-        }
-        let chunk = self.back.prev_slice()?;
-        let avail = back_pos - front_pos;
-        if chunk.len() > avail {
-            Some(&chunk[chunk.len() - avail..])
-        } else {
-            Some(chunk)
-        }
-    }
-}
-
-impl<S: Summary> FusedIterator for Slices<'_, S> {}
-
-/// Bidirectional iterator over [`Unit`]s (`Char(char)` or `Raw(u8)`) of a [`WeaveTree`].
+/// Bidirectional value-passing stream over [`Unit`]s (`Char(char)` or `Raw(u8)`) of a [`WeaveTree`].
 #[derive(Clone, Debug)]
 pub struct Units<'a, S: Summary> {
     front: Cursor<'a, S>,
@@ -555,26 +575,26 @@ impl<'a, S: Summary> Units<'a, S> {
             back: Cursor::at_byte(tree, range.end)?,
         })
     }
-}
 
-impl<S: Summary> Iterator for Units<'_, S> {
-    type Item = Unit;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Consumes and returns the next [`Unit`] from the front, or `None` when exhausted.
+    #[must_use]
+    pub fn next(mut self) -> (Self, Option<Unit>) {
         if self.front.byte_offset() >= self.back.byte_offset() {
-            return None;
+            return (self, None);
         }
-        self.front.next_unit()
+        let (next_front, unit) = self.front.next_unit();
+        self.front = next_front;
+        (self, unit)
+    }
+
+    /// Consumes and returns the next [`Unit`] from the back, or `None` when exhausted.
+    #[must_use]
+    pub fn next_back(mut self) -> (Self, Option<Unit>) {
+        if self.front.byte_offset() >= self.back.byte_offset() {
+            return (self, None);
+        }
+        let (next_back, unit) = self.back.prev_unit();
+        self.back = next_back;
+        (self, unit)
     }
 }
-
-impl<S: Summary> DoubleEndedIterator for Units<'_, S> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.front.byte_offset() >= self.back.byte_offset() {
-            return None;
-        }
-        self.back.prev_unit()
-    }
-}
-
-impl<S: Summary> FusedIterator for Units<'_, S> {}

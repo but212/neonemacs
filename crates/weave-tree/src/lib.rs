@@ -1078,7 +1078,10 @@ impl<S: Summary> PartialEq for WeaveTree<S> {
 
 impl<S: Summary> Eq for WeaveTree<S> {}
 
-fn advance_eq_cursor<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>, bytes_consumed: usize) {
+fn advance_eq_cursor<S: Summary>(
+    mut stack: Vec<CursorFrame<'_, S>>,
+    bytes_consumed: usize,
+) -> Vec<CursorFrame<'_, S>> {
     let Some(CursorFrame::Leaf {
         slices,
         idx,
@@ -1086,20 +1089,20 @@ fn advance_eq_cursor<S: Summary>(stack: &mut Vec<CursorFrame<'_, S>>, bytes_cons
         slice_base,
     }) = stack.last_mut()
     else {
-        return;
+        return stack;
     };
     *in_slice += bytes_consumed;
     if *in_slice < slices[*idx].range.len() {
-        return;
+        return stack;
     }
     *slice_base += slices[*idx].range.len();
     *idx += 1;
     *in_slice = 0;
     if *idx < slices.len() {
-        return;
+        return stack;
     }
     stack.pop();
-    advance_internal_past(stack);
+    advance_internal_past(stack)
 }
 
 fn can_skip_shared_subtree<S: Summary>(
@@ -1143,10 +1146,8 @@ fn can_skip_shared_subtree<S: Summary>(
 }
 
 fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
-    let mut sa = Vec::new();
-    let mut sb = Vec::new();
-    push_leftmost(&mut sa, a, 0);
-    push_leftmost(&mut sb, b, 0);
+    let mut sa = push_leftmost(Vec::new(), a, 0);
+    let mut sb = push_leftmost(Vec::new(), b, 0);
 
     loop {
         if sa.is_empty() && sb.is_empty() {
@@ -1158,8 +1159,8 @@ fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
         if can_skip_shared_subtree(&sa, &sb) {
             sa.pop();
             sb.pop();
-            advance_internal_past(&mut sa);
-            advance_internal_past(&mut sb);
+            sa = advance_internal_past(sa);
+            sb = advance_internal_past(sb);
             continue;
         }
         let (
@@ -1189,7 +1190,7 @@ fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
         if bytes_a != bytes_b {
             return false;
         }
-        advance_eq_cursor(&mut sa, take);
-        advance_eq_cursor(&mut sb, take);
+        sa = advance_eq_cursor(sa, take);
+        sb = advance_eq_cursor(sb, take);
     }
 }
