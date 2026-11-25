@@ -9,6 +9,10 @@ use crate::editor::{Buffer, BufferId, Dir, Editor, Purpose};
 use crate::effect::{Effect, Effects, InitLoad};
 use crate::file::Backing;
 use crate::weave_tree::Doc;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 pub(crate) fn shell_command_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx)
@@ -312,8 +316,7 @@ more"
     #[test]
     fn a_file_buffer_named_like_the_log_is_never_overwritten() {
         use crate::file::{DiskState, FilePath};
-        use std::path::Path;
-        let path = FilePath::resolve(Path::new(""), Path::new("*init-log*"));
+        let path = FilePath::resolve("", "*init-log*");
         let (ed, file) = editor().add_buffer(
             "*init-log*",
             Doc::from_bytes(b"mine"),

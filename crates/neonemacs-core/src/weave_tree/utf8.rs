@@ -1,5 +1,6 @@
 //! RFC 3629 UTF-8 unit decoding, local boundary queries, and seam-merge logic (D-01).
 
+use alloc::vec::Vec;
 use memchr::memchr_iter;
 use triomphe::{AllocError, Arc};
 
@@ -27,7 +28,7 @@ pub(crate) fn decode_unit_raw(bytes: &[u8], pos: usize) -> Option<(Unit, usize)>
     let Some(seq) = bytes.get(pos..end) else {
         return Some((Unit::Raw(b0), 1));
     };
-    let Ok(s) = std::str::from_utf8(seq) else {
+    let Ok(s) = core::str::from_utf8(seq) else {
         return Some((Unit::Raw(b0), 1));
     };
     let ch = s.chars().next().expect("non-empty valid utf-8");

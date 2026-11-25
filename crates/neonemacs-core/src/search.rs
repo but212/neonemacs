@@ -1,7 +1,12 @@
 //! Literal and mini-regex search over a `Doc` (§9). A match never crosses a
 //! newline (A11). Literal search is a pattern made only of literal atoms.
 
-use std::ops::{ControlFlow, Range};
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ops::{ControlFlow, Range};
 
 use crate::weave_tree::{CHUNK_CAP, Doc, Unit, decode_in_slice, decode_unit_raw, prev_in_slice};
 
@@ -134,8 +139,8 @@ impl Pattern {
 }
 
 fn parse_set(
-    mut chars: std::iter::Peekable<std::str::Chars>,
-) -> Result<(Class, std::iter::Peekable<std::str::Chars>), String> {
+    mut chars: core::iter::Peekable<core::str::Chars>,
+) -> Result<(Class, core::iter::Peekable<core::str::Chars>), String> {
     let negate = chars.peek() == Some(&'^');
     if negate {
         chars.next();
@@ -584,6 +589,8 @@ pub fn expand_replacement(replacement: &str, matched: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
     use super::*;
     use crate::weave_tree::MAX_SLICE_BYTES;
 

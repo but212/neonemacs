@@ -3,6 +3,9 @@
 
 use crate::editor::{Editor, Mode};
 use crate::effect::{Effect, Effects, WalEntry, WalWrite};
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// One idle second after an edit: asks the shell to write every dirty buffer that has a WAL.
 /// A dirty buffer without one (the scratch buffer with no slot) lives in memory only, so it is
@@ -24,7 +27,7 @@ pub fn idle(ed: Editor, mut fx: Effects) -> (Editor, Effects) {
     }
     let ed = memory_only
         .into_iter()
-        .fold(ed, super::super::editor::Editor::clear_wal_dirty);
+        .fold(ed, Editor::clear_wal_dirty);
     if !entries.is_empty() {
         fx.push(Effect::FlushWal { entries });
     }
@@ -41,7 +44,7 @@ pub fn wal_flushed(ed: Editor, writes: Vec<WalWrite>) -> Editor {
     for write in writes {
         match write.result {
             Ok(()) => ed = ed.clear_wal_dirty(write.id),
-            Err(e) => failures.push(format!("{}: {e}", write.target.path().display())),
+            Err(e) => failures.push(format!("{}: {e}", write.target.path())),
         }
     }
     match failures.split_first() {
@@ -59,18 +62,19 @@ pub fn wal_flushed(ed: Editor, writes: Vec<WalWrite>) -> Editor {
 
 #[cfg(test)]
 mod tests {
+    use alloc::borrow::ToOwned;
+    use alloc::vec;
+
     use super::*;
     use crate::effect::WalTarget;
     use crate::eol::Eol;
     use crate::file::DiskState;
     use crate::test_support::{editor, keys, keys_with_effects};
-    use std::path::PathBuf;
-
-    fn slot() -> PathBuf {
-        PathBuf::from("state/scratch.wal")
+    fn slot() -> String {
+        "state/scratch.wal".to_owned()
     }
 
-    fn typed_scratch(slot: Option<PathBuf>) -> Editor {
+    fn typed_scratch(slot: Option<String>) -> Editor {
         keys(editor().with_scratch_slot(slot), "x")
     }
 
@@ -135,7 +139,7 @@ mod tests {
         assert!(ed.buffer().is_wal_dirty());
         assert_eq!(
             ed.message(),
-            format!("WAL write failed: {}: disk full", slot().display())
+            format!("WAL write failed: {}: disk full", slot())
         );
     }
 
@@ -146,7 +150,7 @@ mod tests {
         let ed = wal_flushed(ed.clone(), vec![fail("a"), fail("b"), fail("c")]);
         assert_eq!(
             ed.message(),
-            format!("WAL write failed: {}: a (+2 more)", slot().display())
+            format!("WAL write failed: {}: a (+2 more)", slot())
         );
     }
 

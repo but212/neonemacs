@@ -1,6 +1,7 @@
 use crate::weave_tree::{Doc, DocBuilder};
+use alloc::vec::Vec;
+use core::ops::ControlFlow;
 use memchr::memchr_iter;
-use std::ops::ControlFlow;
 use triomphe::AllocError;
 
 /// End-of-line mode.

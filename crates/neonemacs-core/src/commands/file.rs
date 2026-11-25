@@ -6,8 +6,11 @@ use crate::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::effect::{Effect, Effects, StatTarget, WalTarget};
 use crate::file::{Backing, DiskState};
 use crate::undo::Edit;
-use std::fmt::Write;
-use std::path::{Path, PathBuf};
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt::Write;
 
 pub(crate) fn save_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
     let id = ed.window().buffer;
@@ -48,7 +51,7 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
         Some(path) => {
             fx.push(Effect::StatDisk {
                 target: StatTarget::Save(id),
-                path: path.to_path_buf(),
+                path: path.to_owned(),
             });
             (ed, fx)
         }
@@ -66,26 +69,26 @@ pub fn save_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 pub fn disk_checked(
     ed: Editor,
     target: StatTarget,
-    path: &Path,
+    path: &str,
     state: DiskState,
     fx: Effects,
 ) -> (Editor, Effects) {
     let id = target.id();
     let file = ed.resolve_path(path);
-    let own = ed.buffer_by_id(id).file_path() == Some(file.as_path());
+    let own = ed.buffer_by_id(id).file_path() == Some(file.as_str());
     if matches!(target, StatTarget::SaveAs(_)) && !own {
         if matches!(state, DiskState::Known { .. }) {
-            let message = format!("File {} exists; overwrite? (y or n)", path.display());
+            let message = format!("File {path} exists; overwrite? (y or n)");
             let ed = ed.confirm(
                 Confirm::OverwriteFile {
                     id,
-                    path: path.to_path_buf(),
+                    path: path.to_owned(),
                 },
                 message,
             );
             return (ed, fx);
         }
-        let fx = write_to(&ed, id, path.to_path_buf(), fx);
+        let fx = write_to(&ed, id, path.to_owned(), fx);
         return (ed, fx);
     }
     if ed.buffer_by_id(id).backing().disk() == state {
@@ -131,13 +134,13 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
 /// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-04).
 pub(crate) fn write_buffer(ed: &Editor, id: BufferId, fx: Effects) -> Effects {
     match ed.buffer_by_id(id).file_path() {
-        Some(path) => write_to(ed, id, path.to_path_buf(), fx),
+        Some(path) => write_to(ed, id, path.to_owned(), fx),
         None => fx,
     }
 }
 
 /// Asks the shell to write the buffer to `path`. The buffer's file changes only in `written` (I-36).
-fn write_to(_ed: &Editor, id: BufferId, path: PathBuf, mut fx: Effects) -> Effects {
+fn write_to(_ed: &Editor, id: BufferId, path: String, mut fx: Effects) -> Effects {
     fx.push(Effect::WriteFile { id, path });
     fx
 }
@@ -148,16 +151,16 @@ fn write_to(_ed: &Editor, id: BufferId, path: PathBuf, mut fx: Effects) -> Effec
 pub fn written(
     mut ed: Editor,
     id: BufferId,
-    path: &Path,
+    path: &str,
     result: Result<DiskState, String>,
     mut fx: Effects,
 ) -> (Editor, Effects) {
     let message = match result {
         Ok(new_disk) => {
             let file = ed.resolve_path(path);
-            if ed.buffer_by_id(id).file_path() != Some(file.as_path()) {
+            if ed.buffer_by_id(id).file_path() != Some(file.as_str()) {
                 fx.extend(ed.remove_wal_effect(id));
-                let name = name_of(file.as_path());
+                let name = name_of(file.as_str());
                 ed = ed.with_buffer(id, |b| {
                     b.set_name(name).set_backing(Backing::file(file, new_disk))
                 });
@@ -168,9 +171,9 @@ pub fn written(
                 b.record_saved(new_disk).track_wal_baseline(track)
             });
             fx.push(Effect::RemoveWal {
-                target: WalTarget::Sibling(path.to_path_buf()),
+                target: WalTarget::Sibling(path.to_owned()),
             });
-            format!("Wrote {}", path.display())
+            format!("Wrote {path}")
         }
         Err(e) => format!("Save failed: {e}"),
     };
@@ -183,23 +186,19 @@ pub(crate) fn write_file(ed: Editor, input: &str, mut fx: Effects) -> (Editor, E
         return (ed, fx);
     }
     let id = ed.window().buffer;
-    let path = ed.resolve_path(Path::new(input));
+    let path = ed.resolve_path(input);
     // Another buffer visits this path, so writing here would give two buffers one WAL (I-37).
     if let Some(other) = ed
         .buffers()
-        .find_by_path(path.as_path())
+        .find_by_path(path.as_str())
         .filter(|b| b.id() != id)
     {
-        let message = format!(
-            "Buffer {} is visiting {}",
-            other.name(),
-            path.as_path().display()
-        );
+        let message = format!("Buffer {} is visiting {}", other.name(), path.as_str());
         return (ed.set_message(message), fx);
     }
     fx.push(Effect::StatDisk {
         target: StatTarget::SaveAs(id),
-        path: path.as_path().to_path_buf(),
+        path: path.as_str().to_owned(),
     });
     (ed, fx)
 }
@@ -218,12 +217,13 @@ pub(crate) fn toggle_eol(ed: Editor, fx: Effects) -> (Editor, Effects) {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::eol::Eol;
     use crate::file::FilePath;
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
     use crate::weave_tree::Doc;
-    use std::path::Path;
 
     fn quit_message(names: &[&str]) -> String {
         let mut ed = editor();
@@ -320,10 +320,7 @@ mod tests {
         let (ed, _) = ed.add_buffer(
             "g.txt",
             Doc::from_bytes(b"x"),
-            Backing::file(
-                FilePath::resolve(Path::new(""), Path::new("g.txt")),
-                DiskState::Unknown,
-            ),
+            Backing::file(FilePath::resolve("", "g.txt"), DiskState::Unknown),
         );
         let before = ed.buffer().backing().clone();
 
@@ -339,10 +336,7 @@ mod tests {
         let (ed, _) = ed.add_buffer(
             "g.txt",
             Doc::from_bytes(b"x"),
-            Backing::file(
-                FilePath::resolve(Path::new(""), Path::new("g.txt")),
-                DiskState::Unknown,
-            ),
+            Backing::file(FilePath::resolve("", "g.txt"), DiskState::Unknown),
         );
 
         let (ed, fx) = write_file(ed, "sub/../g.txt", Vec::new());
@@ -366,7 +360,7 @@ mod tests {
         let (ed, fx) = written(
             ed,
             id,
-            &PathBuf::from("missing/b.txt"),
+            "missing/b.txt",
             Err("denied".to_owned()),
             Vec::new(),
         );
@@ -385,29 +379,27 @@ mod tests {
             panic!("expected StatDisk, got {fx:?}");
         };
         let (_, fx) = disk_checked(stat_ed, *target, path, DiskState::Unknown, Vec::new());
-        assert!(
-            matches!(fx.as_slice(), [Effect::WriteFile { path, .. }] if path == Path::new("b.txt"))
-        );
+        assert!(matches!(fx.as_slice(), [Effect::WriteFile { path, .. }] if path == "b.txt"));
 
         let disk = DiskState::Known {
-            mtime: std::time::UNIX_EPOCH,
+            mtime: core::time::Duration::ZERO,
             size: 3,
         };
-        let (ed, fx) = written(ed, id, &PathBuf::from("b.txt"), Ok(disk), Vec::new());
+        let (ed, fx) = written(ed, id, "b.txt", Ok(disk), Vec::new());
         assert_eq!(
             fx,
             vec![
                 Effect::RemoveWal {
-                    target: WalTarget::Sibling(PathBuf::from("f.txt"))
+                    target: WalTarget::Sibling("f.txt".to_owned())
                 },
                 Effect::RemoveWal {
-                    target: WalTarget::Sibling(PathBuf::from("b.txt"))
+                    target: WalTarget::Sibling("b.txt".to_owned())
                 },
             ]
         );
         assert_eq!(
             *ed.buffer().backing(),
-            Backing::file(FilePath::resolve(Path::new(""), Path::new("b.txt")), disk)
+            Backing::file(FilePath::resolve("", "b.txt"), disk)
         );
         assert_eq!(ed.buffer().name(), "b.txt");
         assert!(!ed.buffer().modified());
@@ -415,7 +407,7 @@ mod tests {
     }
 
     /// The `StatDisk` that `write_file` requests for `input`.
-    fn stat_for_write(ed: Editor, input: &str) -> (Editor, StatTarget, PathBuf) {
+    fn stat_for_write(ed: Editor, input: &str) -> (Editor, StatTarget, String) {
         let (ed, fx) = write_file(ed, input, Vec::new());
         let [Effect::StatDisk { target, path }] = fx.as_slice() else {
             panic!("expected StatDisk, got {fx:?}");
@@ -436,7 +428,7 @@ mod tests {
             ed.mode(),
             crate::editor::Mode::Confirm(q) if q.kind == Confirm::OverwriteFile {
                 id,
-                path: PathBuf::from("other.txt")
+                path: "other.txt".to_owned()
             }
         ));
         assert_eq!(ed.message(), "File other.txt exists; overwrite? (y or n)");
@@ -447,19 +439,14 @@ mod tests {
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let (ed, target, path) = stat_for_write(ed, "other.txt");
         let (_, fx) = disk_checked(ed, target, &path, DiskState::Unknown, Vec::new());
-        assert!(
-            matches!(fx.as_slice(), [Effect::WriteFile { path, .. }] if path == Path::new("other.txt"))
-        );
+        assert!(matches!(fx.as_slice(), [Effect::WriteFile { path, .. }] if path == "other.txt"));
     }
 
     #[test]
     fn write_file_to_own_path_uses_save_check() {
         // The buffer's file is f.txt with recorded state Known(3).
         let ed = file_buffer(editor(), b"abc", Eol::Lf).with_current_buffer(|b| {
-            b.set_backing(Backing::file(
-                FilePath::resolve(Path::new(""), Path::new("f.txt")),
-                known(3),
-            ))
+            b.set_backing(Backing::file(FilePath::resolve("", "f.txt"), known(3)))
         });
         let (ed, target, path) = stat_for_write(ed, "f.txt");
 
@@ -483,14 +470,14 @@ mod tests {
         let id = ed.window().buffer;
         let question = Confirm::OverwriteFile {
             id,
-            path: PathBuf::from("other.txt"),
+            path: "other.txt".to_owned(),
         };
         let (ed, fx) = confirmed(ed, question, Vec::new());
         assert_eq!(
             fx,
             vec![Effect::WriteFile {
                 id,
-                path: PathBuf::from("other.txt"),
+                path: "other.txt".to_owned(),
             }]
         );
         // Only `written` moves the buffer (I-36).
@@ -502,13 +489,7 @@ mod tests {
         // Opened as missing (Unknown); the file exists by the time of the save.
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let id = ed.window().buffer;
-        let (ed, fx) = disk_checked(
-            ed,
-            StatTarget::Save(id),
-            Path::new("f.txt"),
-            known(5),
-            Vec::new(),
-        );
+        let (ed, fx) = disk_checked(ed, StatTarget::Save(id), "f.txt", known(5), Vec::new());
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             ed.mode(),
@@ -523,7 +504,7 @@ mod tests {
         let (_, fx) = disk_checked(
             ed,
             StatTarget::Save(id),
-            Path::new("f.txt"),
+            "f.txt",
             DiskState::Unknown,
             Vec::new(),
         );

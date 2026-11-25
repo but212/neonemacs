@@ -6,6 +6,9 @@ use crate::config::Toggles;
 use crate::effect::Effects;
 use crate::undo::{Edit, RecordedEdit};
 use crate::width::column;
+use alloc::borrow::ToOwned;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 impl Editor {
     /// Applies `edit` to the buffer of the selected window. Returns the new editor and
@@ -221,6 +224,9 @@ fn remap(edit: &Edit, a: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+    use alloc::vec;
+
     use super::*;
     use crate::config::Config;
     use crate::keymap::{Code, Key};
@@ -346,11 +352,10 @@ mod tests {
     /// A file-backed buffer that was just saved with `saved` as its text.
     fn saved(saved: &str) -> Editor {
         use crate::file::{Backing, DiskState, FilePath};
-        use std::path::Path;
         Editor::new(Config::default()).with_current_buffer(|b| {
             b.with_text(Doc::from_bytes(saved.as_bytes()))
                 .set_backing(Backing::file(
-                    FilePath::resolve(Path::new(""), Path::new("f.txt")),
+                    FilePath::resolve("", "f.txt"),
                     DiskState::Unknown,
                 ))
                 .record_saved(DiskState::Unknown)
@@ -373,7 +378,7 @@ mod tests {
         assert_eq!(
             fx,
             vec![crate::effect::Effect::RemoveWal {
-                target: crate::effect::WalTarget::Sibling(std::path::PathBuf::from("f.txt"))
+                target: crate::effect::WalTarget::Sibling("f.txt".to_owned())
             }]
         );
     }
@@ -395,10 +400,10 @@ mod tests {
     fn undoing_an_undo_returns_to_clean_through_the_original_group() {
         // Undoing to clean text drops the WAL of the file-backed buffer (I-41).
         let wal = crate::effect::Effect::RemoveWal {
-            target: crate::effect::WalTarget::Sibling(std::path::PathBuf::from("f.txt")),
+            target: crate::effect::WalTarget::Sibling("f.txt".to_owned()),
         };
         let (ed, fx) = undo_fx(type_char(saved(""), 'a'));
-        assert_eq!(fx, std::slice::from_ref(&wal));
+        assert_eq!(fx, core::slice::from_ref(&wal));
         assert!(!ed.buffer().modified());
         // A command in between breaks the undo chain, so this undo redoes "a".
         let ed = run_command(ed, |e, fx| (e.move_point(0), fx));

@@ -5,6 +5,11 @@ use crate::commands;
 use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prefix, Question};
 use crate::effect::{Effect, Effects};
 use crate::keymap::{Code, Key, KeyAliases};
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// Handles one key press: resolves prefixes, then runs a bound command or inserts text.
 #[must_use]

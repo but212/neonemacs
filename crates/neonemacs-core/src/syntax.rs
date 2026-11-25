@@ -1,6 +1,9 @@
 //! 1-pass lightweight syntax tokenizer for buffer display (§5, I-22).
 //! Pure: no regex, no heap bloat, no external crate dependencies.
 
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TokenKind {
     #[default]
@@ -101,7 +104,7 @@ impl SyntaxDef {
     }
 }
 
-fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+fn cmp_ignore_ascii_case(a: &str, b: &str) -> core::cmp::Ordering {
     let a_bytes = a.bytes().map(|b| b.to_ascii_lowercase());
     let b_bytes = b.bytes().map(|b| b.to_ascii_lowercase());
     a_bytes.cmp(b_bytes)
@@ -166,7 +169,7 @@ impl SyntaxRegistry {
     }
 }
 
-use std::ops::{ControlFlow, Range};
+use core::ops::{ControlFlow, Range};
 
 use crate::weave_tree::Doc;
 
@@ -349,7 +352,7 @@ impl<'a> LineLexer<'a> {
             self.pos += 1;
         }
         let word_bytes = &self.bytes[start..self.pos];
-        let word = std::str::from_utf8(word_bytes).unwrap_or("");
+        let word = core::str::from_utf8(word_bytes).unwrap_or("");
         let target_kind = if self.syntax.is_keyword(word) {
             Some(TokenKind::Keyword)
         } else if self.syntax.is_type(word) {
@@ -405,7 +408,10 @@ const fn is_ident_byte(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
+    use alloc::borrow::ToOwned;
 
     /// The language name that `name` (a file or buffer name) resolves to (I-49).
     fn lang<'a>(reg: &'a SyntaxRegistry, name: &str) -> Option<&'a str> {

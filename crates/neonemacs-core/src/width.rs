@@ -1,7 +1,7 @@
 //! Display width of a unit (§11, R2). Overrides `unicode-width` only for
 //! tabs, control characters, C1 controls and zero-width joiners and fillers.
 
-use std::ops::ControlFlow;
+use core::ops::ControlFlow;
 
 use crate::weave_tree::{Doc, Unit, decode_in_slice};
 use unicode_width::UnicodeWidthChar;
@@ -163,6 +163,8 @@ pub fn str_width(s: &str, m: Metrics) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     const M8: Metrics = Metrics { tab: 8, cjk: false };

@@ -1,9 +1,10 @@
 //! Summarized immutable slice B-Tree (`Doc`) and structural edit (`Replace`).
 
+use alloc::vec::Vec;
 mod tree;
 mod utf8;
 
-use std::ops::{ControlFlow, Range};
+use core::ops::{ControlFlow, Range};
 
 use memchr::memchr_iter;
 use triomphe::{AllocError, Arc, HeaderSlice};

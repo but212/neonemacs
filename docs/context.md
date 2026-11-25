@@ -15,8 +15,8 @@ This document establishes the conceptual architecture, domain models, boundary c
 The system partitions strictly into a pure functional core and an imperative shell communicating via a 1:1 `Effect`/`Event` contract (I-15).
 
 - **Core (`crates/neonemacs-core`, exposed as `neonemacs::core`)**:
-  - Pure state transition machine: `step(Editor, Event) -> (Editor, Effects)`.
-  - Zero I/O dependencies (I-14): never imports `mlua`, `crossterm`, `std::fs`, or `std::process`.
+  - `#![no_std]` + `alloc` pure state transition machine: `step(Editor, Event) -> (Editor, Effects)`.
+  - Zero `std` / I/O dependencies (I-14): never imports `std`, `mlua`, `crossterm`, `std::fs`, or `std::process`.
   - Zero `&mut` references in public and internal signatures (I-18); updates proceed via value ownership transfer (`Editor -> Editor`, `Buffer -> Buffer`, `WindowManager -> WindowManager`).
   - Built-in command signature: `Builtin = fn(Editor, Effects) -> (Editor, Effects)`.
   - Module privacy: `lib.rs` curates the re-export surface; internal modules (`editor/`, `commands/`, `dispatch.rs`, `width.rs`) remain private.
@@ -64,8 +64,8 @@ The system partitions strictly into a pure functional core and an imperative she
   - Closing any visited buffer retargets viewing windows to a surviving buffer (I-08).
   - Multiple windows can observe the same buffer with independent view cursors (`point`) and scroll tops (`top`).
 - **`Unit::Raw`**: Non-UTF-8 (overlong, surrogate, or incomplete) byte preserved byte-exact across open, edit, and save cycles (`D-01`).
-- **`DiskState`**: File metadata checkpoint: `Known { mtime, size }` (recorded on read/write) or `Unknown` (unopened file, scratch slot).
-- **`FilePath`**: Absolute, lexically folded path constructed exclusively through `FilePath::resolve(cwd, input)`. Drops `.`, folds `..`, rejects symlink traversal. Strictly one buffer per path (I-37).
+- **`DiskState`**: File metadata checkpoint: `Known { mtime: Duration, size: u64 }` (Unix epoch elapsed duration recorded on read/write) or `Unknown` (unopened file, scratch slot).
+- **`FilePath`**: UTF-8 absolute, lexically folded path constructed exclusively through `FilePath::resolve(cwd, input)`. Normalizes `/` and `\` separators while preserving drive/UNC prefixes, drops `.`, folds `..`, rejects symlink traversal. Non-UTF-8 paths are rejected at the shell boundary. Strictly one buffer per path (I-37).
 - **`StatTarget`**: Purpose of disk inspection: `Save(id)` (conflict check before write) or `SaveAs(id)` (overwrite check on existing target).
 - **`ReadTarget`**: Purpose of file load: `Open { line, show }` (new buffer creation) or `Revert(id)` (reloading existing buffer).
 - **`TooLarge`**: Boundary error when file size exceeds `max-file-size`; aborts buffer creation without partial reads (I-04).

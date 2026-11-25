@@ -58,6 +58,10 @@ pub fn init_source() -> InitSource {
 
 /// The editor and Lua state with only the bundled scripts applied.
 fn bundled(cwd: PathBuf) -> mlua::Result<(Editor, Lua)> {
+    let cwd = cwd
+        .into_os_string()
+        .into_string()
+        .map_err(|_| mlua::Error::external("working directory path is not valid UTF-8"))?;
     let lua = lua::new_state()?;
     let ed = lua::bootstrap(Editor::new(Config::default()).with_cwd(cwd), &lua);
     Ok((ed, lua))

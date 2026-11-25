@@ -112,7 +112,7 @@ impl ShellSession {
     /// only when `source` applies whole or is absent; the buffers and windows stay (I-54, I-58).
     pub fn reload_init(&mut self, source: InitSource) {
         let ed = std::mem::take(&mut self.ed);
-        let (ed, load) = match configure(ed.cwd().to_path_buf(), source) {
+        let (ed, load) = match configure(std::path::PathBuf::from(ed.cwd()), source) {
             Ok((fresh, lua, load @ (InitLoad::Applied | InitLoad::Absent))) => {
                 self.lua = lua;
                 (ed.adopt_settings(fresh), load)

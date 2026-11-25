@@ -5,7 +5,8 @@
 use crate::buffer::BufferPool;
 use crate::weave_tree::{Doc, Replace};
 use crate::window::{Window, WindowManager};
-use std::path::PathBuf;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// The kill ring: killed text, newest last, with ring rotation for `yank-pop`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,7 +92,7 @@ pub struct Documents {
     pub(super) kill_ring: KillRing,
     pub(super) edit_seq: u64,
     /// Where the unsaved text of the scratch buffer is kept. `None` keeps it in memory only (I-43).
-    pub(super) scratch_slot: Option<PathBuf>,
+    pub(super) scratch_slot: Option<String>,
 }
 
 impl Documents {
@@ -108,6 +109,9 @@ impl Documents {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+    use alloc::vec;
+
     use super::*;
 
     #[test]

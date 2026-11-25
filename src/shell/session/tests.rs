@@ -210,9 +210,21 @@ fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
     fs::write(&file_b, "init_b").unwrap();
 
     let mut session = make_session();
-    let fx_a = request_open(&session.ed, &file_a, None, true, Vec::new());
+    let fx_a = request_open(
+        &session.ed,
+        file_a.to_str().unwrap(),
+        None,
+        true,
+        Vec::new(),
+    );
     session.ed = perform_all(session.ed, Some(&session.lua), fx_a);
-    let fx_b = request_open(&session.ed, &file_b, None, false, Vec::new());
+    let fx_b = request_open(
+        &session.ed,
+        file_b.to_str().unwrap(),
+        None,
+        false,
+        Vec::new(),
+    );
     session.ed = perform_all(session.ed, Some(&session.lua), fx_b);
 
     let t0 = Instant::now();
@@ -273,7 +285,13 @@ fn cursor_motion_does_not_retrigger_or_delay_wal_flush() {
     fs::write(&file_a, "init_text").unwrap();
 
     let mut session = make_session();
-    let fx = request_open(&session.ed, &file_a, None, true, Vec::new());
+    let fx = request_open(
+        &session.ed,
+        file_a.to_str().unwrap(),
+        None,
+        true,
+        Vec::new(),
+    );
     session.ed = perform_all(session.ed, Some(&session.lua), fx);
 
     let t0 = Instant::now();
@@ -314,7 +332,7 @@ fn wal_write_failure_is_reported_and_retried() {
     fs::create_dir(&blocker).unwrap();
 
     let mut session = make_session();
-    let fx = request_open(&session.ed, &file, None, true, Vec::new());
+    let fx = request_open(&session.ed, file.to_str().unwrap(), None, true, Vec::new());
     session.ed = perform_all(session.ed, Some(&session.lua), fx);
 
     let t0 = Instant::now();
@@ -347,7 +365,7 @@ fn wal_write_failure_keeps_a_pending_confirmation_question() {
     fs::create_dir(wal::wal_path(&file)).unwrap();
 
     let mut session = make_session();
-    let fx = request_open(&session.ed, &file, None, true, Vec::new());
+    let fx = request_open(&session.ed, file.to_str().unwrap(), None, true, Vec::new());
     session.ed = perform_all(session.ed, Some(&session.lua), fx);
 
     let t0 = Instant::now();

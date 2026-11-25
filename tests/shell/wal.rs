@@ -32,7 +32,7 @@ fn regular_save_cleans_up_existing_wal() {
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
 
     let keys = parse_keys("C-x C-s").unwrap();
@@ -58,7 +58,7 @@ fn recovery_from_wal_restores_unsaved_content() {
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
 
     assert_eq!(
@@ -118,7 +118,7 @@ fn revert_buffer_cleans_up_wal() {
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
 
     // Revert buffer (M-x revert-buffer RET)
@@ -200,7 +200,8 @@ fn press(session: &mut ShellSession, code: KeyCode, modifiers: KeyModifiers, at:
 
 fn scratch_session(slot: Option<std::path::PathBuf>) -> ShellSession {
     let lua = lua::new_state().unwrap();
-    let ed = lua::bootstrap(Editor::new(Config::default()), &lua).with_scratch_slot(slot);
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua)
+        .with_scratch_slot(slot.map(|p| p.to_string_lossy().into_owned()));
     ShellSession::new(ed, lua)
 }
 
@@ -281,7 +282,7 @@ fn slot_is_dropped_on_quit_even_if_a_file_wal_failed_in_the_same_flush() {
     let mut session = scratch_session(Some(slot.clone()));
     let t0 = Instant::now();
     type_x(&mut session, t0);
-    let fx = request_open(&session.ed, &file, None, true, Vec::new());
+    let fx = request_open(&session.ed, file.to_str().unwrap(), None, true, Vec::new());
     session.ed = perform_all(std::mem::take(&mut session.ed), None, fx);
     type_x(&mut session, t0);
 
@@ -302,8 +303,8 @@ fn an_existing_slot_survives_until_the_scratch_is_clean() {
     let slot = dir.path().join("scratch.wal");
     wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
     let lua = lua::new_state().unwrap();
-    let ed =
-        lua::bootstrap(Editor::new(Config::default()), &lua).with_scratch_slot(Some(slot.clone()));
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua)
+        .with_scratch_slot(Some(slot.to_string_lossy().into_owned()));
     let ed = neonemacs::shell::startup::restore_scratch(ed);
     let mut session = ShellSession::new(ed, lua);
     let t0 = Instant::now();
@@ -323,7 +324,7 @@ fn typing_and_idle_wal_recording() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
     let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
@@ -361,7 +362,7 @@ fn wal_kill_modified_buffer_cleans_up_wal() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
     let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
@@ -452,7 +453,7 @@ fn wal_quit_unsaved_cleans_up_wal() {
 
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
     let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
     let t0 = Instant::now();
@@ -516,7 +517,7 @@ fn wal_decode_wal_rejects_when_new_buffer_but_external_file_appeared() {
 
     // However, an external file was created on disk before recovery
     let external_disk = DiskState::Known {
-        mtime: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        mtime: Duration::from_secs(1_700_000_000),
         size: 1024,
     };
 
@@ -531,7 +532,7 @@ fn wal_decode_wal_rejects_when_new_buffer_but_external_file_appeared() {
 fn wal_decode_wal_rejects_when_existing_file_was_deleted_externally() {
     // Existing file buffer (DiskState::Known, tag == 1)
     let original_disk = DiskState::Known {
-        mtime: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        mtime: Duration::from_secs(1_700_000_000),
         size: 512,
     };
     let raw_wal = wal::encode_wal(original_disk, Eol::Lf, b"wal draft for existing file");
@@ -546,7 +547,7 @@ fn wal_decode_wal_rejects_when_existing_file_was_deleted_externally() {
 #[test]
 fn wal_decode_wal_rejects_overflowing_nanos() {
     let disk = DiskState::Known {
-        mtime: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        mtime: Duration::from_secs(1_700_000_000),
         size: 512,
     };
     let mut raw_wal = wal::encode_wal(disk, Eol::Lf, b"valid payload");
@@ -574,7 +575,7 @@ fn failed_write_file_keeps_old_wal() {
     wal::write_wal(&old_path, disk, Eol::Lf, b"unsaved edits").unwrap();
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, &old_path, None, true, Vec::new());
+    let fx = request_open(&ed, old_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     let ed = ed.with_current_buffer(|buf| {
         buf.with_text(neonemacs::core::Doc::from_bytes(b"unsaved edits"))
@@ -611,7 +612,7 @@ fn write_file_cleans_up_old_wal_and_does_not_leave_orphan() {
     );
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, &old_path, None, true, Vec::new());
+    let fx = request_open(&ed, old_path.to_str().unwrap(), None, true, Vec::new());
     let mut ed = perform_all(ed, None, fx);
 
     // Buffer has edits matching WAL
@@ -717,7 +718,7 @@ fn delta_wal_writes_are_opt_in_but_recovery_is_not() {
     let path = dir.path().join("draft.txt");
     let open = |config| {
         let ed = Editor::new(config);
-        let fx = request_open(&ed, &path, None, true, Vec::new());
+        let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
         perform_all(ed, None, fx)
     };
     let wp = wal::wal_path(&path);
@@ -750,7 +751,7 @@ fn recovered_delta_records_are_kept_for_the_next_flush() {
     fs::write(&path, b"disk").unwrap();
     let open = || {
         let ed = Editor::new(delta_config());
-        let fx = request_open(&ed, &path, None, true, Vec::new());
+        let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
         perform_all(ed, None, fx)
     };
     let ed = handle(open().insert_at(4, b" draft"), None, Event::Idle);
@@ -775,7 +776,7 @@ fn toggling_delta_tracking_drops_the_log_until_a_new_baseline() {
     let path = dir.path().join("draft.txt");
     fs::write(&path, b"disk").unwrap();
     let ed = Editor::new(delta_config());
-    let fx = request_open(&ed, &path, None, true, Vec::new());
+    let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx).insert_at(4, b" draft");
     assert_eq!(ed.buffer().wal_deltas().unwrap().1.len(), 1);
 
@@ -791,12 +792,12 @@ fn toggling_delta_tracking_drops_the_log_until_a_new_baseline() {
     );
 
     let ed = handle(ed, None, Event::Run("save-buffer".to_owned()));
-    assert!(ed.buffer().wal_deltas().unwrap().1.is_empty());
+    assert_eq!(ed.buffer().wal_deltas().unwrap().1, []);
     let ed = ed.set_config(Config::default());
     assert!(ed.buffer().wal_deltas().is_none());
     let ed = ed.set_config(delta_config());
     let ed = handle(ed, None, Event::Run("revert-buffer".to_owned()));
-    assert!(ed.buffer().wal_deltas().unwrap().1.is_empty());
+    assert_eq!(ed.buffer().wal_deltas().unwrap().1, []);
 }
 
 #[test]
@@ -810,7 +811,7 @@ fn neonwal2_recovery_then_edit_and_flush_preserves_recovered_draft() {
 
     let lua = lua::new_state().unwrap();
     let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, Some(&lua), fx);
     assert_eq!(
         *ed.buffer().text(),
@@ -827,7 +828,13 @@ fn neonwal2_recovery_then_edit_and_flush_preserves_recovered_draft() {
 
     // Simulate crash and reopen: must recover the full edited draft, not `Xoriginal`.
     let reopened = Editor::new(Config::default());
-    let fx = request_open(&reopened, &file_path, None, true, Vec::new());
+    let fx = request_open(
+        &reopened,
+        file_path.to_str().unwrap(),
+        None,
+        true,
+        Vec::new(),
+    );
     let reopened = perform_all(reopened, None, fx);
     assert_eq!(
         *reopened.buffer().text(),
@@ -842,7 +849,13 @@ fn neonwal2_recovery_then_edit_and_flush_preserves_recovered_draft() {
     assert!(!ed_eol.buffer().is_wal_dirty());
 
     let reopened2 = Editor::new(Config::default());
-    let fx = request_open(&reopened2, &file_path, None, true, Vec::new());
+    let fx = request_open(
+        &reopened2,
+        file_path.to_str().unwrap(),
+        None,
+        true,
+        Vec::new(),
+    );
     let reopened2 = perform_all(reopened2, None, fx);
     assert_eq!(
         *reopened2.buffer().text(),
@@ -859,7 +872,7 @@ fn lf_save_that_normalizes_on_reopen_keeps_snapshot_wal_after_undo() {
     fs::write(&path, b"a\r\r\nb\r\n").unwrap();
     let open = || {
         let ed = Editor::new(delta_config());
-        let fx = request_open(&ed, &path, None, true, Vec::new());
+        let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
         perform_all(ed, None, fx)
     };
     let doc = neonemacs::core::Doc::from_bytes;
@@ -907,7 +920,7 @@ fn unapplicable_delta_wal_is_quarantined_as_stale_on_open() {
     assert!(wal::has_wal(&file_path));
 
     let ed = Editor::new(Config::default());
-    let fx = request_open(&ed, &file_path, None, true, Vec::new());
+    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = perform_all(ed, None, fx);
     assert_eq!(
         *ed.buffer().text(),
@@ -926,7 +939,7 @@ fn delta_wal_rejects_a_changed_base_with_identical_metadata() {
     fs::write(&path, b"abc").unwrap();
     let open = || {
         let ed = Editor::new(delta_config());
-        let fx = request_open(&ed, &path, None, true, Vec::new());
+        let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
         perform_all(ed, None, fx)
     };
     let disk = file::disk_state(&path);
@@ -944,7 +957,7 @@ fn delta_wal_rejects_a_changed_base_with_identical_metadata() {
         .write(true)
         .open(&path)
         .unwrap()
-        .set_modified(mtime)
+        .set_modified(UNIX_EPOCH + mtime)
         .unwrap();
     assert_eq!(file::disk_state(&path), disk);
     assert!(wal::read_wal(&path, disk).is_err());
@@ -965,7 +978,7 @@ fn reaching_the_delta_record_ceiling_falls_back_to_a_snapshot() {
     fs::write(&path, vec![b'a'; 128 * 1024]).unwrap();
     let open = || {
         let ed = Editor::new(delta_config());
-        let fx = request_open(&ed, &path, None, true, Vec::new());
+        let fx = request_open(&ed, path.to_str().unwrap(), None, true, Vec::new());
         perform_all(ed, None, fx)
     };
     let ed =
@@ -1001,7 +1014,7 @@ fn delta_wal_in_scratch_slot_is_quarantined_as_stale() {
     fs::write(&slot, &raw).unwrap();
 
     let ed = neonemacs::shell::startup::restore_scratch(
-        Editor::new(Config::default()).with_scratch_slot(Some(slot.clone())),
+        Editor::new(Config::default()).with_scratch_slot(Some(slot.to_string_lossy().into_owned())),
     );
     assert!(!ed.buffer().modified());
     assert_eq!(ed.message(), "Stale WAL kept as scratch.wal.stale");

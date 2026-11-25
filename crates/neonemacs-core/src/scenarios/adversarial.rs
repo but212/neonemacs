@@ -5,6 +5,7 @@ use crate::commands::BUILTINS;
 use crate::commands::find;
 use crate::editor::{Mode, Prefix, Window};
 use crate::test_support::{editor, keys, point, set_mark, text, typ};
+use alloc::vec::Vec;
 
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {

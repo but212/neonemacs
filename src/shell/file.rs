@@ -54,7 +54,9 @@ fn write_with_and_sync(
 fn state_of(meta: &fs::Metadata) -> DiskState {
     meta.modified()
         .map_or(DiskState::Unknown, |mtime| DiskState::Known {
-            mtime,
+            mtime: mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default(),
             size: meta.len(),
         })
 }
@@ -183,7 +185,7 @@ mod tests {
 
         let read = read_raw(&path, 1 << 20).unwrap();
         let loaded = loaded_from(
-            &FilePath::resolve(Path::new(""), &path),
+            &FilePath::resolve("", path.to_str().unwrap()),
             read,
             1 << 20,
             Eol::Lf,

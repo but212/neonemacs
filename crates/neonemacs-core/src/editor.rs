@@ -4,6 +4,8 @@
 //! flag (I-06), records undo (§7), and moves every anchor to a boundary (I-01).
 //! Every transition takes the editor by value and returns the new one.
 
+use alloc::borrow::ToOwned;
+use alloc::string::String;
 mod documents;
 mod edit;
 mod interaction;
@@ -27,7 +29,6 @@ pub use interaction::{
 };
 pub use settings::CommandRegistry;
 use settings::Settings;
-use std::path::{Path, PathBuf};
 
 pub use crate::buffer::{Buffer, BufferId};
 pub use crate::window::{Dir, Layout, Window};
@@ -78,13 +79,13 @@ impl Editor {
 
     /// Keeps the unsaved text of the scratch buffer in `slot`. `None` keeps it in memory only (I-43).
     #[must_use]
-    pub fn with_scratch_slot(mut self, slot: Option<PathBuf>) -> Self {
+    pub fn with_scratch_slot(mut self, slot: Option<String>) -> Self {
         self.documents.scratch_slot = slot;
         self
     }
 
     #[must_use]
-    pub fn scratch_slot(&self) -> Option<&Path> {
+    pub fn scratch_slot(&self) -> Option<&str> {
         self.documents.scratch_slot.as_deref()
     }
 
@@ -92,10 +93,8 @@ impl Editor {
     #[must_use]
     pub fn wal_target(&self, id: BufferId) -> Option<WalTarget> {
         match self.buffer_by_id(id).backing() {
-            Backing::File { path, .. } => Some(WalTarget::Sibling(path.as_path().to_path_buf())),
-            Backing::Scratch { .. } => self
-                .scratch_slot()
-                .map(|s| WalTarget::Slot(s.to_path_buf())),
+            Backing::File { path, .. } => Some(WalTarget::Sibling(path.as_str().to_owned())),
+            Backing::Scratch { .. } => self.scratch_slot().map(|s| WalTarget::Slot(s.to_owned())),
             Backing::None => None,
         }
     }
@@ -200,13 +199,13 @@ impl Editor {
 
     /// Sets the directory that relative file paths resolve against (I-37).
     #[must_use]
-    pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
+    pub fn with_cwd(mut self, cwd: String) -> Self {
         self.settings.cwd = cwd;
         self
     }
 
     #[must_use]
-    pub fn cwd(&self) -> &Path {
+    pub fn cwd(&self) -> &str {
         &self.settings.cwd
     }
 
@@ -219,7 +218,7 @@ impl Editor {
 
     /// The absolute path that `input` names, resolved against the working directory (I-37).
     #[must_use]
-    pub fn resolve_path(&self, input: &Path) -> FilePath {
+    pub fn resolve_path(&self, input: &str) -> FilePath {
         FilePath::resolve(&self.settings.cwd, input)
     }
 
@@ -398,7 +397,7 @@ impl Editor {
     #[must_use]
     pub fn restore_buffer_content(
         mut self,
-        path: &std::path::Path,
+        path: &str,
         doc: Doc,
         eol: Eol,
         line: Option<usize>,
@@ -412,7 +411,7 @@ impl Editor {
     #[must_use]
     pub(crate) fn restore_buffer_deltas(
         mut self,
-        path: &Path,
+        path: &str,
         delta: RecoveredDelta,
         line: Option<usize>,
     ) -> Self {
@@ -596,12 +595,12 @@ mod tests {
             fill_column: 85,
             ..Config::default()
         })
-        .with_cwd(PathBuf::from("elsewhere"))
+        .with_cwd("elsewhere".to_owned())
         .with_keymap(|km| km.bind_str("C-x 9", "forward-char").unwrap())
         .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"dropped")));
         let ed = ed.adopt_settings(from);
         assert_eq!(ed.config().fill_column, 85);
-        assert_eq!(ed.cwd(), Path::new("elsewhere"));
+        assert_eq!(ed.cwd(), "elsewhere");
         let key = crate::keymap::parse_key_seq("C-x 9").unwrap();
         assert_eq!(ed.keymap().lookup(&key), Some("forward-char"));
         assert_eq!(text(&ed), "kept");

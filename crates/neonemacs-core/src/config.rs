@@ -3,6 +3,9 @@
 
 use crate::eol::Eol;
 use crate::width::Metrics;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
 use neobit::neobit;
 
 neobit! {
@@ -325,6 +328,8 @@ fn bounded<T: TryFrom<i64>>(name: &str, n: i64, min: i64, max: i64) -> Result<T,
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]

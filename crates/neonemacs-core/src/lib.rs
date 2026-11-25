@@ -1,6 +1,13 @@
 //! Pure editor transitions. Nothing here touches the file system, a process, Lua, or the terminal (I-14).
 
 #![forbid(unsafe_code)]
+#![no_std]
+
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+use alloc::vec::Vec;
 
 mod buffer;
 mod commands;

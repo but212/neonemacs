@@ -1,9 +1,12 @@
 //! Buffer and `BufferPool` state (§4, §5, §7).
 //! Enforces I-08: at least one buffer exists at all times.
 
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ops::ControlFlow;
 use sha2::{Digest, Sha256};
-use std::ops::ControlFlow;
-use std::path::Path;
 
 use crate::eol::Eol;
 use crate::file::{Backing, DiskState};
@@ -254,7 +257,7 @@ impl Buffer {
 
     /// Returns the file path if this buffer is backed by a disk file.
     #[must_use]
-    pub fn file_path(&self) -> Option<&Path> {
+    pub fn file_path(&self) -> Option<&str> {
         self.backing.path()
     }
 
@@ -487,7 +490,7 @@ impl BufferPool {
         self.buffers.is_empty()
     }
 
-    pub fn iter(&self) -> std::slice::Iter<'_, Buffer> {
+    pub fn iter(&self) -> core::slice::Iter<'_, Buffer> {
         self.buffers.iter()
     }
 
@@ -514,7 +517,7 @@ impl BufferPool {
     }
 
     #[must_use]
-    pub fn find_by_path(&self, path: &Path) -> Option<&Buffer> {
+    pub fn find_by_path(&self, path: &str) -> Option<&Buffer> {
         self.buffers.iter().find(|b| b.file_path() == Some(path))
     }
 
@@ -569,7 +572,7 @@ impl BufferPool {
     #[must_use]
     pub fn restore_content(
         self,
-        path: &Path,
+        path: &str,
         doc: Doc,
         eol: Eol,
         line: Option<usize>,
@@ -579,7 +582,7 @@ impl BufferPool {
 
     fn install_recovered(
         self,
-        path: &Path,
+        path: &str,
         doc: Doc,
         eol: Eol,
         line: Option<usize>,
@@ -614,7 +617,7 @@ impl BufferPool {
     #[must_use]
     pub(crate) fn restore_deltas(
         self,
-        path: &Path,
+        path: &str,
         delta: RecoveredDelta,
         line: Option<usize>,
     ) -> (Self, Option<BufferId>) {
@@ -665,7 +668,7 @@ impl BufferPool {
 
 impl<'a> IntoIterator for &'a BufferPool {
     type Item = &'a Buffer;
-    type IntoIter = std::slice::Iter<'a, Buffer>;
+    type IntoIter = core::slice::Iter<'a, Buffer>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.buffers.iter()
@@ -724,10 +727,7 @@ mod tests {
     #[test]
     fn mark_clean_clears_wal_dirty() {
         use crate::file::{DiskState, FilePath};
-        let backing = Backing::file(
-            FilePath::resolve(Path::new("/w"), Path::new("a.txt")),
-            DiskState::Unknown,
-        );
+        let backing = Backing::file(FilePath::resolve("/w", "a.txt"), DiskState::Unknown);
         let buf = Buffer::new(BufferId(0), "a.txt", Doc::default(), backing);
         let (buf, _) = buf.apply_edit(Edit::insert(0, b"a".as_slice()), |a| a, 1 << 20);
         assert!(buf.modified() && buf.is_wal_dirty());
@@ -739,11 +739,11 @@ mod tests {
     #[test]
     fn with_text_and_restore_content_invalidate_wal_deltas() {
         use crate::file::{DiskState, FilePath};
-        use std::time::SystemTime;
+        use core::time::Duration;
 
-        let path = FilePath::resolve(Path::new("/w"), Path::new("a.txt"));
+        let path = FilePath::resolve("/w", "a.txt");
         let known = DiskState::Known {
-            mtime: SystemTime::UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 4,
         };
         let buf = Buffer::new(
@@ -774,7 +774,7 @@ mod tests {
             Some(&[][..])
         );
         let (pool, restored) = pool.restore_content(
-            path.as_path(),
+            path.as_str(),
             Doc::from_bytes(b"recovered draft"),
             Eol::Lf,
             None,
@@ -791,12 +791,12 @@ mod tests {
     #[test]
     fn wal_deltas_degrade_to_none_when_byte_cap_exceeded() {
         use crate::file::{DiskState, FilePath};
-        use std::time::SystemTime;
+        use core::time::Duration;
 
         let backing = Backing::file(
-            FilePath::resolve(Path::new("/w"), Path::new("big.txt")),
+            FilePath::resolve("/w", "big.txt"),
             DiskState::Known {
-                mtime: SystemTime::UNIX_EPOCH,
+                mtime: Duration::ZERO,
                 size: 0,
             },
         );

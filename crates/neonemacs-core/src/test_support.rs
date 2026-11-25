@@ -11,7 +11,8 @@ use crate::file::{Backing, DiskState, FilePath};
 use crate::keymap::{Code, Key, parse_keys};
 use crate::step;
 use crate::weave_tree::Doc;
-use std::path::Path;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 fn no_effects(ed: Editor, fx: Effects) -> Editor {
     assert!(fx.is_empty(), "effect needs shell: {fx:?}");
@@ -105,7 +106,7 @@ pub fn doc_bytes(doc: &Doc) -> Vec<u8> {
     let mut out = Vec::with_capacity(doc.total_bytes());
     let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
         out.extend_from_slice(chunk);
-        std::ops::ControlFlow::<()>::Continue(())
+        core::ops::ControlFlow::<()>::Continue(())
     });
     out
 }
@@ -127,7 +128,7 @@ pub(crate) fn doc_encode_eol(doc: &Doc, eol: Eol) -> Vec<u8> {
                 out.extend_from_slice(&chunk[last..]);
             }
         }
-        std::ops::ControlFlow::<()>::Continue(())
+        core::ops::ControlFlow::<()>::Continue(())
     });
     out
 }
@@ -150,7 +151,7 @@ pub(crate) fn file_buffer(ed: Editor, bytes: &[u8], eol: Eol) -> Editor {
         b.with_text(Doc::from_bytes(bytes))
             .set_name("f.txt")
             .set_backing(Backing::file(
-                FilePath::resolve(Path::new(""), Path::new("f.txt")),
+                FilePath::resolve("", "f.txt"),
                 DiskState::Unknown,
             ))
             .set_eol(eol)
@@ -170,7 +171,7 @@ pub(crate) fn saved_bytes(ed: &Editor, id: BufferId) -> Vec<u8> {
 
 pub(crate) fn known(size: u64) -> DiskState {
     DiskState::Known {
-        mtime: std::time::UNIX_EPOCH,
+        mtime: core::time::Duration::ZERO,
         size,
     }
 }

@@ -2,6 +2,7 @@
 
 use crate::eol::Eol;
 use crate::weave_tree::{Doc, Replace};
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
@@ -186,7 +187,7 @@ impl UndoLog {
         clean_epoch: Option<u32>,
     ) -> (Self, usize) {
         if let Edit::Replace(patch) = &mut edit.edit {
-            patch.insert = std::mem::take(&mut patch.insert).compact_small();
+            patch.insert = core::mem::take(&mut patch.insert).compact_small();
         }
         if !self.open {
             self.groups.push(Group {

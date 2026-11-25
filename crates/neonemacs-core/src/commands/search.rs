@@ -10,6 +10,10 @@ use crate::effect::Effects;
 use crate::keymap::{Code, Key};
 use crate::search::{self, Pattern};
 use crate::undo::Edit;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 pub(crate) fn isearch_forward(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (
@@ -262,7 +266,7 @@ fn replace_match(
             let mut matched = Vec::with_capacity(end.saturating_sub(start));
             let _ = ed.buffer().text().try_for_each_slice(start..end, |chunk| {
                 matched.extend_from_slice(chunk);
-                std::ops::ControlFlow::<()>::Continue(())
+                core::ops::ControlFlow::<()>::Continue(())
             });
             search::expand_replacement(&q.replacement, &matched)
         }
@@ -338,6 +342,8 @@ pub(crate) fn query_replace_regexp_cmd(ed: Editor, fx: Effects) -> (Editor, Effe
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::test_support::{editor, keys, point, run_command, text, typ};
 

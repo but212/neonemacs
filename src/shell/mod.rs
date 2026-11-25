@@ -19,6 +19,7 @@ use crate::core::step;
 use mlua::Lua;
 use std::cell::RefCell;
 use std::io::Read;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -170,7 +171,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
     match effect {
         Effect::StatDisk { target, path } => Event::Disk {
             target,
-            state: file::disk_state(&path),
+            state: file::disk_state(Path::new(&path)),
             path,
         },
         Effect::WriteFile { id, path } => {
@@ -178,7 +179,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                 let guard = cell.borrow();
                 let ed = guard.as_ref().expect("editor is in the cell (I-21)");
                 let buf = ed.buffer_by_id(id);
-                file::save_doc(&path, buf.eol(), buf.text()).map_err(|e| e.to_string())
+                file::save_doc(Path::new(&path), buf.eol(), buf.text()).map_err(|e| e.to_string())
             };
             Event::Written { id, path, result }
         }
@@ -187,7 +188,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
             path,
             max_size,
         } => {
-            let result = file::read_raw(&path, max_size).map_err(|e| e.to_string());
+            let result = file::read_raw(Path::new(&path), max_size).map_err(|e| e.to_string());
             Event::FileRead {
                 target,
                 path,
@@ -196,8 +197,8 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
         }
         Effect::RemoveWal { target } => {
             match target {
-                WalTarget::Sibling(path) => wal::remove_wal(&path),
-                WalTarget::Slot(slot) => wal::remove_file(&slot),
+                WalTarget::Sibling(path) => wal::remove_wal(Path::new(&path)),
+                WalTarget::Slot(slot) => wal::remove_file(Path::new(&slot)),
             }
             Event::WalRemoved
         }
@@ -215,6 +216,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                     let doc = buf.text();
                     let result = match &e.target {
                         WalTarget::Sibling(path) => {
+                            let path = Path::new(path);
                             if allow_deltas
                                 && matches!(e.disk, crate::core::DiskState::Known { .. })
                                 && let Some((base, deltas)) = buf.wal_deltas()
@@ -224,7 +226,9 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                                 wal::write_wal_doc(path, e.disk, e.eol, doc)
                             }
                         }
-                        WalTarget::Slot(slot) => wal::write_scratch_doc(slot, e.eol, doc),
+                        WalTarget::Slot(slot) => {
+                            wal::write_scratch_doc(Path::new(slot), e.eol, doc)
+                        }
                     };
                     WalWrite {
                         id: e.id,
@@ -241,7 +245,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                 .as_ref()
                 .and_then(|ed| ed.buffers().find_by_path(&path).map(|b| b.text().clone()));
             Event::WalProbed {
-                probe: wal::probe_with_base(&path, disk, base.as_ref()),
+                probe: wal::probe_with_base(Path::new(&path), disk, base.as_ref()),
                 path,
                 line,
             }
@@ -331,7 +335,7 @@ mod tests {
         use crate::core::{Config, Doc};
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("f.txt");
+        let path = dir.path().join("f.txt").to_string_lossy().into_owned();
         let ed = Editor::new(Config::default())
             .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"hi")));
         let id = ed.buffer().id();

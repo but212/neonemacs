@@ -13,7 +13,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 pub const WAL_MAGIC: &[u8; 8] = b"NEONWAL2";
 pub const WAL_DELTA_MAGIC: &[u8; 8] = b"NEONWALD";
@@ -54,9 +54,8 @@ fn encode_header_with_magic(magic: &[u8; 8], disk: DiskState, eol: Eol) -> [u8; 
     match disk {
         DiskState::Known { mtime, size } => {
             header[9] = 1;
-            let since = mtime.duration_since(UNIX_EPOCH).unwrap_or_default();
-            header[10..18].copy_from_slice(&since.as_secs().to_le_bytes());
-            header[18..22].copy_from_slice(&since.subsec_nanos().to_le_bytes());
+            header[10..18].copy_from_slice(&mtime.as_secs().to_le_bytes());
+            header[18..22].copy_from_slice(&mtime.subsec_nanos().to_le_bytes());
             header[22..30].copy_from_slice(&size.to_le_bytes());
         }
         DiskState::Unknown => {
@@ -101,7 +100,7 @@ impl WalHeader {
 
         let disk = match tag {
             1 => DiskState::Known {
-                mtime: UNIX_EPOCH.checked_add(Duration::new(secs, nanos))?,
+                mtime: Duration::new(secs, nanos),
                 size,
             },
             0 => DiskState::Unknown,
@@ -473,7 +472,7 @@ fn probe_at(wp: &Path, disk: DiskState, base: impl FnOnce() -> Option<Doc>) -> W
     }
     let stale = stale_of(wp);
     WalProbe::Stale(match fs::rename(wp, &stale) {
-        Ok(()) => Ok(stale),
+        Ok(()) => Ok(stale.to_string_lossy().into_owned()),
         Err(e) => Err(e.to_string()),
     })
 }
@@ -566,7 +565,7 @@ mod tests {
         let header = encode_wal_header(DiskState::Unknown, Eol::Lf);
         let input = header.as_slice().chain(std::io::repeat(0));
         let disk = DiskState::Known {
-            mtime: UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 0,
         };
         // Limit the reader to the header plus one byte, then inspect the unread byte.
@@ -580,14 +579,14 @@ mod tests {
         // I-44
         let (_dir, target) = probe_dir();
         let other = DiskState::Known {
-            mtime: UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 9,
         };
         write_wal(&target, other, Eol::Lf, b"draft").unwrap();
         let stale = stale_path(&target);
         assert_eq!(
             probe(&target, DiskState::Unknown),
-            WalProbe::Stale(Ok(stale.clone()))
+            WalProbe::Stale(Ok(stale.to_string_lossy().into_owned()))
         );
         assert!(!has_wal(&target), "the next flush must not overwrite it");
         assert_eq!(
@@ -608,7 +607,7 @@ mod tests {
             let stale = stale_path(&target);
             assert_eq!(
                 probe(&target, DiskState::Unknown),
-                WalProbe::Stale(Ok(stale.clone()))
+                WalProbe::Stale(Ok(stale.to_string_lossy().into_owned()))
             );
             assert_eq!(fs::read(&stale).unwrap(), raw);
         }
@@ -687,7 +686,7 @@ mod tests {
         let stale = dir.path().join("scratch.wal.stale");
         assert_eq!(
             probe_file(&slot, DiskState::Unknown),
-            WalProbe::Stale(Ok(stale.clone()))
+            WalProbe::Stale(Ok(stale.to_string_lossy().into_owned()))
         );
         assert!(!slot.exists());
         assert_eq!(fs::read(stale).unwrap(), b"GARBAGE");
@@ -785,7 +784,7 @@ mod tests {
     fn delta_wal_quarantines_a_complete_prefix_missing_its_last_record() {
         let (_dir, target) = probe_dir();
         let disk = DiskState::Known {
-            mtime: UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 0,
         };
         let base = Doc::default();
@@ -810,7 +809,7 @@ mod tests {
         let stale = stale_path(&target);
         assert_eq!(
             probe_with_base(&target, disk, Some(&base)),
-            WalProbe::Stale(Ok(stale.clone()))
+            WalProbe::Stale(Ok(stale.to_string_lossy().into_owned()))
         );
         assert!(!wp.exists());
         assert_eq!(fs::read(stale).unwrap(), raw);
@@ -821,7 +820,7 @@ mod tests {
         let (_dir, target) = probe_dir();
         let base = Doc::from_bytes(b"ABCDE");
         let disk = DiskState::Known {
-            mtime: UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 5,
         };
         write_wal_deltas(
@@ -844,7 +843,7 @@ mod tests {
         let stale = stale_path(&target);
         assert_eq!(
             probe_with_base(&target, disk, Some(&base)),
-            WalProbe::Stale(Ok(stale.clone()))
+            WalProbe::Stale(Ok(stale.to_string_lossy().into_owned()))
         );
         assert!(!wp.exists());
         assert_eq!(fs::read(stale).unwrap(), raw);
@@ -854,7 +853,7 @@ mod tests {
     fn delta_wal_accepts_zero_records_for_eol_only_changes() {
         let (_dir, target) = probe_dir();
         let disk = DiskState::Known {
-            mtime: UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 0,
         };
         let base = Doc::default();
@@ -886,7 +885,7 @@ mod tests {
         let stale = dir.path().join("scratch.wal.stale");
         assert_eq!(
             probe_file(&slot, DiskState::Unknown),
-            WalProbe::Stale(Ok(stale.clone()))
+            WalProbe::Stale(Ok(stale.to_string_lossy().into_owned()))
         );
         assert!(!slot.exists());
         assert_eq!(fs::read(&stale).unwrap(), raw);
@@ -895,7 +894,7 @@ mod tests {
     #[test]
     fn delta_wal_rejects_overflowing_offset_plus_delete_len() {
         let disk = DiskState::Known {
-            mtime: UNIX_EPOCH + Duration::from_secs(100),
+            mtime: Duration::from_secs(100),
             size: 16,
         };
         let mut raw = encode_header_with_magic(WAL_DELTA_MAGIC, disk, Eol::Lf).to_vec();
@@ -916,7 +915,7 @@ mod tests {
         let (_dir, target) = probe_dir();
         let base = Doc::default();
         let disk = DiskState::Known {
-            mtime: UNIX_EPOCH,
+            mtime: Duration::ZERO,
             size: 0,
         };
         let mut raw = encode_header_with_magic(WAL_DELTA_MAGIC, disk, Eol::Lf).to_vec();
@@ -952,7 +951,7 @@ mod tests {
         assert_eq!(read.len(), MAX_DELTA_FILE_BYTES + 1);
         assert_eq!(
             probe_with_base(&target, disk, Some(&base)),
-            WalProbe::Stale(Ok(stale_path(&target)))
+            WalProbe::Stale(Ok(stale_path(&target).to_string_lossy().into_owned()))
         );
         assert_eq!(fs::read(stale_path(&target)).unwrap(), raw);
     }
@@ -961,7 +960,7 @@ mod tests {
     fn probe_with_base_quarantines_unapplicable_oob_and_mid_utf8_deltas() {
         let dir = tempfile::tempdir().unwrap();
         let disk = DiskState::Known {
-            mtime: UNIX_EPOCH + Duration::from_secs(100),
+            mtime: Duration::from_secs(100),
             size: 5,
         };
 
@@ -983,7 +982,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             probe_with_base(&oob_target, disk, Some(&base)),
-            WalProbe::Stale(Ok(stale_path(&oob_target)))
+            WalProbe::Stale(Ok(stale_path(&oob_target).to_string_lossy().into_owned()))
         );
         assert!(!has_wal(&oob_target));
         assert!(stale_path(&oob_target).is_file());
@@ -1000,7 +999,7 @@ mod tests {
         write_wal_deltas(&mid_target, disk, Eol::Lf, digest, &mid_deltas).unwrap();
         assert_eq!(
             probe_with_base(&mid_target, disk, Some(&utf8_base)),
-            WalProbe::Stale(Ok(stale_path(&mid_target)))
+            WalProbe::Stale(Ok(stale_path(&mid_target).to_string_lossy().into_owned()))
         );
         assert!(!has_wal(&mid_target));
         assert!(stale_path(&mid_target).is_file());

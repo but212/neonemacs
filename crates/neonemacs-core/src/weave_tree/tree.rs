@@ -1,5 +1,7 @@
 //! Structural B-Tree operations (`from_slices`, `split_at`, `join`) preserving D-02 and D-03.
 
+use alloc::vec;
+use alloc::vec::Vec;
 use triomphe::{AllocError, Arc};
 
 use super::utf8::count_line_breaks;

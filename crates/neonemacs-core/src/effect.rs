@@ -9,7 +9,8 @@ use crate::eol::Eol;
 use crate::file::{DiskState, Read};
 use crate::keymap::Key;
 use crate::weave_tree::Doc;
-use std::path::{Path, PathBuf};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 pub type Effects = Vec<Effect>;
 
@@ -18,17 +19,17 @@ pub enum Effect {
     /// Reads the disk state of `path` (I-04).
     StatDisk {
         target: StatTarget,
-        path: PathBuf,
+        path: String,
     },
     /// Writes buffer `id` to `path` atomically. Only after the I-04 check or a confirmation.
     WriteFile {
         id: BufferId,
-        path: PathBuf,
+        path: String,
     },
     /// Reads `path`. A file longer than `max_size` is not read: the result carries only its length.
     ReadFile {
         target: ReadTarget,
-        path: PathBuf,
+        path: String,
         max_size: u64,
     },
     /// Removes a WAL. A missing one is not an error.
@@ -43,7 +44,7 @@ pub enum Effect {
     /// Looks for the WAL of the file at `path` just opened with `disk` (I-44, I-45). An unusable
     /// WAL is moved aside, never overwritten. `line` is the `+n` of a start-up file.
     ProbeWal {
-        path: PathBuf,
+        path: String,
         disk: DiskState,
         line: Option<usize>,
     },
@@ -62,15 +63,15 @@ pub enum Effect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalTarget {
     /// The WAL beside the file at this path (`.<name>.wal`).
-    Sibling(PathBuf),
+    Sibling(String),
     /// This path is the WAL itself: the scratch slot (I-43).
-    Slot(PathBuf),
+    Slot(String),
 }
 
 impl WalTarget {
     /// The file path or the slot path: what a message names.
     #[must_use]
-    pub fn path(&self) -> &Path {
+    pub fn path(&self) -> &str {
         match self {
             Self::Sibling(path) | Self::Slot(path) => path,
         }
@@ -135,7 +136,7 @@ pub enum WalProbe {
     Valid(Recovered),
     ValidDelta(RecoveredDelta),
     /// The WAL does not match the file. It was moved to the given path, or the error says why not.
-    Stale(Result<PathBuf, String>),
+    Stale(Result<String, String>),
 }
 
 /// How `init.lua` was applied. The settings never hold part of it (I-54).
@@ -156,17 +157,17 @@ pub enum Event {
     Run(String),
     Disk {
         target: StatTarget,
-        path: PathBuf,
+        path: String,
         state: DiskState,
     },
     Written {
         id: BufferId,
-        path: PathBuf,
+        path: String,
         result: Result<DiskState, String>,
     },
     FileRead {
         target: ReadTarget,
-        path: PathBuf,
+        path: String,
         result: Result<Read, String>,
     },
     WalRemoved,
@@ -174,7 +175,7 @@ pub enum Event {
     Idle,
     WalFlushed(Vec<WalWrite>),
     WalProbed {
-        path: PathBuf,
+        path: String,
         line: Option<usize>,
         probe: WalProbe,
     },

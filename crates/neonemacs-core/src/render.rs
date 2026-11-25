@@ -6,6 +6,12 @@ use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::weave_tree::{Doc, Unit};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// A single terminal cell containing display glyph and syntax style (I-22).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,7 +313,7 @@ const CELL_GLYPH_BYTES: usize = 8 * 1024;
 fn line_cells(
     syntax: Option<&SyntaxDef>,
     text: &Doc,
-    line: std::ops::Range<usize>,
+    line: core::ops::Range<usize>,
     left: usize,
     width: usize,
     metrics: Metrics,
@@ -464,7 +470,7 @@ fn glyph(c: char, w: usize) -> Vec<String> {
         return format!("\\{code:02X}").chars().map(String::from).collect();
     }
     let mut cells = vec![c.to_string()];
-    cells.extend(std::iter::repeat_n(String::new(), w.saturating_sub(1)));
+    cells.extend(core::iter::repeat_n(String::new(), w.saturating_sub(1)));
     cells
 }
 
@@ -535,7 +541,7 @@ fn fit(s: &str, width: usize, fill: char, m: Metrics) -> Vec<String> {
             break;
         }
         cells.push(c.to_string());
-        cells.extend(std::iter::repeat_n(String::new(), w - 1));
+        cells.extend(core::iter::repeat_n(String::new(), w - 1));
     }
     while cells.len() < width {
         cells.push(fill.to_string());

@@ -1,9 +1,13 @@
 //! Keys, their normalization from the terminal (I-12), the key-string parser,
 //! and the survival-set bindings (§3).
 
-use std::collections::{BTreeMap, HashMap};
+use alloc::borrow::ToOwned;
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Code {
     Char(char),
     Enter,
@@ -18,7 +22,7 @@ pub enum Code {
     End,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key {
     pub code: Code,
     pub ctrl: bool,
@@ -237,7 +241,7 @@ impl KeyAliases {
 /// Maps key sequences to command names.
 #[derive(Debug, Default, Clone)]
 pub struct Keymap {
-    bindings: HashMap<Vec<Key>, String>,
+    bindings: BTreeMap<Vec<Key>, String>,
 }
 
 impl Keymap {
@@ -325,6 +329,9 @@ impl Keymap {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+    use alloc::vec;
+
     use super::*;
 
     #[test]

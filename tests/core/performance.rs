@@ -187,7 +187,8 @@ fn wal_flush_streams_edited_doc_without_full_copy() {
     std::fs::write(&file_path, &initial).unwrap();
 
     let ed = Editor::new(Config::default());
-    let fx = neonemacs::core::request_open(&ed, &file_path, None, true, Vec::new());
+    let fx =
+        neonemacs::core::request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
     let ed = neonemacs::shell::perform_all(ed, None, fx);
     let disk = neonemacs::shell::file::disk_state(&file_path);
 

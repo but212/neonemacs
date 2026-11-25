@@ -280,6 +280,10 @@ pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use super::*;
     use crate::editor::{KillRing, Mode};
     use crate::file::Backing;
@@ -342,7 +346,7 @@ mod tests {
     }
 
     fn numbered(n: usize) -> String {
-        use std::fmt::Write;
+        use core::fmt::Write;
         let mut s = String::new();
         for i in 0..n {
             writeln!(s, "l{i}").unwrap();

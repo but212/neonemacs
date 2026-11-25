@@ -12,6 +12,11 @@ use crate::effect::Effects;
 use crate::file::Backing;
 use crate::keymap::{Code, Key};
 use crate::weave_tree::Doc;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 pub(crate) fn execute_extended_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx)
@@ -45,7 +50,7 @@ pub(crate) fn prompt(ed: Editor, label: &str, purpose: Purpose) -> Editor {
 /// Every built-in command name and registered Lua command with the keys bound to it,
 /// for `M-x` completion (§4, §12).
 pub fn completions(ed: &Editor, prefix: &str) -> Vec<(String, String)> {
-    let names: std::collections::BTreeSet<&str> = BUILTINS
+    let names: alloc::collections::BTreeSet<&str> = BUILTINS
         .iter()
         .map(|(n, _)| *n)
         .filter(|n| n.starts_with(prefix))
@@ -246,6 +251,8 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::editor::Prefix;
     use crate::effect::Effect;
@@ -420,8 +427,7 @@ mod tests {
     fn switching_prefers_the_buffer_without_a_file_among_equal_names() {
         // A file named like `*init-log*` must not hide the log, whichever was made first.
         use crate::file::{DiskState, FilePath};
-        use std::path::Path;
-        let path = FilePath::resolve(Path::new(""), Path::new("*init-log*"));
+        let path = FilePath::resolve("", "*init-log*");
         let (ed, file) = editor().add_buffer(
             "*init-log*",
             Doc::default(),

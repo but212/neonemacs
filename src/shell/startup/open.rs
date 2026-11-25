@@ -8,13 +8,13 @@ use crate::core::Editor;
 use crate::core::effect::WalProbe;
 use crate::core::{request_open, switch_to};
 use crate::shell::{perform_all, wal};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Puts the unsaved text left in the scratch slot of `ed` by an earlier run into the scratch buffer.
 /// An unusable slot is moved aside and reported (I-44). The notice follows an earlier message.
 #[must_use]
 pub fn restore_scratch(ed: Editor) -> Editor {
-    let Some(slot) = ed.scratch_slot().map(Path::to_path_buf) else {
+    let Some(slot) = ed.scratch_slot().map(PathBuf::from) else {
         return ed;
     };
     let (ed, note) = match wal::probe_file(&slot, DiskState::Unknown) {
@@ -25,7 +25,11 @@ pub fn restore_scratch(ed: Editor) -> Editor {
         ),
         WalProbe::ValidDelta(_) => return ed,
         WalProbe::Stale(Ok(kept)) => {
-            let name = kept.file_name().unwrap_or_default().to_string_lossy();
+            let name = Path::new(&kept)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             (ed, format!("Stale WAL kept as {name}"))
         }
         WalProbe::Stale(Err(e)) => (ed, format!("Stale WAL for *scratch* not kept: {e}")),
@@ -36,8 +40,14 @@ pub fn restore_scratch(ed: Editor) -> Editor {
 /// Opens one file in the background. Its notice (recovered, stale WAL, refused, unreadable) is
 /// left in the echo area.
 fn open_one(ed: Editor, lua: Option<&mlua::Lua>, arg: &FileArg) -> Editor {
-    let path = ed.resolve_path(&arg.path).as_path().to_path_buf();
-    let fx = request_open(&ed, &path, arg.line, false, Vec::new());
+    let Some(raw_path) = arg.path.to_str() else {
+        return ed.append_message(format!(
+            "Cannot open {}: path is not valid UTF-8",
+            arg.path.display()
+        ));
+    };
+    let path = ed.resolve_path(raw_path);
+    let fx = request_open(&ed, path.as_str(), arg.line, false, Vec::new());
     perform_all(ed, lua, fx)
 }
 
@@ -262,8 +272,9 @@ mod tests {
         }];
 
         // Without a WAL: opens in the background, no notice.
+        let core_path = |ed: &Editor| ed.resolve_path(path.to_str().unwrap());
         let ed = open_files(Editor::new(Config::default()), None, &files);
-        let buf = ed.buffers().find_by_path(&path).unwrap();
+        let buf = ed.buffers().find_by_path(core_path(&ed).as_str()).unwrap();
         assert_eq!(*buf.text(), crate::core::Doc::from_bytes(b"initial"));
         assert!(!buf.modified());
         assert_eq!(ed.message(), "");
@@ -272,7 +283,7 @@ mod tests {
         let disk = crate::shell::file::disk_state(&path);
         wal::write_wal(&path, disk, Eol::Lf, b"wal draft").unwrap();
         let ed = open_files(Editor::new(Config::default()), None, &files);
-        let buf = ed.buffers().find_by_path(&path).unwrap();
+        let buf = ed.buffers().find_by_path(core_path(&ed).as_str()).unwrap();
         assert_eq!(*buf.text(), crate::core::Doc::from_bytes(b"wal draft"));
         assert!(buf.modified());
         assert_eq!(ed.message(), "[Recovered single.txt from WAL]");
@@ -284,8 +295,10 @@ mod tests {
         let slot = dir.path().join("scratch.wal");
         wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
 
-        let ed =
-            restore_scratch(Editor::new(Config::default()).with_scratch_slot(Some(slot.clone())));
+        let ed = restore_scratch(
+            Editor::new(Config::default())
+                .with_scratch_slot(Some(slot.to_string_lossy().into_owned())),
+        );
         assert_eq!(ed.buffer().name(), "*scratch*");
         assert_eq!(*ed.buffer().text(), crate::core::Doc::from_bytes(b"draft"));
         assert!(ed.buffer().modified());
@@ -299,7 +312,7 @@ mod tests {
         let slot = dir.path().join("scratch.wal");
         wal::write_scratch(&slot, Eol::Lf, b"draft").unwrap();
         let ed = Editor::new(Config::default()).set_message("init.lua: boom");
-        let ed = restore_scratch(ed.with_scratch_slot(Some(slot.clone())));
+        let ed = restore_scratch(ed.with_scratch_slot(Some(slot.to_string_lossy().into_owned())));
         assert_eq!(
             ed.message(),
             "init.lua: boom; [Recovered *scratch* from WAL]"
@@ -311,7 +324,14 @@ mod tests {
         let ed = restore_scratch(Editor::new(Config::default()));
         assert!(!ed.buffer().modified());
         let dir = tempfile::tempdir().unwrap();
-        let ed = restore_scratch(ed.with_scratch_slot(Some(dir.path().join("missing.wal"))));
+        let ed = restore_scratch(
+            ed.with_scratch_slot(Some(
+                dir.path()
+                    .join("missing.wal")
+                    .to_string_lossy()
+                    .into_owned(),
+            )),
+        );
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "");
     }
@@ -321,8 +341,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slot = dir.path().join("scratch.wal");
         fs::write(&slot, b"GARBAGE").unwrap();
-        let ed =
-            restore_scratch(Editor::new(Config::default()).with_scratch_slot(Some(slot.clone())));
+        let ed = restore_scratch(
+            Editor::new(Config::default())
+                .with_scratch_slot(Some(slot.to_string_lossy().into_owned())),
+        );
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "Stale WAL kept as scratch.wal.stale");
         assert!(dir.path().join("scratch.wal.stale").is_file());
@@ -377,7 +399,11 @@ mod tests {
         let ed = open_files(ed, None, &files);
 
         // The open is refused: no buffer to recover into, the notice says why, and the WAL stays.
-        assert!(ed.buffers().find_by_path(&path).is_none());
+        assert!(
+            ed.buffers()
+                .find_by_path(ed.resolve_path(path.to_str().unwrap()).as_str())
+                .is_none()
+        );
         assert!(ed.message().starts_with("File too large"));
         assert!(wal::has_wal(&path));
     }
@@ -397,7 +423,10 @@ mod tests {
         let ed = open_files(Editor::new(Config::default()), None, &files);
 
         assert_eq!(ed.message(), "[Recovered eol.txt from WAL]");
-        let buf = ed.buffers().find_by_path(&path).unwrap();
+        let buf = ed
+            .buffers()
+            .find_by_path(ed.resolve_path(path.to_str().unwrap()).as_str())
+            .unwrap();
         assert_eq!(buf.eol(), Eol::Crlf);
         assert_eq!(*buf.text(), crate::core::Doc::from_bytes(b"a\nb\nc\n"));
     }
