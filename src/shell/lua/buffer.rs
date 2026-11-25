@@ -3,6 +3,7 @@
 use super::{editor_ref, mutate_editor};
 use crate::core::Editor;
 use mlua::{Lua, Scope, Table};
+use neonemacs_core::EditorDocExt;
 use std::cell::RefCell;
 
 #[allow(clippy::too_many_lines)]

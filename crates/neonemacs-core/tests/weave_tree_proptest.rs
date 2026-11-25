@@ -1,6 +1,8 @@
 use std::ops::ControlFlow;
 
-use neonemacs_core::weave_tree::{Doc, DocBuilder, DocError, MAX_SLICE_BYTES, Replace, Unit};
+use neonemacs_core::{
+    Doc, DocBuilder, DocError, EditorDocExt, MAX_SLICE_BYTES, Replace, Unit,
+};
 use proptest::prelude::*;
 
 fn collect_bytes(doc: &Doc) -> Vec<u8> {

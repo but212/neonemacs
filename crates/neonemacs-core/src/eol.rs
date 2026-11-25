@@ -1,4 +1,4 @@
-use crate::weave_tree::{Doc, DocBuilder};
+use crate::{Doc, DocBuilder, EditorDocExt};
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use memchr::memchr_iter;
@@ -149,7 +149,7 @@ impl EolStreamDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::weave_tree::Unit;
+    use crate::Unit;
 
     fn decode(raw: &[u8], default: Eol) -> (Eol, Doc) {
         let (doc, eol) = EolStreamDecoder::new().push_chunk(raw).finish();

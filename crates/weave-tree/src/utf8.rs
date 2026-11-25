@@ -1,17 +1,16 @@
 //! RFC 3629 UTF-8 unit decoding, local boundary queries, and seam-merge logic (D-01).
 
 use alloc::vec::Vec;
-use memchr::memchr_iter;
 use triomphe::{AllocError, Arc};
 
-use super::{ByteSlice, MAX_SLICE_BYTES, Unit};
+use crate::{ByteSlice, CHUNK_CAP, MAX_SLICE_BYTES, Summary, Unit};
 
 /// Decodes a single `Unit` at `pos` without checking whether `pos` is a unit boundary.
 ///
 /// Only RFC 3629 UTF-8 sequences (no overlongs, no surrogates `U+D800..=U+DFFF`,
 /// `<= U+10FFFF`) are decoded as `Unit::Char`; everything else yields `Unit::Raw`.
 #[must_use]
-pub(crate) fn decode_unit_raw(bytes: &[u8], pos: usize) -> Option<(Unit, usize)> {
+pub fn decode_unit_raw(bytes: &[u8], pos: usize) -> Option<(Unit, usize)> {
     let b0 = *bytes.get(pos)?;
     if b0 < 0x80 {
         return Some((Unit::Char(b0 as char), 1));
@@ -38,7 +37,7 @@ pub(crate) fn decode_unit_raw(bytes: &[u8], pos: usize) -> Option<(Unit, usize)>
 /// Returns `true` if `pos` is a valid `Unit` boundary within `slice` (which itself
 /// starts and ends on valid `Unit` boundaries).
 #[must_use]
-pub(crate) fn is_boundary_in_slice(slice: &[u8], pos: usize) -> bool {
+pub fn is_boundary_in_slice(slice: &[u8], pos: usize) -> bool {
     if pos == 0 || pos == slice.len() {
         return true;
     }
@@ -62,7 +61,7 @@ pub(crate) fn is_boundary_in_slice(slice: &[u8], pos: usize) -> bool {
 /// Decodes the `Unit` starting at `pos` within `slice`, returning `None` if `pos`
 /// is out of range or not a valid `Unit` boundary.
 #[must_use]
-pub(crate) fn decode_in_slice(slice: &[u8], pos: usize) -> Option<(Unit, usize)> {
+pub fn decode_in_slice(slice: &[u8], pos: usize) -> Option<(Unit, usize)> {
     if pos >= slice.len() || !is_boundary_in_slice(slice, pos) {
         return None;
     }
@@ -70,7 +69,7 @@ pub(crate) fn decode_in_slice(slice: &[u8], pos: usize) -> Option<(Unit, usize)>
 }
 
 #[must_use]
-pub(crate) fn floor_in_slice(slice: &[u8], pos: usize) -> usize {
+pub fn floor_in_slice(slice: &[u8], pos: usize) -> usize {
     let mut p = pos.min(slice.len());
     while p > 0 && !is_boundary_in_slice(slice, p) {
         p -= 1;
@@ -79,7 +78,7 @@ pub(crate) fn floor_in_slice(slice: &[u8], pos: usize) -> usize {
 }
 
 #[must_use]
-pub(crate) fn ceil_in_slice(slice: &[u8], pos: usize) -> usize {
+pub fn ceil_in_slice(slice: &[u8], pos: usize) -> usize {
     let mut p = pos.min(slice.len());
     while p < slice.len() && !is_boundary_in_slice(slice, p) {
         p += 1;
@@ -88,7 +87,7 @@ pub(crate) fn ceil_in_slice(slice: &[u8], pos: usize) -> usize {
 }
 
 #[must_use]
-pub(crate) fn prev_in_slice(slice: &[u8], pos: usize) -> usize {
+pub fn prev_in_slice(slice: &[u8], pos: usize) -> usize {
     let p = pos.min(slice.len());
     if p == 0 {
         return 0;
@@ -97,7 +96,7 @@ pub(crate) fn prev_in_slice(slice: &[u8], pos: usize) -> usize {
 }
 
 #[must_use]
-pub(crate) fn next_in_slice(slice: &[u8], pos: usize) -> usize {
+pub fn next_in_slice(slice: &[u8], pos: usize) -> usize {
     let p = pos.min(slice.len());
     if p >= slice.len() {
         return slice.len();
@@ -105,23 +104,17 @@ pub(crate) fn next_in_slice(slice: &[u8], pos: usize) -> usize {
     ceil_in_slice(slice, p + 1)
 }
 
-/// Counts `'\n'` bytes in `bytes`.
-#[must_use]
-pub(crate) fn count_line_breaks(bytes: &[u8]) -> usize {
-    memchr_iter(b'\n', bytes).count()
-}
-
-/// Splits `bytes` into `ByteSlice` chunks of at most `MAX_SLICE_BYTES`,
+/// Splits `bytes` into `ByteSlice<S>` chunks of at most `MAX_SLICE_BYTES`,
 /// always breaking at valid `Unit` boundaries (D-01, D-02).
 #[must_use]
-pub(crate) fn chunk_bytes_to_slices(bytes: &[u8]) -> Vec<ByteSlice> {
+pub(crate) fn chunk_bytes_to_slices<S: Summary>(bytes: &[u8]) -> Vec<ByteSlice<S>> {
     try_append_slices(Vec::new(), bytes).expect("cannot allocate document slices")
 }
 
-pub(crate) fn try_append_slices(
-    mut slices: Vec<ByteSlice>,
+pub(crate) fn try_append_slices<S: Summary>(
+    mut slices: Vec<ByteSlice<S>>,
     bytes: &[u8],
-) -> Result<Vec<ByteSlice>, AllocError> {
+) -> Result<Vec<ByteSlice<S>>, AllocError> {
     let mut start = 0;
     while start < bytes.len() {
         let max_end = (start + MAX_SLICE_BYTES).min(bytes.len());
@@ -135,14 +128,20 @@ pub(crate) fn try_append_slices(
         let chunk = &bytes[start..end];
         slices.try_reserve(1).map_err(|_| AllocError)?;
         let mut v = Vec::new();
-        v.try_reserve_exact(chunk.len()).map_err(|_| AllocError)?;
+        let cap = if chunk.len() < CHUNK_CAP {
+            (chunk.len() + 128).min(MAX_SLICE_BYTES)
+        } else {
+            chunk.len()
+        };
+        v.try_reserve_exact(cap).map_err(|_| AllocError)?;
         v.extend_from_slice(chunk);
+        let backing_len = v.len();
         let buf = Arc::try_new(v)?;
-        let line_breaks = count_line_breaks(chunk);
+        let summary = S::from_leaf_slice(chunk, backing_len);
         slices.push(ByteSlice {
             buf,
             range: 0..chunk.len(),
-            line_breaks,
+            summary,
         });
         start = end;
     }
@@ -152,24 +151,15 @@ pub(crate) fn try_append_slices(
 /// Result of pre-mutation UTF-8 seam analysis around an edit site (D-01).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SeamMerge {
-    /// Number of trailing `Unit::Raw` bytes absorbed from `left` (0..=3).
     pub(crate) k_left: usize,
-    /// Number of leading `Unit::Raw` bytes absorbed from `right` (0..=3).
     pub(crate) k_right: usize,
-    /// Number of leading bytes absorbed from `insert` (into left or 3-way merge).
     pub(crate) abs_insert_left: usize,
-    /// Number of trailing bytes absorbed from remaining `insert` (into right merge).
     pub(crate) abs_insert_right: usize,
-    /// Merged UTF-8 bytes for the left/3-way seam (at most 4 bytes).
     pub(crate) left_merged: Vec<u8>,
-    /// Merged UTF-8 bytes for the right seam (at most 4 bytes, empty for 3-way).
     pub(crate) right_merged: Vec<u8>,
 }
 
 /// Computes `k_left`, `k_right`, and merged UTF-8 bytes for an edit seam.
-///
-/// `left_raw` contains up to 3 trailing `Unit::Raw` bytes immediately before `offset`.
-/// `right_raw` contains up to 3 leading `Unit::Raw` bytes immediately after `offset + delete_len`.
 #[must_use]
 pub(crate) fn compute_seam_merge(
     left_raw: &[u8],
@@ -178,7 +168,6 @@ pub(crate) fn compute_seam_merge(
     insert_total: usize,
     right_raw: &[u8],
 ) -> SeamMerge {
-    // 1. Check 3-way bridge: left_raw + insert + right_raw forming a single UTF-8 char (<= 4B).
     if insert_total <= 2 && !left_raw.is_empty() && !right_raw.is_empty() {
         for kl in (1..=left_raw.len()).rev() {
             for kr in (1..=right_raw.len()).rev() {
@@ -206,7 +195,6 @@ pub(crate) fn compute_seam_merge(
         }
     }
 
-    // 2. Independent left seam: left_raw (<=3B) + insert_head (<=3B).
     let mut k_left = 0;
     let mut abs_insert_left = 0;
     let mut left_merged = Vec::new();
@@ -230,7 +218,6 @@ pub(crate) fn compute_seam_merge(
         }
     }
 
-    // 3. Independent right seam: remaining insert_tail (<=3B) + right_raw (<=3B).
     let rem_insert = insert_total - abs_insert_left;
     let mut k_right = 0;
     let mut abs_insert_right = 0;

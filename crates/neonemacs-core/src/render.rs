@@ -4,7 +4,7 @@
 use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
-use crate::weave_tree::{Doc, Unit};
+use crate::{Doc, EditorDocExt, Unit};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
 use alloc::borrow::ToOwned;
 use alloc::format;
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn viewport_streams_lines_across_slices_through_the_last_line() {
-        use crate::weave_tree::{DocBuilder, MAX_SLICE_BYTES};
+        use crate::{DocBuilder, MAX_SLICE_BYTES};
 
         let doc = DocBuilder::new()
             .push_bytes(&vec![b'\n'; MAX_SLICE_BYTES - 1])
@@ -1141,7 +1141,7 @@ mod tests {
         for _ in 0..13 {
             let dup = huge.clone();
             huge = huge
-                .apply(crate::weave_tree::Replace {
+                .apply(crate::Replace {
                     offset: 0,
                     delete_len: 0,
                     insert: dup,
@@ -1153,7 +1153,7 @@ mod tests {
         if prefix.is_empty() {
             huge
         } else {
-            huge.apply(crate::weave_tree::Replace {
+            huge.apply(crate::Replace {
                 offset: 0,
                 delete_len: 0,
                 insert: Doc::from_bytes(prefix),

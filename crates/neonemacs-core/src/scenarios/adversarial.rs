@@ -212,7 +212,7 @@ fn kill_ring_empty_and_illegal_operations() {
     assert_eq!(text(&ed5), "hello world");
     assert_eq!(
         ed5.kill_ring().entries(),
-        &[crate::weave_tree::Doc::from_bytes(b"hello")]
+        &[crate::Doc::from_bytes(b"hello")]
     );
 }
 
@@ -230,7 +230,7 @@ fn massive_kill_pop_and_undo_reversibility() {
     // Now undo all operations back to the initial state
     // Consecutive undos should walk back through each edit group
     let mut steps = 0;
-    let initial_doc = crate::weave_tree::Doc::from_bytes(initial_text.as_bytes());
+    let initial_doc = crate::Doc::from_bytes(initial_text.as_bytes());
     while *ed.buffer().text() != initial_doc && steps < 50 {
         ed = keys(ed, "C-/");
         steps += 1;
@@ -681,7 +681,7 @@ fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
 
 #[test]
 fn find_forward_out_of_bounds_from_does_not_panic() {
-    let t = crate::weave_tree::Doc::from_bytes(b"hello");
+    let t = crate::Doc::from_bytes(b"hello");
     let pat = crate::search::Pattern::regex("^h").unwrap();
     // from is far beyond text length and initial gap buffer capacity
     let res = crate::search::find_forward(&t, &pat, 100_000, false);

@@ -3,6 +3,7 @@
 use neonemacs::core::Backing;
 use neonemacs::core::Config;
 use neonemacs::core::Doc;
+use neonemacs_core::EditorDocExt;
 use neonemacs::core::Edit;
 use neonemacs::core::Editor;
 use std::time::{Duration, Instant};

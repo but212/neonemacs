@@ -1,26 +1,35 @@
-//! Summarized immutable slice B-Tree (`Doc`) and structural edit (`Replace`).
+//! Summarized immutable slice B-Tree (`WeaveTree`) and structural edit (`Replace`).
+
+#![forbid(unsafe_code)]
+#![no_std]
+
+extern crate alloc;
+
+pub mod cursor;
+pub mod summary;
+mod tree;
+pub mod utf8;
 
 use alloc::vec::Vec;
-mod tree;
-mod utf8;
-
 use core::ops::{ControlFlow, Range};
-
-use memchr::memchr_iter;
 use triomphe::{AllocError, Arc};
 
-use self::tree::{from_slices, join, split_at, try_from_slices, try_insert_in_place};
-use self::utf8::{
-    ceil_in_slice, chunk_bytes_to_slices, compute_seam_merge, count_line_breaks, floor_in_slice,
-    is_boundary_in_slice, next_in_slice, try_append_slices,
+pub use cursor::{Cursor, Slices, Units};
+pub use summary::{LineBreakMetric, LineBreaks, Metric, Summary, Utf16CodeUnits, Utf16Metric};
+
+use self::tree::{
+    from_slices, join, split_at, try_delete_in_place, try_from_slices, try_insert_in_place,
 };
-pub(crate) use self::utf8::{decode_in_slice, decode_unit_raw, prev_in_slice};
+use self::utf8::{
+    ceil_in_slice, chunk_bytes_to_slices, compute_seam_merge, decode_in_slice, floor_in_slice,
+    is_boundary_in_slice, next_in_slice, prev_in_slice, try_append_slices,
+};
 
 /// B-Tree node fanout and slice size constants.
 pub const MAX_FANOUT: usize = 32;
 pub const MIN_FANOUT: usize = MAX_FANOUT / 2;
 pub const CHUNK_CAP: usize = 4096;
-/// Maximum size of a single `ByteSlice` (bounds `line_to_offset` scan and buffer retention).
+/// Maximum size of a single `ByteSlice` (bounds leaf scan and buffer retention).
 pub const MAX_SLICE_BYTES: usize = 16 * 1024;
 
 /// Logical minimum unit of text (non-UTF-8 bytes are preserved as `Unit::Raw`).
@@ -31,62 +40,61 @@ pub enum Unit {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ByteSlice {
+pub(crate) struct ByteSlice<S: Summary> {
     pub(crate) buf: Arc<Vec<u8>>,
     pub(crate) range: Range<usize>,
-    pub(crate) line_breaks: usize,
+    pub(crate) summary: S,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ChildEntry {
-    pub(crate) node: Arc<SliceNode>,
+pub(crate) struct ChildEntry<S: Summary> {
+    pub(crate) node: Arc<SliceNode<S>>,
     pub(crate) bytes: usize,
-    pub(crate) backing_bytes: usize,
-    pub(crate) line_breaks: usize,
+    pub(crate) summary: S,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum SliceNode {
-    Internal { children: Vec<ChildEntry> },
-    Leaf { slices: Vec<ByteSlice> },
+pub(crate) enum SliceNode<S: Summary> {
+    Internal { children: Vec<ChildEntry<S>> },
+    Leaf { slices: Vec<ByteSlice<S>> },
 }
 
-/// Pure value-passing immutable document core (`SliceTree`).
+/// Pure value-passing immutable text B-Tree parameterized by [`Summary`].
 #[derive(Clone, Debug, Default)]
-pub struct Doc {
-    root: Option<ChildEntry>,
+pub struct WeaveTree<S: Summary = ()> {
+    pub(crate) root: Option<ChildEntry<S>>,
 }
 
 /// Structural edit operation for both core input and undo inverse.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Replace {
+pub struct Replace<S: Summary = ()> {
     pub offset: usize,
     pub delete_len: usize,
-    pub insert: Doc,
+    pub insert: WeaveTree<S>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DocError {
     /// Attempted to split or query inside a multi-byte `Unit` (D-01).
     InvalidBoundary { offset: usize },
-    /// Byte offset or range exceeds document length.
+    /// Byte offset, range, or metric index exceeds document bounds.
     OutOfBounds {
         offset: usize,
         len: usize,
         total: usize,
     },
-    /// Line index exceeds total lines in document.
+    /// Line index exceeds `total_lines`.
     LineOutOfBounds { line: usize, total_lines: usize },
     /// The edit would produce too many bytes to represent all document offsets and counts.
     DocumentTooLarge,
 }
 
-enum InsertSource<'a> {
+enum InsertSource<'a, S: Summary> {
     Bytes(&'a [u8]),
-    Tree(Doc),
+    Tree(WeaveTree<S>),
 }
 
-impl InsertSource<'_> {
+impl<S: Summary> InsertSource<'_, S> {
     fn len(&self) -> usize {
         match self {
             Self::Bytes(b) => b.len(),
@@ -126,7 +134,7 @@ impl InsertSource<'_> {
         }
     }
 
-    fn into_trimmed_root(self, trim_left: usize, trim_right: usize) -> Option<ChildEntry> {
+    fn into_trimmed_root(self, trim_left: usize, trim_right: usize) -> Option<ChildEntry<S>> {
         let total = self.len();
         if trim_left + trim_right >= total {
             return None;
@@ -145,8 +153,6 @@ impl InsertSource<'_> {
     }
 }
 
-/// Returns the number of trailing bytes (`0..=3`) in `bytes` that form an incomplete
-/// RFC 3629 UTF-8 lead/continuation prefix and could complete a `Unit::Char` with following bytes.
 fn trailing_utf8_prefix_len(bytes: &[u8]) -> usize {
     let len = bytes.len();
     let mut cont = 0usize;
@@ -167,29 +173,36 @@ fn trailing_utf8_prefix_len(bytes: &[u8]) -> usize {
     if prefix_len < expected { prefix_len } else { 0 }
 }
 
-/// Incrementally collects 16 KiB `ByteSlice`s and builds a `Doc` bottom-up via `from_slices`.
-#[derive(Debug, Default)]
-pub struct DocBuilder {
-    slices: Vec<ByteSlice>,
+/// Incrementally collects 16 KiB `ByteSlice`s and builds a `WeaveTree` bottom-up.
+#[derive(Debug)]
+pub struct WeaveTreeBuilder<S: Summary = ()> {
+    slices: Vec<ByteSlice<S>>,
     pending: [u8; 3],
     pending_len: usize,
 }
 
-impl DocBuilder {
+impl<S: Summary> Default for WeaveTreeBuilder<S> {
+    fn default() -> Self {
+        Self {
+            slices: Vec::new(),
+            pending: [0; 3],
+            pending_len: 0,
+        }
+    }
+}
+
+impl<S: Summary> WeaveTreeBuilder<S> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Appends `bytes` as 16 KiB `ByteSlice`s without flattening the whole document,
-    /// carrying up to 3 trailing incomplete UTF-8 prefix bytes across chunk boundaries (D-01).
     #[must_use]
     pub fn push_bytes(self, bytes: &[u8]) -> Self {
         self.try_push_bytes(bytes)
             .expect("cannot allocate document slices")
     }
 
-    /// Appends bytes, returning an error if slice storage cannot be allocated.
     pub fn try_push_bytes(mut self, bytes: &[u8]) -> Result<Self, AllocError> {
         if bytes.is_empty() {
             return Ok(self);
@@ -224,31 +237,37 @@ impl DocBuilder {
         Ok(self)
     }
 
-    /// Builds the balanced B-Tree in $O(N)$ bottom-up, flushing any incomplete trailing prefix.
     #[must_use]
-    pub fn finish(self) -> Doc {
+    pub fn finish(self) -> WeaveTree<S> {
         self.try_finish().expect("cannot allocate document tree")
     }
 
-    /// Finalizes the tree, returning an error if slice or node storage cannot be allocated.
-    pub fn try_finish(self) -> Result<Doc, AllocError> {
+    pub fn try_finish(self) -> Result<WeaveTree<S>, AllocError> {
         let slices = try_append_slices(self.slices, &self.pending[..self.pending_len])?;
-        Ok(Doc {
+        Ok(WeaveTree {
             root: try_from_slices(slices)?,
         })
     }
 }
 
-impl Doc {
-    /// Constructs a `Doc` from a raw byte slice (`root: None` if empty).
+impl<S: Summary> WeaveTree<S> {
+    /// Constructs a `WeaveTree` from a raw byte slice (`root: None` if empty).
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let root = from_slices(chunk_bytes_to_slices(bytes));
         Self { root }
     }
 
-    /// Pure structural transition: consumes `self` and returns `(next_doc, inverse_edit)`.
-    pub fn apply(self, edit: Replace) -> Result<(Self, Replace), (Self, DocError)> {
+    /// Fallible byte-slice constructor returning `AllocError` on OOM.
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, AllocError> {
+        let slices = try_append_slices(Vec::new(), bytes)?;
+        Ok(Self {
+            root: try_from_slices(slices)?,
+        })
+    }
+
+    /// Pure structural transition: consumes `self` and returns `(next_tree, inverse_edit)`.
+    pub fn apply(self, edit: Replace<S>) -> Result<(Self, Replace<S>), (Self, DocError)> {
         self.apply_inner(
             edit.offset,
             edit.delete_len,
@@ -256,13 +275,13 @@ impl Doc {
         )
     }
 
-    /// Byte-slice adapter sharing the same 5-step transition engine as `apply`.
+    /// Byte-slice adapter sharing the same transition engine as `apply`.
     pub fn replace(
         self,
         offset: usize,
         delete_len: usize,
         insert: &[u8],
-    ) -> Result<(Self, Replace), (Self, DocError)> {
+    ) -> Result<(Self, Replace<S>), (Self, DocError)> {
         self.apply_inner(offset, delete_len, InsertSource::Bytes(insert))
     }
 
@@ -270,8 +289,8 @@ impl Doc {
         self,
         offset: usize,
         delete_len: usize,
-        insert: InsertSource<'_>,
-    ) -> Result<(Self, Replace), (Self, DocError)> {
+        insert: InsertSource<'_, S>,
+    ) -> Result<(Self, Replace<S>), (Self, DocError)> {
         let total = self.total_bytes();
         let Some(end) = offset.checked_add(delete_len) else {
             return Err((
@@ -301,7 +320,6 @@ impl Doc {
         }
 
         let insert_len = insert.len();
-        // Leave room for a past-end offset and for one more line than newline bytes.
         if insert_len >= usize::MAX - (total - delete_len) {
             return Err((self, DocError::DocumentTooLarge));
         }
@@ -316,7 +334,6 @@ impl Doc {
             ));
         }
 
-        // Step 3: Pre-mutation UTF-8 seam analysis (D-01).
         let (left_raw, left_raw_len) = self.trailing_raw_bytes3(offset);
         let (right_raw, right_raw_len) = self.leading_raw_bytes3(end);
         let (insert_head, insert_head_len) = insert.head_bytes3();
@@ -329,7 +346,6 @@ impl Doc {
             &right_raw[..right_raw_len],
         );
 
-        // H1 fast path: in-place append for micro-edits when uniquely owned and seam-free.
         if delete_len == 0
             && seam.k_left == 0
             && seam.k_right == 0
@@ -374,6 +390,37 @@ impl Doc {
             }
         }
 
+        if delete_len > 0
+            && delete_len <= CHUNK_CAP.min(1024)
+            && insert_len == 0
+            && seam.k_left == 0
+            && seam.k_right == 0
+            && let Some(root) = self.root
+        {
+            match try_delete_in_place(root, offset, delete_len) {
+                Ok((updated_root, deleted)) => {
+                    return Ok((
+                        Self {
+                            root: Some(updated_root),
+                        },
+                        Replace {
+                            offset,
+                            delete_len: 0,
+                            insert: Self {
+                                root: from_slices(chunk_bytes_to_slices(&deleted)),
+                            },
+                        },
+                    ));
+                }
+                Err(orig_root) => {
+                    return Self {
+                        root: Some(orig_root),
+                    }
+                    .apply_cow(offset, delete_len, insert, seam);
+                }
+            }
+        }
+
         self.apply_cow(offset, delete_len, insert, seam)
     }
 
@@ -381,12 +428,11 @@ impl Doc {
         self,
         offset: usize,
         delete_len: usize,
-        insert: InsertSource<'_>,
+        insert: InsertSource<'_, S>,
         seam: self::utf8::SeamMerge,
-    ) -> Result<(Self, Replace), (Self, DocError)> {
+    ) -> Result<(Self, Replace<S>), (Self, DocError)> {
         let insert_len = insert.len();
 
-        // Step 4: Structural split without flattening.
         let (left_root, rest) = split_at(self.root, offset - seam.k_left);
         let (k_left_root, rest) = if seam.k_left > 0 {
             split_at(rest, seam.k_left)
@@ -404,17 +450,14 @@ impl Doc {
             (None, rest)
         };
 
-        // Step 5: Assemble inserted middle tree with seam-merged UTF-8 pieces.
         let left_seam_root = from_slices(chunk_bytes_to_slices(&seam.left_merged));
         let right_seam_root = from_slices(chunk_bytes_to_slices(&seam.right_merged));
         let trimmed_insert = insert.into_trimmed_root(seam.abs_insert_left, seam.abs_insert_right);
         let mid_root = join(left_seam_root, join(trimmed_insert, right_seam_root));
 
-        // Step 6: Rejoin and rebalance.
         let next_root = join(left_root, join(mid_root, right_root));
         let next_doc = Self { root: next_root };
 
-        // Step 7: Construct inverse Replace (D-04).
         let inv = if seam.k_left == 0 && seam.k_right == 0 {
             Replace {
                 offset,
@@ -434,7 +477,7 @@ impl Doc {
         Ok((next_doc, inv))
     }
 
-    fn validate_range(&self, range: &Range<usize>) -> Result<(), DocError> {
+    pub(crate) fn validate_range(&self, range: &Range<usize>) -> Result<(), DocError> {
         let total = self.total_bytes();
         if range.start > range.end || range.end > total {
             return Err(DocError::OutOfBounds {
@@ -454,7 +497,7 @@ impl Doc {
         Ok(())
     }
 
-    /// Extracts a `CoW` subdocument in O(log P) worst-case time for P slices.
+    /// Extracts a CoW subdocument in $O(\log P)$ worst-case time for $P$ slices.
     pub fn slice(&self, range: Range<usize>) -> Result<Self, DocError> {
         self.validate_range(&range)?;
         if range.start == range.end {
@@ -465,58 +508,71 @@ impl Doc {
         Ok(Self { root: mid })
     }
 
-    /// Maps a 0-based line index to its starting byte offset.
-    pub fn line_to_offset(&self, line: usize) -> Result<usize, DocError> {
-        let total_lines = self.total_lines();
-        if line >= total_lines {
-            return Err(DocError::LineOutOfBounds { line, total_lines });
+    /// Returns the root `Summary` (or `S::default()` when empty).
+    #[must_use]
+    pub fn summary(&self) -> S {
+        self.root
+            .as_ref()
+            .map_or_else(S::default, |r| r.summary.clone())
+    }
+
+    /// Returns total metric units under `M` (`0` when empty).
+    #[must_use]
+    pub fn total_metric<M: Metric<S>>(&self) -> usize {
+        self.root.as_ref().map_or(0, |r| M::measure(&r.summary))
+    }
+
+    /// Maps a metric coordinate `pos` under `M` to its starting byte offset.
+    pub fn metric_to_byte<M: Metric<S>>(&self, pos: usize) -> Result<usize, DocError> {
+        let total_m = self.total_metric::<M>();
+        if pos > total_m {
+            return Err(DocError::OutOfBounds {
+                offset: pos,
+                len: 0,
+                total: total_m,
+            });
         }
-        if line == 0 {
+        if pos == 0 {
             return Ok(0);
         }
         let root = self
             .root
             .as_ref()
-            .expect("line >= 1 implies total_lines > 1");
+            .expect("pos >= 1 implies total_metric >= 1");
         let mut cur = root;
-        let mut rem_lines = line;
+        let mut rem = pos;
         let mut byte_acc = 0usize;
         loop {
             match cur.node.as_ref() {
                 SliceNode::Internal { children } => {
                     for child in children {
-                        if rem_lines <= child.line_breaks {
+                        let cm = M::measure(&child.summary);
+                        if rem <= cm {
                             cur = child;
                             break;
                         }
-                        rem_lines -= child.line_breaks;
+                        rem -= cm;
                         byte_acc += child.bytes;
                     }
                 }
                 SliceNode::Leaf { slices } => {
                     for slice in slices {
-                        if rem_lines <= slice.line_breaks {
+                        let sm = M::measure(&slice.summary);
+                        if rem <= sm {
                             let bytes = &slice.buf[slice.range.clone()];
-                            let mut seen = 0usize;
-                            for nl_pos in memchr_iter(b'\n', bytes) {
-                                seen += 1;
-                                if seen == rem_lines {
-                                    return Ok(byte_acc + nl_pos + 1);
-                                }
-                            }
-                            unreachable!("line_breaks invariant guarantees match");
+                            return Ok(byte_acc + M::to_byte_offset(bytes, rem));
                         }
-                        rem_lines -= slice.line_breaks;
+                        rem -= sm;
                         byte_acc += slice.range.len();
                     }
-                    unreachable!("line_breaks invariant guarantees match");
+                    unreachable!("Metric invariant guarantees match");
                 }
             }
         }
     }
 
-    /// Maps a valid `Unit`-boundary byte offset to its 0-based line index.
-    pub fn offset_to_line(&self, offset: usize) -> Result<usize, DocError> {
+    /// Maps a valid `Unit`-boundary byte offset to its metric coordinate under `M`.
+    pub fn byte_to_metric<M: Metric<S>>(&self, offset: usize) -> Result<usize, DocError> {
         let total = self.total_bytes();
         if offset > total {
             return Err(DocError::OutOfBounds {
@@ -532,11 +588,11 @@ impl Doc {
             return Ok(0);
         };
         if offset == total {
-            return Ok(root.line_breaks);
+            return Ok(M::measure(&root.summary));
         }
         let mut cur = root;
         let mut rem_bytes = offset;
-        let mut line_acc = 0usize;
+        let mut metric_acc = 0usize;
         loop {
             match cur.node.as_ref() {
                 SliceNode::Internal { children } => {
@@ -546,27 +602,59 @@ impl Doc {
                             break;
                         }
                         rem_bytes -= child.bytes;
-                        line_acc += child.line_breaks;
+                        metric_acc += M::measure(&child.summary);
                     }
                 }
                 SliceNode::Leaf { slices } => {
                     for slice in slices {
                         let len = slice.range.len();
                         if rem_bytes < len {
-                            let sub =
-                                &slice.buf[slice.range.start..slice.range.start + rem_bytes];
-                            return Ok(line_acc + count_line_breaks(sub));
+                            let bytes = &slice.buf[slice.range.clone()];
+                            return Ok(metric_acc + M::from_byte_offset(bytes, rem_bytes));
                         }
                         rem_bytes -= len;
-                        line_acc += slice.line_breaks;
+                        metric_acc += M::measure(&slice.summary);
                     }
-                    return Ok(line_acc);
+                    return Ok(metric_acc);
                 }
             }
         }
     }
 
-    /// Zero-copy forward streaming over `range` (D-05).
+    /// Returns a stateful bidirectional [`Cursor`] at byte `0`.
+    #[must_use]
+    pub fn cursor(&self) -> Cursor<'_, S> {
+        Cursor::new(self)
+    }
+
+    /// Returns a [`Cursor`] positioned at `byte_offset`.
+    pub fn cursor_at(&self, byte_offset: usize) -> Result<Cursor<'_, S>, DocError> {
+        Cursor::at_byte(self, byte_offset)
+    }
+
+    /// Returns a bidirectional [`Slices`] iterator over the entire tree.
+    #[must_use]
+    pub fn slices(&self) -> Slices<'_, S> {
+        Slices::new(self, 0..self.total_bytes()).expect("full range is valid")
+    }
+
+    /// Returns a bidirectional [`Slices`] iterator over `range`.
+    pub fn slices_range(&self, range: Range<usize>) -> Result<Slices<'_, S>, DocError> {
+        Slices::new(self, range)
+    }
+
+    /// Returns a bidirectional [`Units`] iterator over the entire tree.
+    #[must_use]
+    pub fn units(&self) -> Units<'_, S> {
+        Units::new(self, 0..self.total_bytes()).expect("full range is valid")
+    }
+
+    /// Returns a bidirectional [`Units`] iterator over `range`.
+    pub fn units_range(&self, range: Range<usize>) -> Result<Units<'_, S>, DocError> {
+        Units::new(self, range)
+    }
+
+    /// Zero-copy forward streaming over `range` (`ControlFlow`-based, `D-05` compatible).
     pub fn try_for_each_slice<B>(
         &self,
         range: Range<usize>,
@@ -583,7 +671,7 @@ impl Doc {
         Ok(flow)
     }
 
-    /// Zero-copy reverse streaming over `range` (D-05).
+    /// Zero-copy reverse streaming over `range` (`ControlFlow`-based, `D-05` compatible).
     pub fn try_for_each_slice_rev<B>(
         &self,
         range: Range<usize>,
@@ -601,7 +689,7 @@ impl Doc {
     }
 
     fn visit_fwd<B, F: FnMut(&[u8]) -> ControlFlow<B>>(
-        entry: &ChildEntry,
+        entry: &ChildEntry<S>,
         base: usize,
         range: &Range<usize>,
         mut f: F,
@@ -649,7 +737,7 @@ impl Doc {
     }
 
     fn visit_rev<B, F: FnMut(&[u8]) -> ControlFlow<B>>(
-        entry: &ChildEntry,
+        entry: &ChildEntry<S>,
         base: usize,
         range: &Range<usize>,
         mut f: F,
@@ -696,7 +784,6 @@ impl Doc {
         }
     }
 
-    /// Clamps `offset` to `total_bytes()`, then returns the greatest valid `Unit` boundary <= `offset`.
     #[must_use]
     pub fn floor_boundary(&self, offset: usize) -> usize {
         let total = self.total_bytes();
@@ -708,7 +795,6 @@ impl Doc {
         slice_start + floor_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
     }
 
-    /// Returns `total_bytes()` if `offset >= total_bytes()`, else the smallest valid `Unit` boundary >= `offset`.
     #[must_use]
     pub fn ceil_boundary(&self, offset: usize) -> usize {
         let total = self.total_bytes();
@@ -722,7 +808,6 @@ impl Doc {
         slice_start + ceil_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
-    /// Clamps `offset` to `total_bytes()`; returns `0` if `0`, else the greatest valid `Unit` boundary < `offset`.
     #[must_use]
     pub fn prev_boundary(&self, offset: usize) -> usize {
         let total = self.total_bytes();
@@ -734,7 +819,6 @@ impl Doc {
         slice_start + prev_in_slice(&slice.buf[slice.range.clone()], p - slice_start)
     }
 
-    /// Returns `total_bytes()` if `offset >= total_bytes()`, else the smallest valid `Unit` boundary > `offset`.
     #[must_use]
     pub fn next_boundary(&self, offset: usize) -> usize {
         let total = self.total_bytes();
@@ -745,7 +829,6 @@ impl Doc {
         slice_start + next_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
-    /// Decodes the `Unit` at `offset`, returning `None` if `offset >= total_bytes()` or not a boundary.
     #[must_use]
     pub fn decode_at(&self, offset: usize) -> Option<(Unit, usize)> {
         if offset >= self.total_bytes() {
@@ -755,7 +838,6 @@ impl Doc {
         decode_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
-    /// Returns the raw byte at `offset`, or `None` if `offset >= total_bytes()`.
     #[must_use]
     pub fn byte_at(&self, offset: usize) -> Option<u8> {
         if offset >= self.total_bytes() {
@@ -770,29 +852,9 @@ impl Doc {
         self.root.as_ref().map_or(0, |r| r.bytes)
     }
 
-    /// Conservative byte-storage charge: counts the entire backing allocation per slice,
-    /// even when slices share an allocation.
-    pub(crate) fn backing_bytes(&self) -> usize {
-        self.root.as_ref().map_or(0, |r| r.backing_bytes)
-    }
-
-    /// Copy at most one small chunk rather than pinning larger backing allocations.
-    pub(crate) fn compact_small(self) -> Self {
-        let len = self.total_bytes();
-        if len > CHUNK_CAP || self.backing_bytes() <= CHUNK_CAP {
-            return self;
-        }
-        let mut bytes = Vec::with_capacity(len);
-        let _ = self.try_for_each_slice(0..len, |chunk| {
-            bytes.extend_from_slice(chunk);
-            ControlFlow::<()>::Continue(())
-        });
-        Self::from_bytes(&bytes)
-    }
-
     #[must_use]
-    pub fn total_lines(&self) -> usize {
-        self.root.as_ref().map_or(1, |r| 1 + r.line_breaks)
+    pub fn is_empty(&self) -> bool {
+        self.total_bytes() == 0
     }
 
     #[must_use]
@@ -808,8 +870,7 @@ impl Doc {
         is_boundary_in_slice(&slice.buf[slice.range.clone()], offset - slice_start)
     }
 
-    /// Precondition: `offset < self.total_bytes()`.
-    fn locate_slice(&self, offset: usize) -> (&ByteSlice, usize) {
+    fn locate_slice(&self, offset: usize) -> (&ByteSlice<S>, usize) {
         let mut cur = self.root.as_ref().expect("offset < total_bytes");
         let mut rem = offset;
         let mut base = 0usize;
@@ -900,14 +961,13 @@ impl Doc {
         out
     }
 
-    #[cfg(any(test, debug_assertions))]
+    /// Verifies all structural invariants (`D-01`, `D-02`, `D-03`, `S-01`).
     pub fn assert_invariants(&self) {
         let Some(root) = &self.root else {
             return;
         };
         let depth = Self::check_entry(root, true);
         assert!(depth >= 1);
-        // D-01: verify no Unit::Char is split across adjacent ByteSlice boundaries.
         let mut prev_tail = [0u8; 3];
         let mut prev_tail_len = 0usize;
         let _ = Self::visit_fwd(root, 0, &(0..root.bytes), |chunk: &[u8]| {
@@ -937,8 +997,7 @@ impl Doc {
         });
     }
 
-    #[cfg(any(test, debug_assertions))]
-    fn check_entry(entry: &ChildEntry, is_root: bool) -> usize {
+    fn check_entry(entry: &ChildEntry<S>, is_root: bool) -> usize {
         match entry.node.as_ref() {
             SliceNode::Leaf { slices } => {
                 if is_root {
@@ -947,23 +1006,17 @@ impl Doc {
                     assert!((MIN_FANOUT..=MAX_FANOUT).contains(&slices.len()));
                 }
                 let mut sum_bytes = 0usize;
-                let mut sum_backing = 0usize;
-                let mut sum_lines = 0usize;
+                let mut sum_summary = S::default();
                 for slice in slices {
                     assert!(!slice.range.is_empty());
                     assert!(slice.range.len() <= MAX_SLICE_BYTES);
                     let raw = &slice.buf[slice.range.clone()];
-                    assert_eq!(slice.line_breaks, count_line_breaks(raw));
-                    // D-01: no Unit::Char split across slice boundaries (first byte cannot be
-                    // an orphaned UTF-8 continuation that belongs to an earlier char, and
-                    // trailing bytes cannot be an incomplete prefix that continues in the next slice).
+                    assert!(slice.summary == S::from_leaf_slice(raw, slice.buf.len()));
                     sum_bytes += slice.range.len();
-                    sum_backing = sum_backing.saturating_add(slice.buf.len());
-                    sum_lines += slice.line_breaks;
+                    sum_summary = sum_summary.combine(&slice.summary);
                 }
                 assert_eq!(entry.bytes, sum_bytes);
-                assert_eq!(entry.backing_bytes, sum_backing);
-                assert_eq!(entry.line_breaks, sum_lines);
+                assert!(entry.summary == sum_summary);
                 1
             }
             SliceNode::Internal { children } => {
@@ -974,8 +1027,7 @@ impl Doc {
                 }
                 let mut expected_depth = None;
                 let mut sum_bytes = 0usize;
-                let mut sum_backing = 0usize;
-                let mut sum_lines = 0usize;
+                let mut sum_summary = S::default();
                 for child in children {
                     let d = Self::check_entry(child, false);
                     match expected_depth {
@@ -983,21 +1035,19 @@ impl Doc {
                         Some(ed) => assert_eq!(d, ed, "D-02 uniform leaf depth violated"),
                     }
                     sum_bytes += child.bytes;
-                    sum_backing = sum_backing.saturating_add(child.backing_bytes);
-                    sum_lines += child.line_breaks;
+                    sum_summary = sum_summary.combine(&child.summary);
                 }
                 assert_eq!(entry.bytes, sum_bytes);
-                assert_eq!(entry.backing_bytes, sum_backing);
-                assert_eq!(entry.line_breaks, sum_lines);
+                assert!(entry.summary == sum_summary);
                 expected_depth.expect("non-empty internal") + 1
             }
         }
     }
 }
 
-impl PartialEq for Doc {
+impl<S: Summary> PartialEq for WeaveTree<S> {
     fn eq(&self, other: &Self) -> bool {
-        if self.total_bytes() != other.total_bytes() || self.total_lines() != other.total_lines() {
+        if self.total_bytes() != other.total_bytes() {
             return false;
         }
         match (&self.root, &other.root) {
@@ -1013,32 +1063,32 @@ impl PartialEq for Doc {
     }
 }
 
-impl Eq for Doc {}
+impl<S: Summary> Eq for WeaveTree<S> {}
 
-enum CursorFrame<'a> {
+enum EqFrame<'a, S: Summary> {
     Internal {
-        children: &'a [ChildEntry],
+        children: &'a [ChildEntry<S>],
         idx: usize,
         base: usize,
     },
     Leaf {
-        slices: &'a [ByteSlice],
+        slices: &'a [ByteSlice<S>],
         idx: usize,
         in_slice: usize,
     },
 }
 
-fn push_leftmost<'a>(
-    mut stack: Vec<CursorFrame<'a>>,
-    entry: &'a ChildEntry,
+fn push_eq_leftmost<'a, S: Summary>(
+    mut stack: Vec<EqFrame<'a, S>>,
+    entry: &'a ChildEntry<S>,
     base: usize,
-) -> Vec<CursorFrame<'a>> {
+) -> Vec<EqFrame<'a, S>> {
     let mut cur = entry;
     let cur_base = base;
     loop {
         match cur.node.as_ref() {
             SliceNode::Internal { children } => {
-                stack.push(CursorFrame::Internal {
+                stack.push(EqFrame::Internal {
                     children,
                     idx: 0,
                     base: cur_base,
@@ -1046,7 +1096,7 @@ fn push_leftmost<'a>(
                 cur = &children[0];
             }
             SliceNode::Leaf { slices } => {
-                stack.push(CursorFrame::Leaf {
+                stack.push(EqFrame::Leaf {
                     slices,
                     idx: 0,
                     in_slice: 0,
@@ -1057,8 +1107,11 @@ fn push_leftmost<'a>(
     }
 }
 
-fn advance_cursor(mut stack: Vec<CursorFrame<'_>>, bytes_consumed: usize) -> Vec<CursorFrame<'_>> {
-    let Some(CursorFrame::Leaf {
+fn advance_eq_cursor<S: Summary>(
+    mut stack: Vec<EqFrame<'_, S>>,
+    bytes_consumed: usize,
+) -> Vec<EqFrame<'_, S>> {
+    let Some(EqFrame::Leaf {
         slices,
         idx,
         in_slice,
@@ -1076,11 +1129,13 @@ fn advance_cursor(mut stack: Vec<CursorFrame<'_>>, bytes_consumed: usize) -> Vec
         return stack;
     }
     stack.pop();
-    advance_internal_past(stack)
+    advance_eq_internal_past(stack)
 }
 
-fn advance_internal_past(mut stack: Vec<CursorFrame<'_>>) -> Vec<CursorFrame<'_>> {
-    while let Some(CursorFrame::Internal {
+fn advance_eq_internal_past<S: Summary>(
+    mut stack: Vec<EqFrame<'_, S>>,
+) -> Vec<EqFrame<'_, S>> {
+    while let Some(EqFrame::Internal {
         children,
         idx,
         base,
@@ -1092,36 +1147,34 @@ fn advance_internal_past(mut stack: Vec<CursorFrame<'_>>) -> Vec<CursorFrame<'_>
         if *idx < children.len() {
             let next = &children[*idx];
             let nb = *base;
-            return push_leftmost(stack, next, nb);
+            return push_eq_leftmost(stack, next, nb);
         }
         stack.pop();
     }
     stack
 }
 
-/// Returns `true` if both cursors are at the exact start of an `Internal` child at the
-/// same byte offset with `Arc::ptr_eq`, so the subtree can be skipped in O(1).
-fn can_skip_shared_subtree(sa: &[CursorFrame<'_>], sb: &[CursorFrame<'_>]) -> bool {
+fn can_skip_shared_subtree<S: Summary>(sa: &[EqFrame<'_, S>], sb: &[EqFrame<'_, S>]) -> bool {
     let (Some(top_a), Some(top_b)) = (sa.len().checked_sub(2), sb.len().checked_sub(2)) else {
         return false;
     };
     let (
-        CursorFrame::Internal {
+        EqFrame::Internal {
             children: ca,
             idx: ia,
             base: ba,
         },
-        CursorFrame::Internal {
+        EqFrame::Internal {
             children: cb,
             idx: ib,
             base: bb,
         },
-        CursorFrame::Leaf {
+        EqFrame::Leaf {
             idx: la_idx,
             in_slice: la_off,
             ..
         },
-        CursorFrame::Leaf {
+        EqFrame::Leaf {
             idx: lb_idx,
             in_slice: lb_off,
             ..
@@ -1138,9 +1191,9 @@ fn can_skip_shared_subtree(sa: &[CursorFrame<'_>], sb: &[CursorFrame<'_>]) -> bo
         && Arc::ptr_eq(&ca[*ia].node, &cb[*ib].node)
 }
 
-fn entries_eq(a: &ChildEntry, b: &ChildEntry) -> bool {
-    let mut sa = push_leftmost(Vec::new(), a, 0);
-    let mut sb = push_leftmost(Vec::new(), b, 0);
+fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
+    let mut sa = push_eq_leftmost(Vec::new(), a, 0);
+    let mut sb = push_eq_leftmost(Vec::new(), b, 0);
 
     loop {
         if sa.is_empty() && sb.is_empty() {
@@ -1152,17 +1205,17 @@ fn entries_eq(a: &ChildEntry, b: &ChildEntry) -> bool {
         if can_skip_shared_subtree(&sa, &sb) {
             sa.pop();
             sb.pop();
-            sa = advance_internal_past(sa);
-            sb = advance_internal_past(sb);
+            sa = advance_eq_internal_past(sa);
+            sb = advance_eq_internal_past(sb);
             continue;
         }
         let (
-            Some(CursorFrame::Leaf {
+            Some(EqFrame::Leaf {
                 slices: la,
                 idx: ia,
                 in_slice: oa,
             }),
-            Some(CursorFrame::Leaf {
+            Some(EqFrame::Leaf {
                 slices: lb,
                 idx: ib,
                 in_slice: ob,
@@ -1183,7 +1236,7 @@ fn entries_eq(a: &ChildEntry, b: &ChildEntry) -> bool {
         if bytes_a != bytes_b {
             return false;
         }
-        sa = advance_cursor(sa, take);
-        sb = advance_cursor(sb, take);
+        sa = advance_eq_cursor(sa, take);
+        sb = advance_eq_cursor(sb, take);
     }
 }

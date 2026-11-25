@@ -11,7 +11,7 @@ use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prompt, Purpose};
 use crate::effect::Effects;
 use crate::file::Backing;
 use crate::keymap::{Code, Key};
-use crate::weave_tree::Doc;
+use crate::{Doc, EditorDocExt};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;

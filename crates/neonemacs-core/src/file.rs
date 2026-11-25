@@ -1,7 +1,7 @@
 //! Buffer backing, and the buffer that a file read produces. Pure: the bytes come from the shell.
 
 use crate::eol::{Eol, EolStreamDecoder};
-use crate::weave_tree::Doc;
+use crate::Doc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;

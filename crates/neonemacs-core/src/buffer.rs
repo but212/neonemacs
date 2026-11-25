@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::eol::Eol;
 use crate::file::{Backing, DiskState};
 use crate::undo::{Edit, RecordedEdit, UndoLog};
-use crate::weave_tree::{Doc, Replace};
+use crate::{Doc, EditorDocExt, Replace};
 
 /// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
 pub const SCRATCH_NAME: &str = "*scratch*";
@@ -407,6 +407,30 @@ impl Buffer {
             Edit::Replace(r) => {
                 let forward = self.wal_deltas.is_some().then(|| r.clone());
                 match self.text.apply(r) {
+                    Ok((next, inv)) => {
+                        self.text = next;
+                        if let Some(f) = forward {
+                            self.wal_deltas = self
+                                .wal_deltas
+                                .take()
+                                .and_then(|log| log.push(f, self.text.total_bytes()));
+                        }
+                        Edit::Replace(inv)
+                    }
+                    Err((doc, _err)) => {
+                        self.text = doc;
+                        return (self, None);
+                    }
+                }
+            }
+            Edit::InsertInline { offset, data } => {
+                let slice = data.as_slice();
+                let forward = self.wal_deltas.is_some().then(|| crate::Replace {
+                    offset,
+                    delete_len: 0,
+                    insert: crate::Doc::from_bytes(slice),
+                });
+                match self.text.replace(offset, 0, slice) {
                     Ok((next, inv)) => {
                         self.text = next;
                         if let Some(f) = forward {
@@ -819,7 +843,7 @@ mod tests {
 
     #[test]
     fn wal_delta_budget_compacts_tiny_slices_and_charges_backing_for_larger_slices() {
-        use crate::weave_tree::{CHUNK_CAP, MAX_SLICE_BYTES};
+        use crate::{CHUNK_CAP, MAX_SLICE_BYTES};
 
         let source = Doc::from_bytes(&vec![b'a'; MAX_SLICE_BYTES]);
         let record = |len| Replace {

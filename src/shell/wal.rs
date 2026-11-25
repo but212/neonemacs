@@ -2,7 +2,7 @@
 //! Operates strictly in the imperative shell layer: persists snapshots/deltas during idle time.
 
 use crate::core::effect::{RecoveredDelta, WalProbe};
-use crate::core::weave_tree::DocBuilder;
+use crate::core::DocBuilder;
 use crate::core::{
     DiskState, Doc, Eol, MAX_WAL_DELTA_BYTES, MAX_WAL_DELTA_RECORDS, Replace,
     WAL_DELTA_RECORD_BYTES, WalBaseDigest, wal_base_digest,

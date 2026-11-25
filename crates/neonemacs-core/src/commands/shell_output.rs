@@ -8,7 +8,7 @@ use crate::commands::prompt::prompt;
 use crate::editor::{Buffer, BufferId, Dir, Editor, Purpose};
 use crate::effect::{Effect, Effects, InitLoad};
 use crate::file::Backing;
-use crate::weave_tree::Doc;
+use crate::Doc;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -181,7 +181,7 @@ b
             .iter()
             .find(|b| b.name() == "*Shell Command Output*")
             .expect("output buffer");
-        assert_eq!(*out.text(), crate::weave_tree::Doc::from_bytes(b"a\nb"));
+        assert_eq!(*out.text(), crate::Doc::from_bytes(b"a\nb"));
         assert_eq!(ed.leaf_count(), 2);
     }
 
@@ -217,7 +217,7 @@ d
         assert_eq!(ed.message(), "No further undo information");
         assert_eq!(
             *ed.buffers().get_by_id(output_id(&ed)).text(),
-            crate::weave_tree::Doc::from_bytes(b"c\nd")
+            crate::Doc::from_bytes(b"c\nd")
         );
     }
 
@@ -327,7 +327,7 @@ more"
         let ed = record_init_error(ed, "bad");
         let ed = init_loaded(ed, Some(InitLoad::Applied));
         let kept = ed.buffers().get_by_id(file);
-        assert_eq!(*kept.text(), crate::weave_tree::Doc::from_bytes(b"mine"));
+        assert_eq!(*kept.text(), crate::Doc::from_bytes(b"mine"));
         assert!(kept.modified());
         let logs = ed
             .buffers()

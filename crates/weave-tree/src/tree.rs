@@ -4,55 +4,52 @@ use alloc::vec;
 use alloc::vec::Vec;
 use triomphe::{AllocError, Arc};
 
-use super::utf8::count_line_breaks;
-use super::{ByteSlice, CHUNK_CAP, ChildEntry, MAX_FANOUT, MAX_SLICE_BYTES, MIN_FANOUT, SliceNode};
+use crate::{
+    ByteSlice, CHUNK_CAP, ChildEntry, MAX_FANOUT, MAX_SLICE_BYTES, MIN_FANOUT, SliceNode, Summary,
+};
 
 #[must_use]
-pub(crate) fn summarize_leaf(slices: Vec<ByteSlice>) -> ChildEntry {
+pub(crate) fn summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> ChildEntry<S> {
     try_summarize_leaf(slices).expect("cannot allocate document leaf")
 }
 
-fn try_summarize_leaf(slices: Vec<ByteSlice>) -> Result<ChildEntry, AllocError> {
+fn try_summarize_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> Result<ChildEntry<S>, AllocError> {
     let mut bytes = 0usize;
-    let mut backing_bytes = 0usize;
-    let mut line_breaks = 0usize;
+    let mut summary = S::default();
     for s in &slices {
         bytes += s.range.len();
-        backing_bytes = backing_bytes.saturating_add(s.buf.len());
-        line_breaks += s.line_breaks;
+        summary = summary.combine(&s.summary);
     }
     Ok(ChildEntry {
         node: Arc::try_new(SliceNode::Leaf { slices })?,
         bytes,
-        backing_bytes,
-        line_breaks,
+        summary,
     })
 }
 
 #[must_use]
-pub(crate) fn summarize_internal(children: Vec<ChildEntry>) -> ChildEntry {
+pub(crate) fn summarize_internal<S: Summary>(children: Vec<ChildEntry<S>>) -> ChildEntry<S> {
     try_summarize_internal(children).expect("cannot allocate document node")
 }
 
-fn try_summarize_internal(children: Vec<ChildEntry>) -> Result<ChildEntry, AllocError> {
+fn try_summarize_internal<S: Summary>(
+    children: Vec<ChildEntry<S>>,
+) -> Result<ChildEntry<S>, AllocError> {
     let mut bytes = 0usize;
-    let mut backing_bytes = 0usize;
-    let mut line_breaks = 0usize;
+    let mut summary = S::default();
     for c in &children {
         bytes += c.bytes;
-        backing_bytes = backing_bytes.saturating_add(c.backing_bytes);
-        line_breaks += c.line_breaks;
+        summary = summary.combine(&c.summary);
     }
     Ok(ChildEntry {
         node: Arc::try_new(SliceNode::Internal { children })?,
         bytes,
-        backing_bytes,
-        line_breaks,
+        summary,
     })
 }
 
 #[must_use]
-pub(crate) fn entry_height(entry: &ChildEntry) -> usize {
+pub(crate) fn entry_height<S: Summary>(entry: &ChildEntry<S>) -> usize {
     let mut cur = entry;
     let mut h = 1;
     while let SliceNode::Internal { children } = cur.node.as_ref() {
@@ -62,11 +59,10 @@ pub(crate) fn entry_height(entry: &ChildEntry) -> usize {
     h
 }
 
-/// Packs one level, balancing the last two nodes if the last would underflow.
-fn try_pack_level<T>(
+fn try_pack_level<T, S: Summary>(
     items: Vec<T>,
-    summarize: impl Fn(Vec<T>) -> Result<ChildEntry, AllocError>,
-) -> Result<Vec<ChildEntry>, AllocError> {
+    summarize: impl Fn(Vec<T>) -> Result<ChildEntry<S>, AllocError>,
+) -> Result<Vec<ChildEntry<S>>, AllocError> {
     let mut items = items.into_iter();
     let mut level = Vec::new();
     level
@@ -87,13 +83,14 @@ fn try_pack_level<T>(
     Ok(level)
 }
 
-/// Bottom-up O(N) B-Tree builder from valid `ByteSlice`s.
 #[must_use]
-pub(crate) fn from_slices(slices: Vec<ByteSlice>) -> Option<ChildEntry> {
+pub(crate) fn from_slices<S: Summary>(slices: Vec<ByteSlice<S>>) -> Option<ChildEntry<S>> {
     try_from_slices(slices).expect("cannot allocate document tree")
 }
 
-pub(crate) fn try_from_slices(slices: Vec<ByteSlice>) -> Result<Option<ChildEntry>, AllocError> {
+pub(crate) fn try_from_slices<S: Summary>(
+    slices: Vec<ByteSlice<S>>,
+) -> Result<Option<ChildEntry<S>>, AllocError> {
     let mut level = try_pack_level(slices, try_summarize_leaf)?;
     while level.len() > 1 {
         level = try_pack_level(level, try_summarize_internal)?;
@@ -101,7 +98,7 @@ pub(crate) fn try_from_slices(slices: Vec<ByteSlice>) -> Result<Option<ChildEntr
     Ok(level.pop())
 }
 
-fn from_children_list(mut children: Vec<ChildEntry>) -> Option<ChildEntry> {
+fn from_children_list<S: Summary>(mut children: Vec<ChildEntry<S>>) -> Option<ChildEntry<S>> {
     match children.len() {
         0 => None,
         1 => children.pop(),
@@ -109,7 +106,7 @@ fn from_children_list(mut children: Vec<ChildEntry>) -> Option<ChildEntry> {
     }
 }
 
-fn non_empty_leaf(slices: Vec<ByteSlice>) -> Option<ChildEntry> {
+fn non_empty_leaf<S: Summary>(slices: Vec<ByteSlice<S>>) -> Option<ChildEntry<S>> {
     if slices.is_empty() {
         None
     } else {
@@ -117,32 +114,34 @@ fn non_empty_leaf(slices: Vec<ByteSlice>) -> Option<ChildEntry> {
     }
 }
 
-fn can_merge_slices(a: &ByteSlice, b: &ByteSlice) -> bool {
+fn can_merge_slices<S: Summary>(a: &ByteSlice<S>, b: &ByteSlice<S>) -> bool {
     let combined = a.range.len() + b.range.len();
     (Arc::ptr_eq(&a.buf, &b.buf) && a.range.end == b.range.start && combined <= MAX_SLICE_BYTES)
         || combined <= CHUNK_CAP
 }
 
-fn merge_two_slices(a: ByteSlice, b: ByteSlice) -> ByteSlice {
+fn merge_two_slices<S: Summary>(a: ByteSlice<S>, b: ByteSlice<S>) -> ByteSlice<S> {
     let combined = a.range.len() + b.range.len();
     if Arc::ptr_eq(&a.buf, &b.buf) && a.range.end == b.range.start && combined <= MAX_SLICE_BYTES {
+        let backing_len = a.buf.len();
         return ByteSlice {
             buf: a.buf,
             range: a.range.start..b.range.end,
-            line_breaks: a.line_breaks + b.line_breaks,
+            summary: a.summary.combine(&b.summary).with_backing_len(backing_len),
         };
     }
     let mut buf = Vec::with_capacity(combined);
     buf.extend_from_slice(&a.buf[a.range]);
     buf.extend_from_slice(&b.buf[b.range]);
+    let backing_len = buf.len();
     ByteSlice {
         buf: Arc::new(buf),
         range: 0..combined,
-        line_breaks: a.line_breaks + b.line_breaks,
+        summary: a.summary.combine(&b.summary).with_backing_len(backing_len),
     }
 }
 
-fn rightmost_slice(entry: &ChildEntry) -> &ByteSlice {
+fn rightmost_slice<S: Summary>(entry: &ChildEntry<S>) -> &ByteSlice<S> {
     let mut cur = entry;
     loop {
         match cur.node.as_ref() {
@@ -152,7 +151,7 @@ fn rightmost_slice(entry: &ChildEntry) -> &ByteSlice {
     }
 }
 
-fn leftmost_slice(entry: &ChildEntry) -> &ByteSlice {
+fn leftmost_slice<S: Summary>(entry: &ChildEntry<S>) -> &ByteSlice<S> {
     let mut cur = entry;
     loop {
         match cur.node.as_ref() {
@@ -162,19 +161,17 @@ fn leftmost_slice(entry: &ChildEntry) -> &ByteSlice {
     }
 }
 
-fn child_len(entry: &ChildEntry) -> usize {
+fn child_len<S: Summary>(entry: &ChildEntry<S>) -> usize {
     match entry.node.as_ref() {
         SliceNode::Leaf { slices } => slices.len(),
         SliceNode::Internal { children } => children.len(),
     }
 }
 
-/// Rebalances the last child of `children` if it has fewer than `MIN_FANOUT` items
-/// (or is `None`), borrowing from or merging with its left sibling.
-fn rebalance_last_child(
-    mut children: Vec<ChildEntry>,
-    last: Option<ChildEntry>,
-) -> Vec<ChildEntry> {
+fn rebalance_last_child<S: Summary>(
+    mut children: Vec<ChildEntry<S>>,
+    last: Option<ChildEntry<S>>,
+) -> Vec<ChildEntry<S>> {
     let Some(last_entry) = last else {
         return children;
     };
@@ -217,12 +214,10 @@ fn rebalance_last_child(
     children
 }
 
-/// Rebalances the first child of `children` if it has fewer than `MIN_FANOUT` items
-/// (or is `None`), borrowing from or merging with its right sibling.
-fn rebalance_first_child(
-    first: Option<ChildEntry>,
-    mut children: Vec<ChildEntry>,
-) -> Vec<ChildEntry> {
+fn rebalance_first_child<S: Summary>(
+    first: Option<ChildEntry<S>>,
+    mut children: Vec<ChildEntry<S>>,
+) -> Vec<ChildEntry<S>> {
     let Some(first_entry) = first else {
         return children;
     };
@@ -267,7 +262,9 @@ fn rebalance_first_child(
     out
 }
 
-fn pop_rightmost_slice(entry: ChildEntry) -> (Option<ChildEntry>, ByteSlice) {
+fn pop_rightmost_slice<S: Summary>(
+    entry: ChildEntry<S>,
+) -> (Option<ChildEntry<S>>, ByteSlice<S>) {
     match entry.node.as_ref() {
         SliceNode::Leaf { slices } => {
             let mut rest = slices.clone();
@@ -284,7 +281,9 @@ fn pop_rightmost_slice(entry: ChildEntry) -> (Option<ChildEntry>, ByteSlice) {
     }
 }
 
-fn pop_leftmost_slice(entry: ChildEntry) -> (ByteSlice, Option<ChildEntry>) {
+fn pop_leftmost_slice<S: Summary>(
+    entry: ChildEntry<S>,
+) -> (ByteSlice<S>, Option<ChildEntry<S>>) {
     match entry.node.as_ref() {
         SliceNode::Leaf { slices } => {
             let mut rest = slices.clone();
@@ -301,10 +300,10 @@ fn pop_leftmost_slice(entry: ChildEntry) -> (ByteSlice, Option<ChildEntry>) {
     }
 }
 
-fn split_or_single<T>(
+fn split_or_single<T, S: Summary>(
     mut items: Vec<T>,
-    summarize: impl Fn(Vec<T>) -> ChildEntry,
-) -> Vec<ChildEntry> {
+    summarize: impl Fn(Vec<T>) -> ChildEntry<S>,
+) -> Vec<ChildEntry<S>> {
     if items.len() <= MAX_FANOUT {
         vec![summarize(items)]
     } else {
@@ -314,7 +313,12 @@ fn split_or_single<T>(
     }
 }
 
-fn join_at_height(l: ChildEntry, r: ChildEntry, hl: usize, hr: usize) -> Vec<ChildEntry> {
+fn join_at_height<S: Summary>(
+    l: ChildEntry<S>,
+    r: ChildEntry<S>,
+    hl: usize,
+    hr: usize,
+) -> Vec<ChildEntry<S>> {
     if hl == hr {
         match (l.node.as_ref(), r.node.as_ref()) {
             (SliceNode::Leaf { slices: ls }, SliceNode::Leaf { slices: rs }) => {
@@ -353,7 +357,10 @@ fn join_at_height(l: ChildEntry, r: ChildEntry, hl: usize, hr: usize) -> Vec<Chi
     }
 }
 
-fn join_trees_raw(left: Option<ChildEntry>, right: Option<ChildEntry>) -> Option<ChildEntry> {
+fn join_trees_raw<S: Summary>(
+    left: Option<ChildEntry<S>>,
+    right: Option<ChildEntry<S>>,
+) -> Option<ChildEntry<S>> {
     match (left, right) {
         (None, r) => r,
         (l, None) => l,
@@ -370,10 +377,11 @@ fn join_trees_raw(left: Option<ChildEntry>, right: Option<ChildEntry>) -> Option
     }
 }
 
-/// Joins two valid trees in O(log P), merging adjacent seam slices when
-/// contiguous in the same backing allocation (`<= MAX_SLICE_BYTES`) or `<= CHUNK_CAP`.
 #[must_use]
-pub(crate) fn join(left: Option<ChildEntry>, right: Option<ChildEntry>) -> Option<ChildEntry> {
+pub(crate) fn join<S: Summary>(
+    left: Option<ChildEntry<S>>,
+    right: Option<ChildEntry<S>>,
+) -> Option<ChildEntry<S>> {
     let (l, r) = match (left, right) {
         (Some(l), Some(r)) => (l, r),
         (l, None) => return l,
@@ -388,33 +396,38 @@ pub(crate) fn join(left: Option<ChildEntry>, right: Option<ChildEntry>) -> Optio
     join_trees_raw(Some(l), Some(r))
 }
 
-fn split_byte_slice(slice: &ByteSlice, local: usize) -> (ByteSlice, ByteSlice) {
+fn split_byte_slice<S: Summary>(
+    slice: &ByteSlice<S>,
+    local: usize,
+) -> (ByteSlice<S>, ByteSlice<S>) {
     let split_pt = slice.range.start + local;
     let left_range = slice.range.start..split_pt;
     let right_range = split_pt..slice.range.end;
-    let left_lb = count_line_breaks(&slice.buf[left_range.clone()]);
-    let right_lb = slice.line_breaks - left_lb;
+    let backing_len = slice.buf.len();
+    let (ls, rs) = slice
+        .summary
+        .split_pair(&slice.buf[left_range.clone()], &slice.buf[right_range.clone()]);
     (
         ByteSlice {
             buf: Arc::clone(&slice.buf),
             range: left_range,
-            line_breaks: left_lb,
+            summary: ls.with_backing_len(backing_len),
         },
         ByteSlice {
             buf: Arc::clone(&slice.buf),
             range: right_range,
-            line_breaks: right_lb,
+            summary: rs.with_backing_len(backing_len),
         },
     )
 }
 
-fn assemble_split_side(
-    mut levels: Vec<Vec<ChildEntry>>,
-    leaf: Option<ChildEntry>,
+fn assemble_split_side<S: Summary>(
+    mut levels: Vec<Vec<ChildEntry<S>>>,
+    leaf: Option<ChildEntry<S>>,
     start_child_h: usize,
     is_left: bool,
-) -> Option<ChildEntry> {
-    let mut carry: Option<(ChildEntry, usize)> = leaf.map(|e| (e, 1));
+) -> Option<ChildEntry<S>> {
+    let mut carry: Option<(ChildEntry<S>, usize)> = leaf.map(|e| (e, 1));
     let mut child_h = start_child_h;
     while let Some(mut level_children) = levels.pop() {
         if !level_children.is_empty() {
@@ -450,12 +463,11 @@ fn assemble_split_side(
     carry.map(|(e, _)| e)
 }
 
-/// Splits at a valid `Unit` boundary in O(log P) worst case via one-pass spine accumulation.
 #[must_use]
-pub(crate) fn split_at(
-    root: Option<ChildEntry>,
+pub(crate) fn split_at<S: Summary>(
+    root: Option<ChildEntry<S>>,
     pos: usize,
-) -> (Option<ChildEntry>, Option<ChildEntry>) {
+) -> (Option<ChildEntry<S>>, Option<ChildEntry<S>>) {
     let Some(entry) = root else {
         return (None, None);
     };
@@ -468,10 +480,10 @@ pub(crate) fn split_at(
 
     let mut cur = entry;
     let mut rem = pos;
-    let mut left_levels: Vec<Vec<ChildEntry>> = Vec::new();
-    let mut right_levels: Vec<Vec<ChildEntry>> = Vec::new();
-    let mut left_leaf: Option<ChildEntry> = None;
-    let mut right_leaf: Option<ChildEntry> = None;
+    let mut left_levels: Vec<Vec<ChildEntry<S>>> = Vec::new();
+    let mut right_levels: Vec<Vec<ChildEntry<S>>> = Vec::new();
+    let mut left_leaf: Option<ChildEntry<S>> = None;
+    let mut right_leaf: Option<ChildEntry<S>> = None;
     let mut start_child_h = 1usize;
 
     loop {
@@ -533,13 +545,31 @@ pub(crate) fn split_at(
     )
 }
 
-/// Attempts an in-place append into a uniquely owned (`strong_count == 1`) leaf `ByteSlice`
-/// without allocating any `Arc` or `Vec` nodes along the spine (H1, D-05).
-pub(crate) fn try_insert_in_place(
-    mut entry: ChildEntry,
+fn recompute_leaf_summary<S: Summary>(slices: &[ByteSlice<S>]) -> (usize, S) {
+    let mut bytes = 0usize;
+    let mut summary = S::default();
+    for s in slices {
+        bytes += s.range.len();
+        summary = summary.combine(&s.summary);
+    }
+    (bytes, summary)
+}
+
+fn recompute_internal_summary<S: Summary>(children: &[ChildEntry<S>]) -> (usize, S) {
+    let mut bytes = 0usize;
+    let mut summary = S::default();
+    for c in children {
+        bytes += c.bytes;
+        summary = summary.combine(&c.summary);
+    }
+    (bytes, summary)
+}
+
+pub(crate) fn try_insert_in_place<S: Summary>(
+    mut entry: ChildEntry<S>,
     offset: usize,
     bytes: &[u8],
-) -> Result<ChildEntry, ChildEntry> {
+) -> Result<ChildEntry<S>, ChildEntry<S>> {
     let Some(node) = Arc::get_mut(&mut entry.node) else {
         return Err(entry);
     };
@@ -554,18 +584,18 @@ pub(crate) fn try_insert_in_place(
                         && len + bytes.len() <= MAX_SLICE_BYTES
                         && let Some(buf) = Arc::get_mut(&mut slice.buf)
                     {
-                            buf.truncate(slice.range.end);
-                            buf.extend_from_slice(bytes);
-                            let added_lb = count_line_breaks(bytes);
-                            slice.range.end += bytes.len();
-                            slice.line_breaks += added_lb;
-                            entry.bytes += bytes.len();
-                            entry.line_breaks += added_lb;
-                            entry.backing_bytes = slices
-                                .iter()
-                                .map(|s| s.buf.len())
-                                .fold(0usize, usize::saturating_add);
-                            return Ok(entry);
+                        buf.truncate(slice.range.end);
+                        buf.extend_from_slice(bytes);
+                        let new_backing_len = buf.len();
+                        slice.range.end += bytes.len();
+                        slice.summary = slice
+                            .summary
+                            .combine(&S::from_slice(bytes))
+                            .with_backing_len(new_backing_len);
+                        let (total_bytes, total_summary) = recompute_leaf_summary(slices);
+                        entry.bytes = total_bytes;
+                        entry.summary = total_summary;
+                        return Ok(entry);
                     }
                     return Err(entry);
                 }
@@ -590,18 +620,94 @@ pub(crate) fn try_insert_in_place(
             match try_insert_in_place(child, offset - acc, bytes) {
                 Ok(updated) => {
                     children.insert(idx, updated);
-                    let mut total_bytes = 0usize;
-                    let mut total_backing = 0usize;
-                    let mut total_lb = 0usize;
-                    for c in children.iter() {
-                        total_bytes += c.bytes;
-                        total_backing = total_backing.saturating_add(c.backing_bytes);
-                        total_lb += c.line_breaks;
-                    }
+                    let (total_bytes, total_summary) = recompute_internal_summary(children);
                     entry.bytes = total_bytes;
-                    entry.backing_bytes = total_backing;
-                    entry.line_breaks = total_lb;
+                    entry.summary = total_summary;
                     Ok(entry)
+                }
+                Err(orig) => {
+                    children.insert(idx, orig);
+                    Err(entry)
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn try_delete_in_place<S: Summary>(
+    mut entry: ChildEntry<S>,
+    offset: usize,
+    delete_len: usize,
+) -> Result<(ChildEntry<S>, Vec<u8>), ChildEntry<S>> {
+    let Some(node) = Arc::get_mut(&mut entry.node) else {
+        return Err(entry);
+    };
+    match node {
+        SliceNode::Leaf { slices } => {
+            let mut acc = 0usize;
+            for slice in slices.iter_mut() {
+                let len = slice.range.len();
+                if offset < acc + len {
+                    let local_start = offset - acc;
+                    let local_end = local_start + delete_len;
+                    if local_end <= len
+                        && delete_len < len
+                        && (local_end == len || local_start == 0)
+                    {
+                        let abs_start = slice.range.start + local_start;
+                        let abs_end = slice.range.start + local_end;
+                        let deleted = slice.buf[abs_start..abs_end].to_vec();
+                        if local_end == len {
+                            let left_end = abs_start;
+                            let kept_range = slice.range.start..left_end;
+                            let (kept_s, _) = slice
+                                .summary
+                                .split_pair(&slice.buf[kept_range], &deleted);
+                            slice.range.end -= delete_len;
+                            if let Some(buf) = Arc::get_mut(&mut slice.buf) {
+                                buf.truncate(slice.range.end);
+                            }
+                            slice.summary = kept_s.with_backing_len(slice.buf.len());
+                        } else {
+                            let kept_range = abs_end..slice.range.end;
+                            let (_, kept_s) = slice
+                                .summary
+                                .split_pair(&deleted, &slice.buf[kept_range]);
+                            slice.range.start += delete_len;
+                            slice.summary = kept_s.with_backing_len(slice.buf.len());
+                        }
+                        let (total_bytes, total_summary) = recompute_leaf_summary(slices);
+                        entry.bytes = total_bytes;
+                        entry.summary = total_summary;
+                        return Ok((entry, deleted));
+                    }
+                    return Err(entry);
+                }
+                acc += len;
+            }
+            Err(entry)
+        }
+        SliceNode::Internal { children } => {
+            let mut acc = 0usize;
+            let mut target_idx = None;
+            for (idx, child) in children.iter().enumerate() {
+                if offset < acc + child.bytes {
+                    target_idx = Some(idx);
+                    break;
+                }
+                acc += child.bytes;
+            }
+            let Some(idx) = target_idx else {
+                return Err(entry);
+            };
+            let child = children.remove(idx);
+            match try_delete_in_place(child, offset - acc, delete_len) {
+                Ok((updated, deleted)) => {
+                    children.insert(idx, updated);
+                    let (total_bytes, total_summary) = recompute_internal_summary(children);
+                    entry.bytes = total_bytes;
+                    entry.summary = total_summary;
+                    Ok((entry, deleted))
                 }
                 Err(orig) => {
                     children.insert(idx, orig);

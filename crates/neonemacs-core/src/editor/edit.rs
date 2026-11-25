@@ -7,7 +7,6 @@ use crate::effect::Effects;
 use crate::undo::{Edit, RecordedEdit};
 use crate::width::column;
 use alloc::borrow::ToOwned;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 
 impl Editor {
@@ -151,16 +150,22 @@ impl Editor {
             }
         };
         let at = self.buffer().text().floor_boundary(self.window().point);
-        let bytes = if c == '\t' && self.settings.config.toggles.contains(Toggles::EXPAND_TABS) {
-            let m = self.settings.config.metrics();
-            let tab = m.tab;
-            let col = column(self.buffer().text(), at, m);
-            " ".repeat(tab - col % tab).into_bytes()
-        } else {
-            c.to_string().into_bytes()
-        };
-        let len = bytes.len();
-        let (ed, applied) = self.apply(Edit::insert(at, bytes));
+        let (ed, applied, len) =
+            if c == '\t' && self.settings.config.toggles.contains(Toggles::EXPAND_TABS) {
+                let m = self.settings.config.metrics();
+                let tab = m.tab;
+                let col = column(self.buffer().text(), at, m);
+                let spaces = tab - col % tab;
+                let bytes = " ".repeat(spaces).into_bytes();
+                let (ed, applied) = self.apply(Edit::insert(at, bytes));
+                (ed, applied, spaces)
+            } else {
+                let mut utf8 = [0u8; 4];
+                let s = c.encode_utf8(&mut utf8);
+                let len = s.len();
+                let (ed, applied) = self.apply(Edit::insert(at, s.as_bytes()));
+                (ed, applied, len)
+            };
         if applied.is_none() {
             return ed;
         }
@@ -231,7 +236,7 @@ mod tests {
     use crate::config::Config;
     use crate::keymap::{Code, Key};
     use crate::test_support::{press, run_command, text};
-    use crate::weave_tree::Doc;
+    use crate::Doc;
 
     fn editor_with(s: &str) -> Editor {
         Editor::new(Config::default())

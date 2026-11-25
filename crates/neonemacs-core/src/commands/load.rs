@@ -5,6 +5,7 @@ use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
 use crate::file::{Read, loaded_from};
+use crate::EditorDocExt;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -191,7 +192,7 @@ mod tests {
     use crate::file::{Backing, DiskState, FilePath};
     use crate::file::{RawFile, Read};
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
-    use crate::weave_tree::Doc;
+    use crate::Doc;
 
     /// An editor whose `max-file-size` is 4 bytes.
     fn small_limit() -> Editor {
@@ -213,7 +214,7 @@ mod tests {
         assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
         assert_eq!(
             *ed.buffer_by_id(id).text(),
-            crate::weave_tree::Doc::from_bytes(b"a\nb\nc\n")
+            crate::Doc::from_bytes(b"a\nb\nc\n")
         );
         assert!(!ed.buffer_by_id(id).modified());
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\nc\r\n");
@@ -231,7 +232,7 @@ mod tests {
         assert_eq!(ed.buffer_by_id(id).eol(), Eol::Lf);
         assert_eq!(
             *ed.buffer_by_id(id).text(),
-            crate::weave_tree::Doc::from_bytes(b"a\nb\n")
+            crate::Doc::from_bytes(b"a\nb\n")
         );
         assert!(!ed.buffer_by_id(id).modified());
         assert_eq!(saved_bytes(&ed, id), b"a\nb\n");
@@ -249,7 +250,7 @@ mod tests {
         assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
         assert_eq!(
             *ed.buffer_by_id(id).text(),
-            crate::weave_tree::Doc::from_bytes(b"a\nb\n")
+            crate::Doc::from_bytes(b"a\nb\n")
         );
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
     }
@@ -311,7 +312,7 @@ mod tests {
         let ed = probed(WalProbe::Absent);
         assert_eq!(
             *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"disk")
+            crate::Doc::from_bytes(b"disk")
         );
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "");
@@ -325,7 +326,7 @@ mod tests {
         }));
         assert_eq!(
             *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"draft")
+            crate::Doc::from_bytes(b"draft")
         );
         assert_eq!(ed.buffer().eol(), Eol::Crlf);
         assert!(ed.buffer().modified());
@@ -335,7 +336,7 @@ mod tests {
     #[test]
     fn replayed_delta_wal_restores_text_and_eol() {
         use crate::effect::RecoveredDelta;
-        use crate::weave_tree::Replace;
+        use crate::Replace;
         let delta = RecoveredDelta::replay(
             Doc::from_bytes(b"disk"),
             Eol::Crlf,
@@ -359,7 +360,7 @@ mod tests {
         let ed = probed(WalProbe::Stale(Ok("dir/.f.txt.wal.stale".to_owned())));
         assert_eq!(
             *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"disk")
+            crate::Doc::from_bytes(b"disk")
         );
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "Stale WAL kept as .f.txt.wal.stale");
@@ -398,7 +399,7 @@ mod tests {
         );
         assert_eq!(
             *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"ab")
+            crate::Doc::from_bytes(b"ab")
         );
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
@@ -420,7 +421,7 @@ mod tests {
         );
         assert_eq!(
             *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"x\n")
+            crate::Doc::from_bytes(b"x\n")
         );
         assert!(
             matches!(fx.as_slice(), [Effect::RemoveWal { target }] if target.path() == "f.txt")
@@ -491,7 +492,7 @@ mod tests {
         );
         assert_eq!(
             *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"abc")
+            crate::Doc::from_bytes(b"abc")
         );
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "Revert failed: f.txt does not exist");

@@ -3,7 +3,8 @@
 
 use core::ops::ControlFlow;
 
-use crate::weave_tree::{Doc, Unit, decode_in_slice};
+use crate::{Doc, EditorDocExt, Unit};
+use weave_tree::utf8::decode_in_slice;
 use unicode_width::UnicodeWidthChar;
 
 /// How wide the terminal draws things: the tab stop distance and whether East Asian ambiguous

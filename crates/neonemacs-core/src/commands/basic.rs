@@ -2,7 +2,7 @@
 
 use crate::editor::{Buffer, BufferId, Confirm, Dir, Editor, LastCommand, Window};
 use crate::effect::Effects;
-use crate::weave_tree::Doc;
+use crate::{Doc, EditorDocExt};
 use crate::width::{column, pos_at_column};
 use crate::window::WindowManager;
 
@@ -288,7 +288,7 @@ mod tests {
     use crate::editor::{KillRing, Mode};
     use crate::file::Backing;
     use crate::test_support::{editor, keys, point, run_command, set_mark, text, typ};
-    use crate::weave_tree::Doc;
+    use crate::{Doc, EditorDocExt};
 
     #[test]
     fn the_mark_is_active_until_an_edit_cancel_or_copy() {

@@ -1,0 +1,18 @@
+[package]
+name = "weave-tree"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+memchr = { version = "2", default-features = false }
+triomphe = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1"
+
+[[bench]]
+name = "weave_tree_bench"
+harness = false

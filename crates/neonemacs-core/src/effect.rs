@@ -8,7 +8,7 @@ use crate::config::ShellSpec;
 use crate::eol::Eol;
 use crate::file::{DiskState, Read};
 use crate::keymap::Key;
-use crate::weave_tree::Doc;
+use crate::Doc;
 use alloc::string::String;
 use alloc::vec::Vec;
 

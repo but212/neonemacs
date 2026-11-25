@@ -171,7 +171,7 @@ impl SyntaxRegistry {
 
 use core::ops::{ControlFlow, Range};
 
-use crate::weave_tree::Doc;
+use crate::Doc;
 
 /// Returns one token per byte of `range` after clamping to the document length.
 /// Reads complete units at the range edges without returning their extra tokens.

@@ -223,7 +223,7 @@ mod tests {
     use crate::eol::Eol;
     use crate::file::FilePath;
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
-    use crate::weave_tree::Doc;
+    use crate::Doc;
 
     fn quit_message(names: &[&str]) -> String {
         let mut ed = editor();

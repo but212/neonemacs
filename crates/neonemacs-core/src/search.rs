@@ -8,7 +8,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::{ControlFlow, Range};
 
-use crate::weave_tree::{CHUNK_CAP, Doc, Unit, decode_in_slice, decode_unit_raw, prev_in_slice};
+use crate::{CHUNK_CAP, Doc, Unit};
+use weave_tree::utf8::{decode_in_slice, decode_unit_raw, prev_in_slice};
 
 // Edited documents can have slices as small as a byte. Bound the overlap copied at
 // each seam by the edit chunk size, not by the maximum size of a loaded slice.
@@ -592,7 +593,7 @@ mod tests {
     use alloc::format;
 
     use super::*;
-    use crate::weave_tree::MAX_SLICE_BYTES;
+    use crate::MAX_SLICE_BYTES;
 
     fn text(s: &str) -> Doc {
         Doc::from_bytes(s.as_bytes())
@@ -612,7 +613,7 @@ mod tests {
 
     #[test]
     fn streamed_unit_candidates_match_reference_across_slices() {
-        use crate::weave_tree::DocBuilder;
+        use crate::DocBuilder;
 
         let doc = DocBuilder::new()
             .push_bytes(b"B\n\xC9")
@@ -799,7 +800,7 @@ mod tests {
 
     #[test]
     fn backward_literal_carries_overlap_across_tiny_slices() {
-        use crate::weave_tree::DocBuilder;
+        use crate::DocBuilder;
 
         let bytes = "zabcdefabcdef!";
         let doc = [&b"za"[..], b"b", b"cde", b"fa", b"bc", b"d", b"ef!"]
@@ -820,7 +821,7 @@ mod tests {
 
     #[test]
     fn medium_literal_search_on_fragmented_text() {
-        use crate::weave_tree::DocBuilder;
+        use crate::DocBuilder;
 
         let block = [b'a'; 64];
         let builder = (0..1024).fold(DocBuilder::new(), |b, _| b.push_bytes(&block));

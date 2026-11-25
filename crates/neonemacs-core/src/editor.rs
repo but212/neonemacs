@@ -18,7 +18,7 @@ use crate::eol::Eol;
 use crate::file::{Backing, FilePath};
 use crate::keymap::{KeyAliases, Keymap};
 use crate::syntax::SyntaxRegistry;
-use crate::weave_tree::Doc;
+use crate::Doc;
 use crate::window::WindowManager;
 use documents::Documents;
 pub use documents::KillRing;

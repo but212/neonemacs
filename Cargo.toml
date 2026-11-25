@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/neonemacs-core"]
-default-members = [".", "crates/neonemacs-core"]
+members = ["crates/neonemacs-core", "crates/weave-tree"]
+default-members = [".", "crates/neonemacs-core", "crates/weave-tree"]
 
 [workspace.package]
 edition = "2024"

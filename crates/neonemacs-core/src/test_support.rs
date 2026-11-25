@@ -10,7 +10,7 @@ use crate::eol::Eol;
 use crate::file::{Backing, DiskState, FilePath};
 use crate::keymap::{Code, Key, parse_keys};
 use crate::step;
-use crate::weave_tree::Doc;
+use crate::Doc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
