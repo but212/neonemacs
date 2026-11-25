@@ -50,8 +50,9 @@ pub enum Unit {
 #[derive(Clone, Debug)]
 pub(crate) struct ByteSlice<S: Summary> {
     pub(crate) buf: Arc<Vec<u8>>,              // 최대 MAX_SLICE_BYTES 단위 독립 할당 (H1 Arc::get_mut 지원)
-    pub(crate) range: Range<usize>,            // 항상 !range.is_empty()
-    pub(crate) summary: S,                     // buf[range] 요약 메타데이터 (예: LineBreaks)
+    pub(crate) summary: S,                     // buf[start..end] 요약 메타데이터 (예: LineBreaks)
+    pub(crate) start: u16,                     // 항상 start < end
+    pub(crate) end: u16,
 }
 
 /// 내부 노드 및 루트의 자식 참조 + 인라인 요약 (단일 진실 원천)
