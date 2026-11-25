@@ -1,4 +1,4 @@
-use crate::weave_tree::{Doc, DocBuilder};
+use crate::{Doc, DocBuilder, total_lines};
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use memchr::memchr_iter;
@@ -23,7 +23,7 @@ impl Eol {
 
     /// Whether normalizing these bytes after saving leaves the document unchanged.
     pub(crate) fn preserves_saved_doc(self, doc: &Doc) -> bool {
-        if self == Self::Crlf || doc.total_lines() == 1 {
+        if self == Self::Crlf || total_lines(doc) == 1 {
             return true;
         }
         // LF saves verbatim, but reopening strips CRs immediately before LF, even across slices.
@@ -149,7 +149,7 @@ impl EolStreamDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::weave_tree::Unit;
+    use crate::Unit;
 
     fn decode(raw: &[u8], default: Eol) -> (Eol, Doc) {
         let (doc, eol) = EolStreamDecoder::new().push_chunk(raw).finish();
@@ -157,73 +157,41 @@ mod tests {
     }
 
     #[test]
-    fn pure_crlf_is_detected_and_normalized() {
-        let (eol, doc) = decode(b"a\r\nb\r\n", Eol::Lf);
-        assert_eq!(eol, Eol::Crlf);
-        assert_eq!(doc, Doc::from_bytes(b"a\nb\n"));
-    }
-
-    #[test]
-    fn default_eol_applies_only_when_there_is_no_line_break() {
-        for raw in [&b"abc"[..], b""] {
-            let (eol, doc) = decode(raw, Eol::Crlf);
-            assert_eq!(eol, Eol::Crlf);
-            assert_eq!(doc, Doc::from_bytes(raw));
+    fn decode_detects_eol_and_normalizes_line_endings() {
+        let cases: &[(&[u8], Eol, Eol, &[u8])] = &[
+            (b"a\r\nb\r\n", Eol::Lf, Eol::Crlf, b"a\nb\n"),
+            (b"abc", Eol::Crlf, Eol::Crlf, b"abc"),
+            (b"", Eol::Crlf, Eol::Crlf, b""),
+            (b"a\nb\n", Eol::Crlf, Eol::Lf, b"a\nb\n"),
+            (b"a\nb\n", Eol::Lf, Eol::Lf, b"a\nb\n"),
+            (b"a\rb", Eol::Lf, Eol::Lf, b"a\rb"),
+            (b"", Eol::Lf, Eol::Lf, b""),
+            // 2 CRLF vs 1 LF -> CRLF mode
+            (b"a\r\nb\r\nc\n", Eol::Lf, Eol::Crlf, b"a\nb\nc\n"),
+            // 1 CRLF vs 1 LF -> tie -> LF mode
+            (b"a\r\nb\n", Eol::Lf, Eol::Lf, b"a\nb\n"),
+            // 1 CRLF vs 2 LF -> LF mode
+            (b"a\r\nb\nc\n", Eol::Lf, Eol::Lf, b"a\nb\nc\n"),
+            // Double CR before LF keeps one CR
+            (b"a\r\r\n", Eol::Lf, Eol::Crlf, b"a\r\n"),
+            // Standalone CR preserved in memory
+            (b"a\rb\r\n", Eol::Lf, Eol::Crlf, b"a\rb\n"),
+        ];
+        for &(raw, default_eol, expected_eol, expected_bytes) in cases {
+            let (eol, doc) = decode(raw, default_eol);
+            assert_eq!(eol, expected_eol, "raw={raw:?} default={default_eol:?}");
+            assert_eq!(
+                doc,
+                Doc::from_bytes(expected_bytes),
+                "raw={raw:?} default={default_eol:?}"
+            );
         }
-        let (eol, _) = decode(b"a\nb\n", Eol::Crlf);
-        assert_eq!(eol, Eol::Lf);
-        let (eol, _) = decode(b"a\r\nb\r\n", Eol::Lf);
-        assert_eq!(eol, Eol::Crlf);
-    }
-
-    #[test]
-    fn lf_files_are_kept_raw() {
-        for raw in [&b"a\nb\n"[..], b"a\rb", b""] {
-            let (eol, doc) = decode(raw, Eol::Lf);
-            assert_eq!(eol, Eol::Lf);
-            assert_eq!(doc, Doc::from_bytes(raw));
-        }
-    }
-
-    #[test]
-    fn majority_crlf_detected_and_normalized() {
-        // 2 CRLF vs 1 LF -> CRLF mode, normalized text
-        let (eol, doc) = decode(b"a\r\nb\r\nc\n", Eol::Lf);
-        assert_eq!(eol, Eol::Crlf);
-        assert_eq!(doc, Doc::from_bytes(b"a\nb\nc\n"));
-    }
-
-    #[test]
-    fn majority_lf_or_tie_detected_and_normalized() {
-        // 1 CRLF vs 1 LF -> tie -> LF mode, normalized text
-        let (eol, doc) = decode(b"a\r\nb\n", Eol::Lf);
-        assert_eq!(eol, Eol::Lf);
-        assert_eq!(doc, Doc::from_bytes(b"a\nb\n"));
-
-        // 1 CRLF vs 2 LF -> LF mode, normalized text
-        let (eol, doc) = decode(b"a\r\nb\nc\n", Eol::Lf);
-        assert_eq!(eol, Eol::Lf);
-        assert_eq!(doc, Doc::from_bytes(b"a\nb\nc\n"));
     }
 
     #[test]
     fn labels_name_each_mode() {
         assert_eq!(Eol::Lf.label(), "LF");
         assert_eq!(Eol::Crlf.label(), "CRLF");
-    }
-
-    #[test]
-    fn double_cr_before_lf_keeps_one_cr_in_text() {
-        let (eol, doc) = decode(b"a\r\r\n", Eol::Lf);
-        assert_eq!(eol, Eol::Crlf);
-        assert_eq!(doc, Doc::from_bytes(b"a\r\n"));
-    }
-
-    #[test]
-    fn standalone_cr_preserved_in_memory() {
-        let (eol, doc) = decode(b"a\rb\r\n", Eol::Lf);
-        assert_eq!(eol, Eol::Crlf);
-        assert_eq!(doc, Doc::from_bytes(b"a\rb\n"));
     }
 
     #[test]

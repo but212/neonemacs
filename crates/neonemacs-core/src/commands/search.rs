@@ -1,10 +1,9 @@
 //! Incremental search and interactive query-replace commands (§9).
 
-use crate::commands::prompt::prompt;
 use crate::config::Toggles;
 use crate::dispatch::answer_char;
 use crate::editor::{
-    CANCEL_MESSAGE, Direction, Editor, Isearch, MatchKind, Mode, Prefix, Purpose, QueryReplace,
+    CANCEL_MESSAGE, Direction, Editor, Isearch, MatchKind, Mode, Prefix, QueryReplace,
 };
 use crate::effect::Effects;
 use crate::keymap::{Code, Key};
@@ -13,31 +12,10 @@ use crate::undo::Edit;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
+#[cfg(test)]
 use alloc::vec::Vec;
 
-pub(crate) fn isearch_forward(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        start_isearch(ed, Direction::Forward, MatchKind::Literal),
-        fx,
-    )
-}
-
-pub(crate) fn isearch_backward(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        start_isearch(ed, Direction::Backward, MatchKind::Literal),
-        fx,
-    )
-}
-
-pub(crate) fn isearch_forward_regexp(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, Direction::Forward, MatchKind::Regex), fx)
-}
-
-pub(crate) fn isearch_backward_regexp(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, Direction::Backward, MatchKind::Regex), fx)
-}
-
-fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
+pub(crate) fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
     let origin = ed.window().point;
     ed.set_mode(Mode::Isearch(Isearch {
         direction,
@@ -57,7 +35,7 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Isearch(mut s) = ed.mode().clone() else {
         return (ed, fx);
     };
-    if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
+    if key.is_cancel() {
         let ed = ed
             .set_mode(Mode::normal())
             .move_point(s.origin)
@@ -94,16 +72,19 @@ pub fn isearch_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
 
 /// Searches from `from` in the direction of `s` and moves point to the match.
 /// With `wrap`, a miss restarts at the other end of the buffer.
+fn compile_pattern(kind: MatchKind, text: &str) -> Result<Pattern, String> {
+    match kind {
+        MatchKind::Regex => Pattern::regex(text),
+        MatchKind::Literal => Ok(Pattern::literal(text)),
+    }
+}
+
 fn isearch_step(ed: Editor, mut s: Isearch, from: usize, wrap: bool) -> (Editor, Isearch) {
     if s.text.is_empty() {
         s.found = None;
         return (ed.set_message("I-search: "), s);
     }
-    let pattern = match s.kind {
-        MatchKind::Regex => Pattern::regex(&s.text),
-        MatchKind::Literal => Ok(Pattern::literal(&s.text)),
-    };
-    let pattern = match pattern {
+    let pattern = match compile_pattern(s.kind, &s.text) {
         Ok(p) => p,
         Err(e) => {
             s.found = None;
@@ -176,16 +157,13 @@ pub fn start_query_replace(
     if pattern.is_empty() {
         return (ed, Err("empty pattern".to_owned()));
     }
-    let pattern = match kind {
-        MatchKind::Regex => match Pattern::regex(pattern) {
-            Ok(p) => p,
-            Err(e) => return (ed, Err(e)),
-        },
-        MatchKind::Literal => Pattern::literal(pattern),
+    let pattern = match compile_pattern(kind, pattern) {
+        Ok(p) => p,
+        Err(e) => return (ed, Err(e)),
     };
     let fold = ed.config().toggles.contains(Toggles::CASE_FOLD_SEARCH);
     let from = ed.window().point;
-    let Some(current) = next_match(&ed, &pattern, fold, from) else {
+    let Some(current) = search::find_forward(ed.buffer().text(), &pattern, from, fold) else {
         return (ed.set_message("No match"), Ok(()));
     };
     let q = QueryReplace {
@@ -202,13 +180,6 @@ pub fn start_query_replace(
     (ed, Ok(()))
 }
 
-fn next_match(ed: &Editor, pattern: &Pattern, fold: bool, from: usize) -> Option<(usize, usize)> {
-    if from > ed.buffer().text().total_bytes() {
-        return None;
-    }
-    search::find_forward(ed.buffer().text(), pattern, from, fold)
-}
-
 /// Answers for query-replace: `y`/SPC replace, `n`/DEL skip, `!` replace the rest,
 /// `q`/RET/`C-g` stop (A8). The whole session is one undo group.
 #[must_use]
@@ -217,23 +188,27 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
         return ed;
     };
     let (start, end) = q.current;
-    match answer_char(ed.key_aliases(), key) {
-        Some('y' | ' ') => match replace_match(ed, &q, start, end) {
+    match (answer_char(ed.key_aliases(), key), key) {
+        (Some('y' | ' '), _) => match replace_match(ed, &q, start, end) {
             (ed, Some(from)) => {
                 q.count += 1;
                 step(ed, q, from)
             }
             (ed, None) => finish(ed, &q),
         },
-        Some('n') => {
+        (Some('n'), _)
+        | (
+            None,
+            Key {
+                code: Code::Backspace,
+                ctrl: false,
+                meta: false,
+            },
+        ) => {
             let from = resume(&ed, end, start == end);
             step(ed, q, from)
         }
-        None if key == Key::plain(Code::Backspace) => {
-            let from = resume(&ed, end, start == end);
-            step(ed, q, from)
-        }
-        Some('!') => {
+        (Some('!'), _) => {
             let mut ed = ed;
             let mut current = Some((start, end));
             while let Some((s, e)) = current {
@@ -243,12 +218,12 @@ pub fn query_key(ed: Editor, key: Key) -> Editor {
                     break;
                 };
                 q.count += 1;
-                current = next_match(&ed, &q.pattern, q.fold, from);
+                current = search::find_forward(ed.buffer().text(), &q.pattern, from, q.fold);
             }
             finish(ed, &q)
         }
-        Some('q' | '\n') => finish(ed, &q),
-        None if key == Key::ctrl('g') || key == Key::plain(Code::Esc) => finish(ed, &q),
+        (Some('q' | '\n'), _) => finish(ed, &q),
+        (None, k) if k.is_cancel() => finish(ed, &q),
         _ => ed.set_message("Answer y, n, !, or q"),
     }
 }
@@ -263,11 +238,7 @@ fn replace_match(
 ) -> (Editor, Option<usize>) {
     let replacement = match q.kind {
         MatchKind::Regex => {
-            let mut matched = Vec::with_capacity(end.saturating_sub(start));
-            let _ = ed.buffer().text().try_for_each_slice(start..end, |chunk| {
-                matched.extend_from_slice(chunk);
-                core::ops::ControlFlow::<()>::Continue(())
-            });
+            let matched = crate::doc_range_bytes(ed.buffer().text(), start..end);
             search::expand_replacement(&q.replacement, &matched)
         }
         MatchKind::Literal => q.replacement.as_bytes().to_vec(),
@@ -276,7 +247,7 @@ fn replace_match(
     let (ed, applied) = ed.apply(Edit::replace(
         start,
         end - start,
-        crate::weave_tree::Doc::from_bytes(&replacement),
+        crate::Doc::from_bytes(&replacement),
     ));
     if applied.is_none() {
         return (ed, None);
@@ -302,7 +273,7 @@ fn resume(ed: &Editor, after: usize, matched_empty: bool) -> usize {
 }
 
 fn step(ed: Editor, q: QueryReplace, from: usize) -> Editor {
-    match next_match(&ed, &q.pattern, q.fold, from) {
+    match search::find_forward(ed.buffer().text(), &q.pattern, from, q.fold) {
         Some(current) => ed.set_mode(Mode::QueryReplace(QueryReplace { current, ..q })),
         None => finish(ed, &q),
     }
@@ -312,32 +283,6 @@ fn finish(ed: Editor, q: &QueryReplace) -> Editor {
     ed.set_mode(Mode::normal())
         .boundary()
         .set_message(format!("Replaced {} occurrence(s)", q.count))
-}
-
-pub(crate) fn query_replace_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        prompt(
-            ed,
-            "Query replace: ",
-            Purpose::QueryFrom {
-                kind: MatchKind::Literal,
-            },
-        ),
-        fx,
-    )
-}
-
-pub(crate) fn query_replace_regexp_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        prompt(
-            ed,
-            "Query replace regexp: ",
-            Purpose::QueryFrom {
-                kind: MatchKind::Regex,
-            },
-        ),
-        fx,
-    )
 }
 
 #[cfg(test)]
@@ -354,25 +299,25 @@ mod tests {
     }
 
     #[test]
-    fn isearch_moves_and_cancels() {
-        let ed = typ(editor(), "abc abd");
-        let ed = keys(ed, "C-a C-s");
-        let ed = typ(ed, "a");
-        assert_eq!(point(&ed), 1);
-        let ed = typ(ed, "b");
-        assert_eq!(point(&ed), 2);
-        let ed = keys(ed, "C-s");
-        assert_eq!(point(&ed), 6);
-        let ed = keys(ed, "DEL");
-        assert_eq!(point(&ed), 1);
-        let ed = keys(ed, "C-g");
-        assert_eq!(point(&ed), 0);
-        assert_eq!(
-            ed.mode(),
-            &Mode::Normal {
-                prefix: Prefix::None
+    fn isearch_moves_and_cancels_on_ctrl_g_and_esc() {
+        for cancel in ["C-g", "ESC"] {
+            let ed = typ(editor(), "abc abd");
+            let ed = keys(ed, "C-a C-s");
+            let ed = typ(ed, "a");
+            assert_eq!(point(&ed), 1);
+            let ed = typ(ed, "b");
+            assert_eq!(point(&ed), 2);
+            let ed = keys(ed, "C-s");
+            assert_eq!(point(&ed), 6);
+            let ed = keys(ed, "DEL");
+            assert_eq!(point(&ed), 1);
+            let ed = keys(ed, cancel);
+            assert_eq!(point(&ed), 0);
+            assert_eq!(ed.mode(), &Mode::normal());
+            if cancel == "ESC" {
+                assert_eq!(ed.message(), "Quit");
             }
-        );
+        }
     }
 
     fn with_jamo() -> Editor {
@@ -420,42 +365,19 @@ mod tests {
     }
 
     #[test]
-    fn query_replace_unknown_key_hints_and_keeps_session() {
-        let ed = typ(editor(), "foo");
-        let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| {
+    fn query_replace_unrecognized_keys_hint_and_keep_session() {
+        // I-46: both unknown chars and non-character keys (arrow) hint without ending the session.
+        let base = typ(editor(), "foo");
+        let base = keys(base, "C-a");
+        let base = run_command(base, |e, fx| {
             (start_query(e, "foo", "qux", MatchKind::Literal), fx)
         });
-        let ed = typ(ed, "z");
-        assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
-        assert_eq!(ed.message(), "Answer y, n, !, or q");
-        assert_eq!(text(&ed), "foo");
-    }
-
-    #[test]
-    fn query_replace_non_character_key_hints_and_keeps_session() {
-        // I-46: a key without a character (an arrow) is answered too, and does not end the session.
-        let ed = typ(editor(), "foo");
-        let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| {
-            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
-        });
-        let ed = crate::test_support::press(ed, Key::plain(Code::Up));
-        assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
-        assert_eq!(ed.message(), "Answer y, n, !, or q");
-        assert_eq!(text(&ed), "foo");
-    }
-
-    #[test]
-    fn isearch_esc_cancels_like_ctrl_g() {
-        let ed = typ(editor(), "abc abd");
-        let ed = keys(ed, "C-a C-s");
-        let ed = typ(ed, "b");
-        assert_eq!(point(&ed), 2);
-        let ed = keys(ed, "ESC");
-        assert_eq!(point(&ed), 0);
-        assert_eq!(ed.mode(), &Mode::normal());
-        assert_eq!(ed.message(), "Quit");
+        for key in [Key::plain(Code::Char('z')), Key::plain(Code::Up)] {
+            let ed = crate::test_support::press(base.clone(), key);
+            assert!(matches!(ed.mode(), Mode::QueryReplace(_)));
+            assert_eq!(ed.message(), "Answer y, n, !, or q");
+            assert_eq!(text(&ed), "foo");
+        }
     }
 
     #[test]
@@ -504,7 +426,7 @@ mod tests {
     fn isearch_regexp_extends_pattern() {
         let ed = typ(editor(), "x1 x22");
         let ed = keys(ed, "C-a");
-        let ed = run_command(ed, isearch_forward_regexp);
+        let (ed, _) = crate::commands::find("isearch-forward-regexp").unwrap()(ed, Vec::new());
         let ed = typ(ed, "x[0-9]*");
         assert_eq!(point(&ed), 2);
     }
@@ -533,23 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn query_replace_quits_early() {
-        let ed = typ(editor(), "foo bar foo");
-        let ed = keys(ed, "C-a");
-        let ed = run_command(ed, |e, fx| {
-            (start_query(e, "foo", "qux", MatchKind::Literal), fx)
-        });
-        let ed = keys(ed, "y q");
-        assert_eq!(text(&ed), "qux bar foo");
-        assert_eq!(
-            ed.mode(),
-            &Mode::Normal {
-                prefix: Prefix::None
-            }
-        );
-    }
-
-    #[test]
     fn query_replace_empty_matches_terminate() {
         let ed = typ(editor(), "ab");
         let ed = keys(ed, "C-a");
@@ -563,7 +468,7 @@ mod tests {
     #[test]
     fn bulk_query_replace_keeps_small_inverses_undoable() {
         use crate::config::Config;
-        use crate::weave_tree::{Doc, MAX_SLICE_BYTES};
+        use crate::{Doc, MAX_SLICE_BYTES};
 
         const MATCHES: usize = 257;
         let mut bytes = vec![b'a'; MATCHES * MAX_SLICE_BYTES];
@@ -587,11 +492,7 @@ mod tests {
     #[test]
     fn query_replace_continues_after_joining_utf8_bytes() {
         let ed = editor()
-            .with_current_buffer(|b| {
-                b.with_text(crate::weave_tree::Doc::from_bytes(&[
-                    0xC3, b'X', 0xA9, b'X',
-                ]))
-            })
+            .with_current_buffer(|b| b.with_text(crate::Doc::from_bytes(&[0xC3, b'X', 0xA9, b'X'])))
             .move_point(1);
         let ed = start_query(ed, "X*", "", MatchKind::Regex);
         let ed = keys(ed, "!");

@@ -3,6 +3,7 @@
 use super::{editor_ref, mutate_editor};
 use crate::core::Editor;
 use mlua::{Lua, Scope, Table};
+use neonemacs_core::{line_end, line_start};
 use std::cell::RefCell;
 
 #[allow(clippy::too_many_lines)]
@@ -32,54 +33,23 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
         "get_text",
         scope.create_function(|lua, (start, end): (Option<usize>, Option<usize>)| {
             let ed = editor_ref(cell);
-            let text = ed.buffer().text();
-            let len = text.total_bytes();
-            let s = start.unwrap_or(0).min(len);
-            let e = end.unwrap_or(len).min(len);
-            if s >= e {
-                return lua.create_string("");
-            }
-            let mut offset = text.floor_boundary(s);
-            let mut bytes = Vec::with_capacity(e - s);
-            let _ = text
-                .try_for_each_slice(offset..text.ceil_boundary(e), |chunk| {
-                    let lo = s.saturating_sub(offset);
-                    let hi = (e - offset).min(chunk.len());
-                    bytes.extend_from_slice(&chunk[lo..hi]);
-                    offset += chunk.len();
-                    std::ops::ControlFlow::<()>::Continue(())
-                })
-                .expect("stream range is aligned to unit boundaries");
+            let bytes = neonemacs_core::doc_range_bytes(
+                ed.buffer().text(),
+                start.unwrap_or(0)..end.unwrap_or(usize::MAX),
+            );
             lua.create_string(&bytes)
         })?,
     )?;
     buffer_table.set(
         "line_start",
         scope.create_function(|_, pos: usize| {
-            let ed = editor_ref(cell);
-            let text = ed.buffer().text();
-            let pos = text.floor_boundary(pos.min(text.total_bytes()));
-            let line = text.offset_to_line(pos).expect("floor_boundary is valid");
-            Ok(text.line_to_offset(line).expect("line < total_lines"))
+            Ok(line_start(editor_ref(cell).buffer().text(), pos))
         })?,
     )?;
     buffer_table.set(
         "line_end",
-        scope.create_function(|_, pos: usize| {
-            let ed = editor_ref(cell);
-            let text = ed.buffer().text();
-            let total = text.total_bytes();
-            let pos = text.floor_boundary(pos.min(total));
-            let line = text.offset_to_line(pos).expect("floor_boundary is valid");
-            if line + 1 < text.total_lines() {
-                Ok(text
-                    .line_to_offset(line + 1)
-                    .expect("line + 1 < total_lines")
-                    - 1)
-            } else {
-                Ok(total)
-            }
-        })?,
+        scope
+            .create_function(|_, pos: usize| Ok(line_end(editor_ref(cell).buffer().text(), pos)))?,
     )?;
     buffer_table.set(
         "width",
@@ -140,7 +110,8 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
             let ed = editor_ref(cell);
             let prefix = ed
                 .syntax_registry()
-                .line_comment_for_filename(ed.buffer().name())
+                .find_by_filename(ed.buffer().name())
+                .and_then(|d| d.line_comment.as_deref())
                 .map(str::to_owned);
             Ok(prefix)
         })?,
@@ -151,19 +122,30 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{bootstrap, new_state, test_script as script};
     use crate::core::Config;
     use crate::core::Editor;
+    use crate::shell::lua::{bootstrap, new_state, test_script as script};
 
     #[test]
-    fn set_mark_from_lua_makes_an_active_region() {
+    fn set_mark_and_query_from_lua_manage_active_region() {
         let lua = new_state().unwrap();
         let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(crate::core::Doc::from_bytes(b"abc")));
-        let (ed, res) = script(&lua, ed, "buffer.set_mark(2)");
+            .with_current_buffer(|b| b.with_text(crate::core::Doc::from_bytes(b"hello world")));
+        assert_eq!(ed.buffer().mark(), None);
+
+        let (ed, res) = script(&lua, ed, "buffer.set_mark(5)");
         res.unwrap();
         assert!(ed.buffer().mark_active());
-        let (ed, res) = script(&lua, ed, "buffer.set_mark(nil)");
+        assert_eq!(ed.buffer().mark(), Some(5));
+
+        let (ed, res) = script(
+            &lua,
+            ed,
+            r#"
+            assert(buffer.mark() == 5, "mark should be 5")
+            buffer.set_mark(nil)
+        "#,
+        );
         res.unwrap();
         assert!(!ed.buffer().mark_active());
         assert_eq!(ed.buffer().mark(), None);
@@ -251,32 +233,6 @@ mod tests {
             ed.kill_ring().entries(),
             &[neonemacs::core::Doc::from_bytes(b"hi ")]
         );
-    }
-
-    #[test]
-    fn buffer_mark_api() {
-        let lua = new_state().unwrap();
-        let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(crate::core::Doc::from_bytes(b"hello world")));
-        assert_eq!(ed.buffer().mark(), None);
-
-        // set mark to 5
-        let (ed, res) = script(&lua, ed, r"buffer.set_mark(5)");
-        res.unwrap();
-        assert_eq!(ed.buffer().mark(), Some(5));
-
-        // query mark from lua
-        let (ed, res) = script(
-            &lua,
-            ed,
-            r#"
-            local m = buffer.mark()
-            assert(m == 5, "mark should be 5")
-            buffer.set_mark(nil)
-        "#,
-        );
-        res.unwrap();
-        assert_eq!(ed.buffer().mark(), None);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! Decouples routing and command execution lifecycle from Editor state management.
 
 use crate::commands;
-use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prefix, Question};
+use crate::editor::{Buffer, CANCEL_MESSAGE, Confirm, Editor, Mode, Prefix};
 use crate::effect::{Effect, Effects};
 use crate::keymap::{Code, Key, KeyAliases};
 use alloc::borrow::ToOwned;
@@ -19,9 +19,10 @@ pub fn handle_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
             let prefix = *prefix;
             handle_normal_key(ed, prefix, key, fx)
         }
-        Mode::Confirm(question) => {
-            let question = question.clone();
-            answer(ed, question, key, fx)
+        Mode::Confirm { kind, text } => {
+            let kind = kind.clone();
+            let text = text.clone();
+            answer(ed, kind, &text, key, fx)
         }
         Mode::Isearch(_) => commands::isearch_key(ed, key, fx),
         Mode::QueryReplace(_) => (commands::query_key(ed, key), fx),
@@ -50,16 +51,22 @@ pub fn answer_char(aliases: &KeyAliases, key: Key) -> Option<char> {
 /// Answers a yes-or-no question. `y` confirms; `n`, `C-g`, and `Esc` cancel. Any other key
 /// leaves the question open and repeats it (I-46).
 #[must_use]
-pub fn answer(mut ed: Editor, question: Question, key: Key, fx: Effects) -> (Editor, Effects) {
+pub fn answer(
+    mut ed: Editor,
+    kind: Confirm,
+    text: &str,
+    key: Key,
+    fx: Effects,
+) -> (Editor, Effects) {
     let choice = answer_char(ed.key_aliases(), key);
     if choice == Some('y') {
         ed = ed.set_mode(Mode::normal());
-        return commands::confirmed(ed, question.kind, fx);
+        return commands::confirmed(ed, kind, fx);
     }
-    ed = if choice == Some('n') || key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
+    ed = if choice == Some('n') || key.is_cancel() {
         ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE)
     } else {
-        ed.set_message(format!("Please answer y or n. {}", question.text))
+        ed.set_message(format!("Please answer y or n. {text}"))
     };
     (ed, fx)
 }
@@ -211,7 +218,10 @@ mod tests {
         assert_eq!(text(&ed), "x", "aliased ㅜ cancels");
         assert_eq!(ed.message(), "Quit");
         let ed = press(asking(), Key::plain(Code::Char('ㅛ')));
-        assert!(matches!(ed.mode(), Mode::Confirm(_)), "no alias, no answer");
+        assert!(
+            matches!(ed.mode(), Mode::Confirm { .. }),
+            "no alias, no answer"
+        );
     }
 
     #[test]
@@ -226,6 +236,14 @@ mod tests {
         let ed = asking().with_key_aliases(|a| a.alias('ㅛ', to("Y")));
         let ed = press(ed, ch('ㅛ'));
         assert_eq!(text(&ed), "", "the answer folds to y");
+
+        let ed = asking().with_key_aliases(|a| a.alias('ㅃ', to("Q")));
+        let ed = press(ed, ch('ㅃ'));
+        assert_eq!(
+            ed.message(),
+            "Please answer y or n. Kill? (y or n)",
+            "q is no yes/no answer"
+        );
     }
 
     #[test]
@@ -278,17 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn answer_folds_an_uppercase_alias_target() {
-        let ed = asking().with_key_aliases(|a| a.alias('ㅃ', to("Q")));
-        let ed = press(ed, ch('ㅃ'));
-        assert_eq!(
-            ed.message(),
-            "Please answer y or n. Kill? (y or n)",
-            "q is no yes/no answer"
-        );
-    }
-
-    #[test]
     fn answer_cancels_on_esc_and_ctrl_g_with_one_message() {
         for key in [Key::plain(Code::Esc), Key::ctrl('g')] {
             let ed = press(asking(), key);
@@ -302,7 +309,7 @@ mod tests {
     fn other_keys_keep_the_question_and_say_so() {
         for key in [Key::plain(Code::Enter), Key::plain(Code::Char('x'))] {
             let ed = press(asking(), key);
-            assert!(matches!(ed.mode(), Mode::Confirm(_)));
+            assert!(matches!(ed.mode(), Mode::Confirm { .. }));
             assert_eq!(ed.message(), "Please answer y or n. Kill? (y or n)");
             // A second wrong key does not stack the hint.
             let ed = press(ed, Key::plain(Code::Char('z')));

@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 #[test]
 fn empty_buffer_all_builtins_do_not_panic() {
     // Every single built-in command must be safe against a completely empty buffer.
-    for &(name, builtin) in BUILTINS {
+    for (name, builtin) in BUILTINS {
         let ed = editor();
         let fx = Vec::new();
         let (result_ed, _) = builtin(ed, fx);
@@ -47,20 +47,13 @@ fn hostile_out_of_bounds_and_multibyte_point_recovery() {
     let oob_ed = typ(editor(), "가나다").with_window(|w| Window { point: 9999, ..w });
     let (after_bkwd, _) = delete_backward_char(oob_ed, Vec::new());
     assert!(point(&after_bkwd) <= after_bkwd.buffer().text().total_bytes());
-}
 
-#[test]
-fn snap_and_insert_clamping_prevents_gap_buffer_panic() {
-    let ed = typ(editor(), "abc");
-    let ed = ed.move_point(9999);
+    let ed = typ(editor(), "abc").move_point(9999);
     assert_eq!(point(&ed), 3);
-    let ed = ed.self_insert('x');
-    assert_eq!(text(&ed), "abcx");
+    assert_eq!(text(&ed.self_insert('x')), "abcx");
 
-    // Hostile window with OOB point: self_insert must clamp and never panic
     let oob_ed = typ(editor(), "abc").with_window(|w| Window { point: 9999, ..w });
-    let oob_ed = oob_ed.self_insert('!');
-    assert_eq!(text(&oob_ed), "abc!");
+    assert_eq!(text(&oob_ed.self_insert('!')), "abc!");
 }
 
 #[test]
@@ -106,6 +99,19 @@ fn prompt_hostile_backspaces_and_cancellation() {
     let ed = typ(ed, "not_a_number");
     let ed = keys(ed, "RET");
     assert_eq!(ed.message(), "Not a line number: not_a_number");
+
+    // Empty RET on shell-command prompt must be a clean no-op
+    let ed = keys(editor(), "M-x");
+    let ed = typ(ed, "shell-command");
+    let ed = keys(ed, "RET");
+    assert!(matches!(ed.mode(), Mode::Prompt(_)));
+    let ed = keys(ed, "RET");
+    assert_eq!(
+        ed.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
 }
 
 #[test]
@@ -147,41 +153,6 @@ fn isearch_invalid_regex_and_rapid_reversals() {
 }
 
 #[test]
-fn query_replace_empty_and_illegal_keys() {
-    let mut ed = typ(editor(), "foo bar foo");
-
-    // Empty search pattern via prompt
-    ed = keys(ed, "M-x");
-    ed = typ(ed, "query-replace");
-    ed = keys(ed, "RET");
-    ed = keys(ed, "RET"); // Empty pattern
-    assert_eq!(ed.message(), "Query replace needs a pattern");
-    assert_eq!(
-        ed.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-
-    // Query replace with pattern not present in buffer
-    let ed2 = typ(editor(), "foo bar foo");
-    let ed2 = keys(ed2, "M-x");
-    let ed2 = typ(ed2, "query-replace");
-    let ed2 = keys(ed2, "RET");
-    let ed2 = typ(ed2, "notfound");
-    let ed2 = keys(ed2, "RET");
-    let ed2 = typ(ed2, "replacement");
-    let ed2 = keys(ed2, "RET");
-    assert_eq!(ed2.message(), "No match");
-    assert_eq!(
-        ed2.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-}
-
-#[test]
 fn kill_ring_empty_and_illegal_operations() {
     let yank = find("yank").unwrap();
     let yank_pop = find("yank-pop").unwrap();
@@ -212,7 +183,7 @@ fn kill_ring_empty_and_illegal_operations() {
     assert_eq!(text(&ed5), "hello world");
     assert_eq!(
         ed5.kill_ring().entries(),
-        &[crate::weave_tree::Doc::from_bytes(b"hello")]
+        &[crate::Doc::from_bytes(b"hello")]
     );
 }
 
@@ -230,7 +201,7 @@ fn massive_kill_pop_and_undo_reversibility() {
     // Now undo all operations back to the initial state
     // Consecutive undos should walk back through each edit group
     let mut steps = 0;
-    let initial_doc = crate::weave_tree::Doc::from_bytes(initial_text.as_bytes());
+    let initial_doc = crate::Doc::from_bytes(initial_text.as_bytes());
     while *ed.buffer().text() != initial_doc && steps < 50 {
         ed = keys(ed, "C-/");
         steps += 1;
@@ -340,7 +311,7 @@ fn hostile_fuzz_sequence_no_panic() {
     }
 
     // Must never panic, buffer must remain intact and valid UTF-8
-    assert!(!ed.buffers().is_empty());
+    assert!(ed.buffers().len() >= 1);
     assert!(ed.window().point <= ed.buffer().text().total_bytes());
 }
 
@@ -490,6 +461,17 @@ fn prompt_buffer_completion_and_existing_buffer_switch() {
 
 #[test]
 fn prompt_query_replace_chained_adversarial() {
+    // Empty search pattern via prompt
+    let ed0 = keys(typ(editor(), "foo bar foo"), "M-x");
+    let ed0 = keys(typ(ed0, "query-replace"), "RET RET");
+    assert_eq!(ed0.message(), "Query replace needs a pattern");
+    assert_eq!(
+        ed0.mode(),
+        &Mode::Normal {
+            prefix: Prefix::None
+        }
+    );
+
     let mut ed = typ(editor(), "alpha beta alpha gamma");
 
     // Boundary check: Point is at end of buffer -> query-replace has no match forward
@@ -545,24 +527,6 @@ fn prompt_query_replace_chained_adversarial() {
     ed = keys(ed, "RET");
     // Invalid regex must be caught gracefully and reported in the echo area without panic
     assert_eq!(ed.message(), "unclosed [");
-    assert_eq!(
-        ed.mode(),
-        &Mode::Normal {
-            prefix: Prefix::None
-        }
-    );
-}
-
-#[test]
-fn prompt_shell_command_adversarial() {
-    let mut ed = editor();
-    ed = keys(ed, "M-x");
-    ed = typ(ed, "shell-command");
-    ed = keys(ed, "RET");
-    assert!(matches!(ed.mode(), Mode::Prompt(_)));
-
-    // Empty RET on shell-command prompt must be a clean no-op
-    ed = keys(ed, "RET");
     assert_eq!(
         ed.mode(),
         &Mode::Normal {
@@ -681,7 +645,7 @@ fn isearch_backward_repeat_ctrl_r_navigates_and_wraps() {
 
 #[test]
 fn find_forward_out_of_bounds_from_does_not_panic() {
-    let t = crate::weave_tree::Doc::from_bytes(b"hello");
+    let t = crate::Doc::from_bytes(b"hello");
     let pat = crate::search::Pattern::regex("^h").unwrap();
     // from is far beyond text length and initial gap buffer capacity
     let res = crate::search::find_forward(&t, &pat, 100_000, false);

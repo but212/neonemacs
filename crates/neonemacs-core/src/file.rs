@@ -1,7 +1,9 @@
 //! Buffer backing, and the buffer that a file read produces. Pure: the bytes come from the shell.
 
-use crate::eol::{Eol, EolStreamDecoder};
-use crate::weave_tree::Doc;
+use crate::Doc;
+use crate::eol::Eol;
+#[cfg(test)]
+use crate::eol::EolStreamDecoder;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -93,12 +95,7 @@ impl FilePath {
         if has_root {
             out.push('/');
         }
-        for (i, seg) in segments.iter().enumerate() {
-            if i > 0 {
-                out.push('/');
-            }
-            out.push_str(seg);
-        }
+        out.push_str(&segments.join("/"));
         Self(out)
     }
 
@@ -117,13 +114,6 @@ pub(crate) fn file_name(path: &str) -> Option<&str> {
         .filter(|&s| s != "." && s != "..")
 }
 
-/// What a file read found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Read {
-    Missing,
-    Found(RawFile),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawFile {
     /// Length on disk, which can exceed `doc.total_bytes()`.
@@ -136,6 +126,7 @@ pub struct RawFile {
 }
 
 impl RawFile {
+    #[cfg(test)]
     #[must_use]
     pub fn from_bytes(len: u64, disk: DiskState, raw: &[u8]) -> Self {
         let (doc, eol) = EolStreamDecoder::new().push_chunk(raw).finish();
@@ -242,47 +233,29 @@ pub struct Loaded {
     pub eol: Eol,
 }
 
-/// A file longer than `max-file-size`. It is refused, never loaded in part (I-04).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TooLarge {
-    pub len: u64,
-    pub max: u64,
-}
-
-impl TooLarge {
-    /// The echo-area message for a refused file.
-    #[must_use]
-    pub fn message(self) -> String {
-        format!(
-            "File too large: {} bytes (max-file-size {})",
-            self.len, self.max
-        )
-    }
-}
-
 /// Builds the buffer for a file read. A file longer than `max_size` is refused (I-04).
 /// A missing file is an empty buffer with unknown disk state.
 ///
 /// # Errors
-/// Returns `TooLarge` if the raw file length exceeds `max_size`.
+/// Returns an echo-area message if the raw file length exceeds `max_size`.
 pub fn loaded_from(
     path: &FilePath,
-    read: Read,
+    read: Option<RawFile>,
     max_size: u64,
     default_eol: Eol,
-) -> Result<Loaded, TooLarge> {
+) -> Result<Loaded, String> {
     match read {
-        Read::Missing => Ok(Loaded {
+        None => Ok(Loaded {
             text: Doc::default(),
             backing: Backing::file(path.clone(), DiskState::Unknown),
             eol: default_eol,
         }),
-        Read::Found(raw) => {
+        Some(raw) => {
             if raw.len > max_size {
-                return Err(TooLarge {
-                    len: raw.len,
-                    max: max_size,
-                });
+                return Err(format!(
+                    "File too large: {} bytes (max-file-size {})",
+                    raw.len, max_size
+                ));
             }
             let eol = raw.eol.unwrap_or(default_eol);
             Ok(Loaded {
@@ -300,11 +273,11 @@ mod tests {
 
     use super::*;
 
-    fn found(len: u64, bytes: &[u8]) -> Read {
-        Read::Found(RawFile::from_bytes(len, DiskState::Unknown, bytes))
+    fn found(len: u64, bytes: &[u8]) -> Option<RawFile> {
+        Some(RawFile::from_bytes(len, DiskState::Unknown, bytes))
     }
 
-    fn load(read: Read, max_size: u64) -> Loaded {
+    fn load(read: Option<RawFile>, max_size: u64) -> Loaded {
         loaded_from(&FilePath::resolve("", "f"), read, max_size, Eol::Lf).unwrap()
     }
 
@@ -323,48 +296,38 @@ mod tests {
     }
 
     #[test]
-    fn resolve_folds_parent() {
-        let cwd = "/w";
-        let expected = "/w/a.txt";
-        assert_eq!(FilePath::resolve(cwd, "./a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "/w/./a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "../w/a.txt").as_str(), expected);
-        assert_eq!(FilePath::resolve(cwd, "a/../b.txt").as_str(), "/w/b.txt");
-        assert_eq!(FilePath::resolve(cwd, "/..").as_str(), "/");
-    }
-
-    #[test]
-    fn resolve_keeps_leading_parent_of_relative_path() {
-        let cwd = "";
-        assert_eq!(FilePath::resolve(cwd, "../x").as_str(), "../x");
-        assert_eq!(FilePath::resolve(cwd, "a/../../x").as_str(), "../x");
-    }
-
-    #[test]
-    fn resolve_handles_windows_prefixes_and_separators() {
-        assert_eq!(
-            FilePath::resolve(r"C:\work\proj", r"..\other\a.txt").as_str(),
-            "C:/work/other/a.txt"
-        );
-        assert_eq!(
-            FilePath::resolve(r"C:\work", r"C:\..\root.txt").as_str(),
-            "C:/root.txt"
-        );
-        assert_eq!(
-            FilePath::resolve(r"\\server\share\dir", r"..\file.txt").as_str(),
-            r"\\server\share/file.txt"
-        );
-        assert_eq!(
-            FilePath::resolve(r"\\server\share", "file.txt").as_str(),
-            r"\\server\share/file.txt"
-        );
+    fn resolve_normalizes_paths_and_windows_prefixes() {
+        let cases = [
+            ("/w", "./a.txt", "/w/a.txt"),
+            ("/w", "a.txt", "/w/a.txt"),
+            ("/w", "/w/./a.txt", "/w/a.txt"),
+            ("/w", "../w/a.txt", "/w/a.txt"),
+            ("/w", "a/../b.txt", "/w/b.txt"),
+            ("/w", "/..", "/"),
+            ("", "../x", "../x"),
+            ("", "a/../../x", "../x"),
+            (r"C:\work\proj", r"..\other\a.txt", "C:/work/other/a.txt"),
+            (r"C:\work", r"C:\..\root.txt", "C:/root.txt"),
+            (
+                r"\\server\share\dir",
+                r"..\file.txt",
+                r"\\server\share/file.txt",
+            ),
+            (r"\\server\share", "file.txt", r"\\server\share/file.txt"),
+            ("/w", "///w/a.txt", "/w/a.txt"),
+            ("", "///a/b/../..", "/"),
+        ];
+        for (cwd, input, expected) in cases {
+            assert_eq!(
+                FilePath::resolve(cwd, input).as_str(),
+                expected,
+                "cwd={cwd:?} input={input:?}"
+            );
+        }
         assert_eq!(
             FilePath::resolve("", r"\\server\share"),
             FilePath::resolve("", r"\\server\share\a\..")
         );
-        assert_eq!(FilePath::resolve("/w", "///w/a.txt").as_str(), "/w/a.txt");
-        assert_eq!(FilePath::resolve("", "///a/b/../..").as_str(), "/");
         assert_eq!(file_name(FilePath::resolve("", "/").as_str()), None);
         assert_eq!(file_name(r"\\server\share"), None);
         assert_eq!(
@@ -374,34 +337,13 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_file_takes_the_default_eol() {
+    fn missing_file_uses_default_eol_and_unknown_disk_state() {
         let path = FilePath::resolve("", "new.txt");
-        let loaded = loaded_from(&path, Read::Missing, 4, Eol::Crlf).unwrap();
-        assert_eq!(loaded.eol, Eol::Crlf);
-    }
+        let crlf = loaded_from(&path, None, 4, Eol::Crlf).unwrap();
+        assert_eq!(crlf.eol, Eol::Crlf);
 
-    #[test]
-    fn oversized_file_is_refused() {
-        let big = FilePath::resolve("", "big.txt");
-        let err = loaded_from(&big, found(10, b"0123"), 4, Eol::Lf).err();
-        assert_eq!(err, Some(TooLarge { len: 10, max: 4 }));
-    }
-
-    #[test]
-    fn file_at_size_limit_is_loaded_whole() {
-        let loaded = load(found(4, b"0123"), 4);
-        assert_eq!(loaded.text, Doc::from_bytes(b"0123"));
-    }
-
-    #[test]
-    fn too_large_message_names_the_limit() {
-        let err = TooLarge { len: 10, max: 4 };
-        assert_eq!(err.message(), "File too large: 10 bytes (max-file-size 4)");
-    }
-
-    #[test]
-    fn missing_file_has_unknown_disk_state() {
-        let loaded = load(Read::Missing, 1 << 20);
+        let loaded = load(None, 1 << 20);
+        assert_eq!(loaded.eol, Eol::Lf);
         assert_eq!(loaded.text.total_bytes(), 0);
         assert!(matches!(
             loaded.backing,
@@ -413,58 +355,36 @@ mod tests {
     }
 
     #[test]
-    fn crlf_file_loads_as_normalized_text() {
-        let loaded = load(found(6, b"a\r\nb\r\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
+    fn oversized_file_is_refused() {
+        let big = FilePath::resolve("", "big.txt");
+        let err = loaded_from(&big, found(10, b"0123"), 4, Eol::Lf).err();
+        assert_eq!(
+            err.as_deref(),
+            Some("File too large: 10 bytes (max-file-size 4)")
+        );
     }
 
     #[test]
-    fn missing_file_is_lf() {
-        let loaded = load(Read::Missing, 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
+    fn file_at_size_limit_is_loaded_whole() {
+        let loaded = load(found(4, b"0123"), 4);
+        assert_eq!(loaded.text, Doc::from_bytes(b"0123"));
     }
 
     #[test]
-    fn mixed_file_is_normalized_with_majority_mode() {
-        let loaded = load(found(5, b"a\r\nb\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
-    }
-
-    #[test]
-    fn lone_cr_is_not_a_line_ending() {
-        let loaded = load(found(3, b"a\rb"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\rb"));
-    }
-
-    #[test]
-    fn crlf_only_file_becomes_one_newline() {
-        let loaded = load(found(2, b"\r\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"\n"));
-    }
-
-    #[test]
-    fn double_cr_before_lf_keeps_one_cr_in_text() {
-        let loaded = load(found(4, b"a\r\r\n"), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\r\n"));
-    }
-
-    #[test]
-    fn empty_file_is_lf_and_empty() {
-        let loaded = load(found(0, b""), 1 << 20);
-        assert_eq!(loaded.eol, Eol::Lf);
-        assert_eq!(loaded.text.total_bytes(), 0);
-    }
-
-    #[test]
-    fn crlf_at_size_limit_is_loaded_and_normalized() {
-        let loaded = load(found(6, b"a\r\nb\r\n"), 6);
-        assert_eq!(loaded.eol, Eol::Crlf);
-        assert_eq!(loaded.text, Doc::from_bytes(b"a\nb\n"));
+    fn load_normalizes_eol_and_preserves_non_eol_bytes() {
+        let cases: &[(&[u8], u64, Eol, &[u8])] = &[
+            (b"a\r\nb\r\n", 6, Eol::Crlf, b"a\nb\n"),
+            (b"a\r\nb\n", 1 << 20, Eol::Lf, b"a\nb\n"),
+            (b"a\rb", 1 << 20, Eol::Lf, b"a\rb"),
+            (b"\r\n", 1 << 20, Eol::Crlf, b"\n"),
+            (b"a\r\r\n", 1 << 20, Eol::Crlf, b"a\r\n"),
+            (b"", 1 << 20, Eol::Lf, b""),
+        ];
+        for &(raw, max_size, expected_eol, expected_bytes) in cases {
+            let loaded = load(found(raw.len() as u64, raw), max_size);
+            assert_eq!(loaded.eol, expected_eol, "raw={raw:?}");
+            assert_eq!(loaded.text, Doc::from_bytes(expected_bytes), "raw={raw:?}");
+        }
     }
 
     #[test]
@@ -473,7 +393,7 @@ mod tests {
             mtime: Duration::ZERO,
             size: 3,
         };
-        let read = Read::Found(RawFile::from_bytes(3, disk, b"a\r\n"));
+        let read = Some(RawFile::from_bytes(3, disk, b"a\r\n"));
         let loaded = load(read, 1 << 20);
         assert_eq!(loaded.text.total_bytes(), 2);
         assert!(matches!(

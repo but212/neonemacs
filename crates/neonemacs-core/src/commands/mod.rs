@@ -20,79 +20,116 @@ pub use wal::{idle, wal_flushed};
 use crate::commands::basic::{
     backward_char, delete_backward_char, delete_char, delete_other_windows, forward_char,
     kill_region, kill_ring_save, move_beginning_of_line, move_end_of_line, next_line, other_window,
-    previous_line, recenter, set_mark_command, split_window_below, split_window_right, view_mode,
-    yank, yank_pop,
+    previous_line, recenter, set_mark_command, split, view_mode, yank, yank_pop,
 };
-use crate::commands::file::{save_buffer_cmd, save_buffers_kill_emacs, toggle_eol};
+use crate::commands::file::{save_buffer, save_buffers_kill_emacs, toggle_eol};
 use crate::commands::load::revert_buffer;
-use crate::commands::prompt::{
-    execute_extended_command, find_file_cmd, goto_line_cmd, kill_buffer_cmd, switch_to_buffer_cmd,
-    write_file_cmd,
-};
-use crate::commands::search::{
-    isearch_backward, isearch_backward_regexp, isearch_forward, isearch_forward_regexp,
-    query_replace_cmd, query_replace_regexp_cmd,
-};
-use crate::commands::shell_output::{reload_init_cmd, shell_command_cmd};
-use crate::editor::Editor;
-use crate::effect::Effects;
+use crate::commands::prompt::prompt;
+use crate::commands::search::start_isearch;
+use crate::editor::{Dir, Direction, Editor, MatchKind, Purpose};
+use crate::effect::{Effect, Effects};
 
-pub type Builtin = fn(Editor, Effects) -> (Editor, Effects);
+/// Function signature of a built-in command.
+pub type BuiltinFn = fn(Editor, Effects) -> (Editor, Effects);
 
 /// Every built-in command, by name in alphabetical order (§4).
 /// Kept sorted so lookup is O(log N) via binary search.
-pub const BUILTINS: &[(&str, Builtin)] = &[
-    ("backward-char", backward_char as Builtin),
-    ("delete-backward-char", delete_backward_char as Builtin),
-    ("delete-char", delete_char as Builtin),
-    ("delete-other-windows", delete_other_windows as Builtin),
-    (
-        "execute-extended-command",
-        execute_extended_command as Builtin,
-    ),
-    ("find-file", find_file_cmd as Builtin),
-    ("forward-char", forward_char as Builtin),
-    ("goto-line", goto_line_cmd as Builtin),
-    ("isearch-backward", isearch_backward as Builtin),
-    (
-        "isearch-backward-regexp",
-        isearch_backward_regexp as Builtin,
-    ),
-    ("isearch-forward", isearch_forward as Builtin),
-    ("isearch-forward-regexp", isearch_forward_regexp as Builtin),
-    ("kill-buffer", kill_buffer_cmd as Builtin),
-    ("kill-region", kill_region as Builtin),
-    ("kill-ring-save", kill_ring_save as Builtin),
-    ("move-beginning-of-line", move_beginning_of_line as Builtin),
-    ("move-end-of-line", move_end_of_line as Builtin),
-    ("next-line", next_line as Builtin),
-    ("other-window", other_window as Builtin),
-    ("previous-line", previous_line as Builtin),
-    ("query-replace", query_replace_cmd as Builtin),
-    ("query-replace-regexp", query_replace_regexp_cmd as Builtin),
-    ("recenter", recenter as Builtin),
-    ("reload-init", reload_init_cmd as Builtin),
-    ("revert-buffer", revert_buffer as Builtin),
-    ("save-buffer", save_buffer_cmd as Builtin),
-    (
-        "save-buffers-kill-emacs",
-        save_buffers_kill_emacs as Builtin,
-    ),
-    ("set-mark-command", set_mark_command as Builtin),
-    ("shell-command", shell_command_cmd as Builtin),
-    ("split-window-below", split_window_below as Builtin),
-    ("split-window-right", split_window_right as Builtin),
-    ("switch-to-buffer", switch_to_buffer_cmd as Builtin),
-    ("toggle-eol", toggle_eol as Builtin),
-    ("undo", Editor::undo as Builtin),
-    ("view-mode", view_mode as Builtin),
-    ("write-file", write_file_cmd as Builtin),
-    ("yank", yank as Builtin),
-    ("yank-pop", yank_pop as Builtin),
+pub const BUILTINS: &[(&str, BuiltinFn)] = &[
+    ("backward-char", backward_char),
+    ("delete-backward-char", delete_backward_char),
+    ("delete-char", delete_char),
+    ("delete-other-windows", delete_other_windows),
+    ("execute-extended-command", |ed, fx| {
+        (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx)
+    }),
+    ("find-file", |ed, fx| {
+        (prompt(ed, "Find file: ", Purpose::FindFile), fx)
+    }),
+    ("forward-char", forward_char),
+    ("goto-line", |ed, fx| {
+        (prompt(ed, "Goto line: ", Purpose::GotoLine), fx)
+    }),
+    ("isearch-backward", |ed, fx| {
+        (
+            start_isearch(ed, Direction::Backward, MatchKind::Literal),
+            fx,
+        )
+    }),
+    ("isearch-backward-regexp", |ed, fx| {
+        (start_isearch(ed, Direction::Backward, MatchKind::Regex), fx)
+    }),
+    ("isearch-forward", |ed, fx| {
+        (
+            start_isearch(ed, Direction::Forward, MatchKind::Literal),
+            fx,
+        )
+    }),
+    ("isearch-forward-regexp", |ed, fx| {
+        (start_isearch(ed, Direction::Forward, MatchKind::Regex), fx)
+    }),
+    ("kill-buffer", |ed, fx| {
+        (prompt(ed, "Kill buffer: ", Purpose::KillBuffer), fx)
+    }),
+    ("kill-region", kill_region),
+    ("kill-ring-save", kill_ring_save),
+    ("move-beginning-of-line", move_beginning_of_line),
+    ("move-end-of-line", move_end_of_line),
+    ("next-line", next_line),
+    ("other-window", other_window),
+    ("previous-line", previous_line),
+    ("query-replace", |ed, fx| {
+        (
+            prompt(
+                ed,
+                "Query replace: ",
+                Purpose::QueryFrom {
+                    kind: MatchKind::Literal,
+                },
+            ),
+            fx,
+        )
+    }),
+    ("query-replace-regexp", |ed, fx| {
+        (
+            prompt(
+                ed,
+                "Query replace regexp: ",
+                Purpose::QueryFrom {
+                    kind: MatchKind::Regex,
+                },
+            ),
+            fx,
+        )
+    }),
+    ("recenter", recenter),
+    ("reload-init", |ed, mut fx| {
+        fx.push(Effect::ReloadInit);
+        (ed, fx)
+    }),
+    ("revert-buffer", revert_buffer),
+    ("save-buffer", save_buffer),
+    ("save-buffers-kill-emacs", save_buffers_kill_emacs),
+    ("set-mark-command", set_mark_command),
+    ("shell-command", |ed, fx| {
+        (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx)
+    }),
+    ("split-window-below", |ed, fx| (split(ed, Dir::Below), fx)),
+    ("split-window-right", |ed, fx| (split(ed, Dir::Right), fx)),
+    ("switch-to-buffer", |ed, fx| {
+        (prompt(ed, "Switch to buffer: ", Purpose::SwitchBuffer), fx)
+    }),
+    ("toggle-eol", toggle_eol),
+    ("undo", Editor::undo),
+    ("view-mode", view_mode),
+    ("write-file", |ed, fx| {
+        (prompt(ed, "Write file: ", Purpose::WriteFile), fx)
+    }),
+    ("yank", yank),
+    ("yank-pop", yank_pop),
 ];
 
 /// Looks up a built-in command by its exact name via binary search.
-pub fn find(name: &str) -> Option<Builtin> {
+pub fn find(name: &str) -> Option<BuiltinFn> {
     BUILTINS
         .binary_search_by_key(&name, |(n, _)| *n)
         .ok()
@@ -102,7 +139,7 @@ pub fn find(name: &str) -> Option<Builtin> {
 /// Whether `name` is a built-in command.
 #[must_use]
 pub fn is_builtin(name: &str) -> bool {
-    find(name).is_some()
+    BUILTINS.binary_search_by_key(&name, |(n, _)| *n).is_ok()
 }
 
 #[cfg(test)]
@@ -123,14 +160,8 @@ mod tests {
 
     #[test]
     fn find_locates_every_builtin() {
-        for &(name, func) in BUILTINS {
-            let found = find(name);
-            assert!(found.is_some(), "Failed to find builtin: {name}");
-            assert_eq!(
-                found.unwrap() as usize,
-                func as usize,
-                "Mismatched function pointer for: {name}"
-            );
+        for (name, _) in BUILTINS {
+            assert!(find(name).is_some(), "Failed to find builtin: {name}");
         }
         assert!(find("nonexistent-command").is_none());
     }

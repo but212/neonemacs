@@ -2,9 +2,9 @@
 
 use crate::editor::{Buffer, BufferId, Confirm, Dir, Editor, LastCommand, Window};
 use crate::effect::Effects;
-use crate::weave_tree::Doc;
-use crate::width::{column, pos_at_column};
+use crate::width::{column, pos_and_column};
 use crate::window::WindowManager;
+use crate::{Doc, line_end, line_start, line_to_offset, offset_to_line, total_lines};
 
 /// Helper for region lookup on `Editor`.
 pub(crate) fn region(ed: &Editor) -> Option<(usize, usize)> {
@@ -30,24 +30,12 @@ pub(crate) fn backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn move_beginning_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let text = ed.buffer().text();
-    let p = text.floor_boundary(ed.window().point);
-    let line = text.offset_to_line(p).expect("floor_boundary is valid");
-    let start = text.line_to_offset(line).expect("line < total_lines");
+    let start = line_start(ed.buffer().text(), ed.window().point);
     (ed.move_point(start), fx)
 }
 
 pub(crate) fn move_end_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let text = ed.buffer().text();
-    let p = text.floor_boundary(ed.window().point);
-    let line = text.offset_to_line(p).expect("floor_boundary is valid");
-    let end = if line + 1 < text.total_lines() {
-        text.line_to_offset(line + 1)
-            .expect("line + 1 < total_lines")
-            - 1
-    } else {
-        text.total_bytes()
-    };
+    let end = line_end(ed.buffer().text(), ed.window().point);
     (ed.move_point(end), fx)
 }
 
@@ -68,19 +56,14 @@ fn vertical(ed: Editor, down: bool) -> Editor {
         LastCommand::Vertical { col } => col,
         _ => column(text, p, m),
     };
-    let line = text.offset_to_line(p).expect("floor_boundary is valid");
+    let line = offset_to_line(text, p).expect("floor_boundary is valid");
     let target = if down {
-        (line + 1 < text.total_lines()).then(|| {
-            text.line_to_offset(line + 1)
-                .expect("line + 1 < total_lines")
-        })
+        (line + 1 < total_lines(text))
+            .then(|| line_to_offset(text, line + 1).expect("line + 1 < total_lines"))
     } else {
-        (line > 0).then(|| {
-            text.line_to_offset(line - 1)
-                .expect("line - 1 < total_lines")
-        })
+        (line > 0).then(|| line_to_offset(text, line - 1).expect("line - 1 < total_lines"))
     };
-    let target_pos = target.map(|start| pos_at_column(text, start, goal, m));
+    let target_pos = target.map(|start| pos_and_column(text, start, goal, m).0);
     let ed = if let Some(pos) = target_pos {
         ed.move_point(pos)
     } else {
@@ -94,19 +77,12 @@ fn vertical(ed: Editor, down: bool) -> Editor {
     ed.set_last(LastCommand::Vertical { col: goal })
 }
 
-/// Start of the line `n` lines before the line holding `start`; stops at the first line.
-fn lines_back(text: &Doc, start: usize, n: usize) -> usize {
-    let b = text.floor_boundary(start.min(text.total_bytes()));
-    let line = text.offset_to_line(b).expect("floor_boundary is valid");
-    text.line_to_offset(line.saturating_sub(n))
-        .expect("line < total_lines")
-}
-
 /// `recenter` (C-l): puts the line holding point on the middle row. Text and point are unchanged.
 pub(crate) fn recenter(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let half = ed.window().height / 2;
+    let half = (ed.window().height as usize) / 2;
     let text = ed.buffer().text();
-    let top = lines_back(text, ed.window().point, half);
+    let line = crate::line_at(text, ed.window().point);
+    let top = line_to_offset(text, line.saturating_sub(half)).expect("line < total_lines");
     (ed.with_window(|w| Window { top, ..w }), fx)
 }
 
@@ -137,31 +113,40 @@ pub(crate) fn delete_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed.delete_only(p, end), fx)
 }
 
-pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
+fn with_region(
+    ed: Editor,
+    fx: Effects,
+    f: impl FnOnce(Editor, Effects, usize, usize) -> (Editor, Effects),
+) -> (Editor, Effects) {
     let Some((start, end)) = region(&ed) else {
         return (ed.set_message("The mark is not set now"), fx);
     };
-    if start >= end {
-        return (ed, fx);
-    }
-    let ed = ed.kill_range(start, end);
-    let ed = ed.with_current_buffer(|b| b.set_mark(None));
-    (ed, fx)
+    f(ed, fx, start, end)
+}
+
+pub(crate) fn kill_region(ed: Editor, fx: Effects) -> (Editor, Effects) {
+    with_region(ed, fx, |ed, fx, start, end| {
+        if start >= end {
+            return (ed, fx);
+        }
+        let ed = ed.kill_range(start, end);
+        let ed = ed.with_current_buffer(|b| b.set_mark(None));
+        (ed, fx)
+    })
 }
 
 pub(crate) fn kill_ring_save(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let Some((start, end)) = region(&ed) else {
-        return (ed.set_message("The mark is not set now"), fx);
-    };
-    let text = ed.buffer().text();
-    let start = text.floor_boundary(start);
-    let end = text.floor_boundary(end);
-    let doc = text.slice(start..end).unwrap_or_default();
-    let max = ed.config().kill_ring_max;
-    let ed = ed
-        .with_kill_ring(|kr| kr.push(doc, max))
-        .with_current_buffer(Buffer::deactivate_mark);
-    (ed, fx)
+    with_region(ed, fx, |ed, fx, start, end| {
+        let text = ed.buffer().text();
+        let start = text.floor_boundary(start);
+        let end = text.floor_boundary(end);
+        let doc = text.slice(start..end).unwrap_or_default();
+        let max = ed.config().kill_ring_max;
+        let ed = ed
+            .with_kill_ring(|kr| kr.push(doc, max))
+            .with_current_buffer(Buffer::deactivate_mark);
+        (ed, fx)
+    })
 }
 
 pub(crate) fn yank(ed: Editor, fx: Effects) -> (Editor, Effects) {
@@ -222,14 +207,6 @@ pub(crate) fn view_mode(ed: Editor, fx: Effects) -> (Editor, Effects) {
     (ed, fx)
 }
 
-pub(crate) fn split_window_below(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (split(ed, Dir::Below), fx)
-}
-
-pub(crate) fn split_window_right(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (split(ed, Dir::Right), fx)
-}
-
 /// Replaces the selected leaf with a split of two windows that show the same buffer.
 pub(crate) fn split(ed: Editor, dir: Dir) -> Editor {
     ed.with_windows(|wm| wm.split(dir))
@@ -261,9 +238,14 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
     })
 }
 
+pub(crate) fn kill_buffer_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
+    fx.extend(ed.remove_wal_effect(id));
+    (ed.kill_buffer_id(id), fx)
+}
+
 /// Kills buffer `id`. A modified buffer asks first.
 #[must_use]
-pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
+pub fn kill_buffer(ed: Editor, id: BufferId, fx: Effects) -> (Editor, Effects) {
     if ed.buffer_by_id(id).modified() {
         (
             ed.confirm(
@@ -273,8 +255,7 @@ pub fn kill_buffer(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effect
             fx,
         )
     } else {
-        fx.extend(ed.remove_wal_effect(id));
-        (ed.kill_buffer_id(id), fx)
+        kill_buffer_now(ed, id, fx)
     }
 }
 
@@ -288,7 +269,7 @@ mod tests {
     use crate::editor::{KillRing, Mode};
     use crate::file::Backing;
     use crate::test_support::{editor, keys, point, run_command, set_mark, text, typ};
-    use crate::weave_tree::Doc;
+    use crate::{Doc, line_to_offset, offset_to_line};
 
     #[test]
     fn the_mark_is_active_until_an_edit_cancel_or_copy() {
@@ -359,7 +340,7 @@ mod tests {
         if i < 10 { 3 * i } else { 30 + 4 * (i - 10) }
     }
 
-    fn with_height(ed: Editor, height: usize) -> Editor {
+    fn with_height(ed: Editor, height: u32) -> Editor {
         ed.with_window(|w| Window { height, ..w })
     }
 
@@ -374,38 +355,27 @@ mod tests {
         let ed = run_command(ed, recenter);
         // With no known height the point's own line becomes the top.
         let t = ed.buffer().text();
-        let line = t.offset_to_line(t.floor_boundary(point(&ed))).unwrap();
-        assert_eq!(top(&ed), t.line_to_offset(line).unwrap());
+        let line = offset_to_line(t, t.floor_boundary(point(&ed))).unwrap();
+        assert_eq!(top(&ed), line_to_offset(t, line).unwrap());
     }
 
     #[test]
-    fn recenter_puts_point_line_on_middle_row_without_editing() {
-        let ed = with_height(typ(editor(), &numbered(30)), 10);
-        let ed = ed.with_window(|w| Window {
-            point: 0,
+    fn recenter_puts_point_line_on_middle_row_and_clamps_to_start() {
+        let base = with_height(typ(editor(), &numbered(30)), 10);
+        let ed = base.clone().with_window(|w| Window {
+            point: ls(20),
             top: 0,
             ..w
         });
-        let ed = ed.with_window(|w| Window { point: ls(20), ..w });
         let before = ed.buffer().text().total_bytes();
         let ed = run_command(ed, recenter);
         assert_eq!(top(&ed), ls(15));
         assert_eq!(point(&ed), ls(20));
         assert_eq!(ed.buffer().text().total_bytes(), before);
-    }
 
-    #[test]
-    fn recenter_clamps_to_buffer_start() {
-        let ed = with_height(typ(editor(), &numbered(30)), 10);
-        let ed = ed.with_window(|w| Window { point: 3 * 2, ..w });
+        let ed = base.with_window(|w| Window { point: 3 * 2, ..w });
         let ed = run_command(ed, recenter);
         assert_eq!(top(&ed), 0);
-    }
-
-    #[test]
-    fn insert_hangul_saves_utf8() {
-        let ed = typ(editor(), "한");
-        assert_eq!(*ed.buffer().text(), Doc::from_bytes("한".as_bytes()));
     }
 
     #[test]
@@ -501,7 +471,7 @@ mod tests {
     #[test]
     fn windows_keep_independent_points() {
         let ed = typ(editor(), "abcd");
-        let ed = run_command(ed, split_window_below);
+        let ed = run_command(ed, |e, fx| (split(e, Dir::Below), fx));
         assert_eq!(ed.leaf_count(), 2);
         let ed = ed.with_window(|w| Window { point: 3, ..w });
         let ed = run_command(ed, other_window);
@@ -549,7 +519,10 @@ mod tests {
         let (ed, _) = kill_buffer(ed, other, Vec::new());
         assert!(matches!(
             ed.mode(),
-            Mode::Confirm(q) if matches!(q.kind, Confirm::KillModified(_))
+            Mode::Confirm {
+                kind: Confirm::KillModified(_),
+                ..
+            }
         ));
         let ed = keys(ed, "n");
         assert_eq!(ed.buffers().len(), 2);

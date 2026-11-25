@@ -5,6 +5,8 @@ use neonemacs::core::Config;
 use neonemacs::core::Doc;
 use neonemacs::core::Edit;
 use neonemacs::core::Editor;
+use neonemacs_core::render::Cell;
+use neonemacs_core::{line_to_offset, offset_to_line};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -56,7 +58,7 @@ fn large_file_nth_line_start_and_line_navigation_latency() {
     // In release mode or even debug mode with SIMD slice searching, scanning 50,000 lines is near-instant (< 30ms).
     // With byte-at-a-time loop calling byte_at() millions of times with bounds checking and branches, it degrades drastically.
     let start = Instant::now();
-    let pos_80k = text.line_to_offset(79_999).unwrap();
+    let pos_80k = line_to_offset(&text, 79_999).unwrap();
     let elapsed_nth = start.elapsed();
 
     // Since we inserted 1 line at 50,000, line 80,000 is original line (80,000 - 2) + inserted line len
@@ -64,9 +66,9 @@ fn large_file_nth_line_start_and_line_navigation_latency() {
     assert_eq!(pos_80k, expected_pos_80k);
 
     let start = Instant::now();
-    let line_idx = text.offset_to_line(pos_80k).unwrap();
-    let lstart = text.line_to_offset(line_idx).unwrap();
-    let lend = text.line_to_offset(line_idx + 1).unwrap() - 1;
+    let line_idx = offset_to_line(&text, pos_80k).unwrap();
+    let lstart = line_to_offset(&text, line_idx).unwrap();
+    let lend = line_to_offset(&text, line_idx + 1).unwrap() - 1;
     let elapsed_single = start.elapsed();
 
     assert_eq!(lstart, pos_80k);
@@ -160,7 +162,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = neonemacs::core::render::scroll(ed, 120, 40);
     let frame = neonemacs::core::render::frame(&ed, 120, 40);
     let elapsed_head = start.elapsed();
-    assert!(!frame.rows.is_empty());
+    assert_ne!(frame.rows, [] as [Vec<Cell>; 0]);
     assert!(
         elapsed_head < Duration::from_millis(60),
         "scroll + frame near start of 10MB single line took {elapsed_head:?} (expected < 60ms)"
@@ -172,7 +174,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = neonemacs::core::render::scroll(ed, 120, 40);
     let frame = neonemacs::core::render::frame(&ed, 120, 40);
     let elapsed_mid = start.elapsed();
-    assert!(!frame.rows.is_empty());
+    assert_ne!(frame.rows, [] as [Vec<neonemacs_core::render::Cell>; 0]);
     assert!(
         elapsed_mid < Duration::from_millis(150),
         "scroll + frame at 5MB offset of 10MB single line took {elapsed_mid:?} (expected < 150ms)"

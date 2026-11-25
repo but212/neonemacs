@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::eol::Eol;
 use crate::file::{Backing, DiskState};
 use crate::undo::{Edit, RecordedEdit, UndoLog};
-use crate::weave_tree::{Doc, Replace};
+use crate::{Doc, Replace, compact_small, goto_line_offset};
 
 /// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
 pub const SCRATCH_NAME: &str = "*scratch*";
@@ -102,7 +102,7 @@ impl RecoveredDelta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct WalDeltaLog {
+pub(crate) struct WalDeltaLog {
     base: WalBaseDigest,
     edits: Vec<Replace>,
     bytes: usize,
@@ -118,7 +118,7 @@ impl WalDeltaLog {
     }
 
     fn push(mut self, mut edit: Replace, doc_len: usize) -> Option<Self> {
-        edit.insert = edit.insert.compact_small();
+        edit.insert = compact_small(edit.insert);
         // The retained allocation charge also bounds the serialized insert length.
         let cost = edit
             .insert
@@ -350,7 +350,9 @@ impl Buffer {
         self.undo = UndoLog::new();
         self.epoch = self.epoch.wrapping_add(1);
         self.wal_deltas = None;
-        self.snap_anchors()
+        self.saved_point = self.text.floor_boundary(self.saved_point);
+        self.mark = self.mark.map(|m| self.text.floor_boundary(m));
+        self
     }
 
     #[must_use]
@@ -377,14 +379,10 @@ impl Buffer {
 
     #[must_use]
     pub fn replace_from_disk(mut self, text: Doc, backing: Backing, eol: Eol) -> Self {
-        self.text = text;
         self.backing = backing;
         self.eol = eol;
         self.modified = false;
-        self.epoch = self.epoch.wrapping_add(1);
-        self.undo = UndoLog::new();
-        self.wal_deltas = None;
-        self.snap_anchors()
+        self.with_text(text)
     }
 
     /// Applies `edit` and records its inverse for undo (I-35). Returns `None` for an invalid edit.
@@ -397,6 +395,29 @@ impl Buffer {
         self.apply_recorded(edit.into(), remap_fn, undo_limit)
     }
 
+    fn apply_text_edit(
+        mut self,
+        forward: Option<crate::Replace>,
+        f: impl FnOnce(Doc) -> Result<(Doc, crate::Replace), (Doc, crate::DocError)>,
+    ) -> (Self, Option<Edit>) {
+        match f(self.text) {
+            Ok((next, inv)) => {
+                self.text = next;
+                if let Some(f) = forward {
+                    self.wal_deltas = self
+                        .wal_deltas
+                        .take()
+                        .and_then(|log| log.push(f, self.text.total_bytes()));
+                }
+                (self, Some(Edit::Replace(inv)))
+            }
+            Err((doc, _err)) => {
+                self.text = doc;
+                (self, None)
+            }
+        }
+    }
+
     pub(crate) fn apply_recorded(
         mut self,
         RecordedEdit { edit, span }: RecordedEdit,
@@ -406,22 +427,26 @@ impl Buffer {
         let inverse = match edit {
             Edit::Replace(r) => {
                 let forward = self.wal_deltas.is_some().then(|| r.clone());
-                match self.text.apply(r) {
-                    Ok((next, inv)) => {
-                        self.text = next;
-                        if let Some(f) = forward {
-                            self.wal_deltas = self
-                                .wal_deltas
-                                .take()
-                                .and_then(|log| log.push(f, self.text.total_bytes()));
-                        }
-                        Edit::Replace(inv)
-                    }
-                    Err((doc, _err)) => {
-                        self.text = doc;
-                        return (self, None);
-                    }
-                }
+                let (next_self, inv) = self.apply_text_edit(forward, |doc| doc.apply(r));
+                let Some(inv) = inv else {
+                    return (next_self, None);
+                };
+                self = next_self;
+                inv
+            }
+            Edit::InsertInline { offset, data } => {
+                let forward = self.wal_deltas.is_some().then(|| crate::Replace {
+                    offset,
+                    delete_len: 0,
+                    insert: crate::Doc::from_bytes(data.as_slice()),
+                });
+                let (next_self, inv) =
+                    self.apply_text_edit(forward, |doc| doc.replace(offset, 0, data.as_slice()));
+                let Some(inv) = inv else {
+                    return (next_self, None);
+                };
+                self = next_self;
+                inv
             }
             Edit::SetEol { from, to } => {
                 self.eol = to;
@@ -441,14 +466,6 @@ impl Buffer {
         let (undo, dropped) = self.undo.record(inverse, undo_limit, clean_epoch);
         self.undo = undo;
         (self, Some(dropped))
-    }
-
-    /// Snaps `saved_point` and `mark` to valid UTF-8 unit boundaries within the current text (I-01, I-25).
-    #[must_use]
-    pub fn snap_anchors(mut self) -> Self {
-        self.saved_point = self.text.floor_boundary(self.saved_point);
-        self.mark = self.mark.map(|m| self.text.floor_boundary(m));
-        self
     }
 }
 
@@ -485,11 +502,6 @@ impl BufferPool {
         self.buffers.len()
     }
 
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.buffers.is_empty()
-    }
-
     pub fn iter(&self) -> core::slice::Iter<'_, Buffer> {
         self.buffers.iter()
     }
@@ -504,11 +516,6 @@ impl BufferPool {
             .iter()
             .position(|b| b.id == id)
             .expect("window refers to a live buffer (I-08)")
-    }
-
-    #[must_use]
-    pub fn get(&self, index: usize) -> Option<&Buffer> {
-        self.buffers.get(index)
     }
 
     #[must_use]
@@ -568,19 +575,7 @@ impl BufferPool {
         self
     }
 
-    /// Restores the content of the buffer visiting `path` from a WAL snapshot (I-23).
-    #[must_use]
-    pub fn restore_content(
-        self,
-        path: &str,
-        doc: Doc,
-        eol: Eol,
-        line: Option<usize>,
-    ) -> (Self, Option<BufferId>) {
-        self.install_recovered(path, doc, eol, line, None)
-    }
-
-    fn install_recovered(
+    pub(crate) fn install_recovered(
         self,
         path: &str,
         doc: Doc,
@@ -598,11 +593,7 @@ impl BufferPool {
                     .clear_wal_dirty();
                 buf.wal_deltas = log;
                 if let Some(n) = line {
-                    let line_idx = n.saturating_sub(1).min(buf.text.total_lines() - 1);
-                    let pos = buf
-                        .text
-                        .line_to_offset(line_idx)
-                        .expect("line < total_lines");
+                    let pos = goto_line_offset(&buf.text, n);
                     buf = buf.set_saved_point(pos);
                 }
                 buf
@@ -680,30 +671,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pool_scratch_is_scratch_backed_before_and_after_a_kill() {
-        // I-42
-        let pool = BufferPool::new();
-        assert!(pool.get(0).unwrap().backing().is_scratch());
-        let (pool, replacement) = pool.kill(BufferId(0));
-        assert_eq!(pool.get_by_id(replacement).name(), SCRATCH_NAME);
-        assert!(pool.get_by_id(replacement).backing().is_scratch());
-    }
-
-    #[test]
-    fn buffer_pool_starts_with_scratch() {
+    fn buffer_pool_starts_with_scratch_and_kill_last_recreates_it() {
+        // I-08, I-42
         let pool = BufferPool::new();
         assert_eq!(pool.len(), 1);
-        assert_eq!(pool.get(0).unwrap().name(), "*scratch*");
-        assert_eq!(pool.get(0).unwrap().id(), BufferId(0));
-    }
+        let first = pool.iter().next().unwrap();
+        assert_eq!(first.name(), SCRATCH_NAME);
+        assert_eq!(first.id(), BufferId(0));
+        assert!(first.backing().is_scratch());
 
-    #[test]
-    fn buffer_pool_kill_last_creates_scratch_enforcing_i08() {
-        let pool = BufferPool::new();
         let (pool, replacement) = pool.kill(BufferId(0));
         assert_eq!(pool.len(), 1);
         assert_ne!(replacement, BufferId(0));
-        assert_eq!(pool.get_by_id(replacement).name(), "*scratch*");
+        assert_eq!(pool.get_by_id(replacement).name(), SCRATCH_NAME);
+        assert!(pool.get_by_id(replacement).backing().is_scratch());
     }
 
     #[test]
@@ -773,10 +754,11 @@ mod tests {
             pool.get_by_id(id).wal_deltas().map(|(_, edits)| edits),
             Some(&[][..])
         );
-        let (pool, restored) = pool.restore_content(
+        let (pool, restored) = pool.install_recovered(
             path.as_str(),
             Doc::from_bytes(b"recovered draft"),
             Eol::Lf,
+            None,
             None,
         );
         assert_eq!(restored, Some(id));
@@ -819,7 +801,7 @@ mod tests {
 
     #[test]
     fn wal_delta_budget_compacts_tiny_slices_and_charges_backing_for_larger_slices() {
-        use crate::weave_tree::{CHUNK_CAP, MAX_SLICE_BYTES};
+        use crate::{CHUNK_CAP, MAX_SLICE_BYTES};
 
         let source = Doc::from_bytes(&vec![b'a'; MAX_SLICE_BYTES]);
         let record = |len| Replace {

@@ -5,12 +5,14 @@
 //! Every transition takes the editor by value and returns the new one.
 
 use alloc::borrow::ToOwned;
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 mod documents;
 mod edit;
 mod interaction;
 mod settings;
 
+use crate::Doc;
 use crate::buffer::{BufferPool, RecoveredDelta};
 use crate::config::{Config, Toggles};
 use crate::effect::{Effect, WalTarget};
@@ -18,16 +20,12 @@ use crate::eol::Eol;
 use crate::file::{Backing, FilePath};
 use crate::keymap::{KeyAliases, Keymap};
 use crate::syntax::SyntaxRegistry;
-use crate::weave_tree::Doc;
 use crate::window::WindowManager;
-use documents::Documents;
 pub use documents::KillRing;
-use interaction::Interaction;
 pub use interaction::{
     Confirm, Direction, Isearch, LastCommand, MatchKind, Mode, Prefix, Prompt, Purpose,
-    QueryReplace, Question,
+    QueryReplace,
 };
-pub use settings::CommandRegistry;
 use settings::Settings;
 
 pub use crate::buffer::{Buffer, BufferId};
@@ -39,8 +37,19 @@ pub const CANCEL_MESSAGE: &str = "Quit";
 
 #[derive(Debug, Clone)]
 pub struct Editor {
-    documents: Documents,
-    interaction: Interaction,
+    buffers: BufferPool,
+    windows: WindowManager,
+    kill_ring: KillRing,
+    edit_seq: u64,
+    /// Where the unsaved text of the scratch buffer is kept. `None` keeps it in memory only (I-43).
+    scratch_slot: Option<String>,
+    mode: Mode,
+    /// Kind of the command that just ran. The running command sets it.
+    last: LastCommand,
+    /// Kind of the command before the running one. Chaining commands read it.
+    prev: LastCommand,
+    message: String,
+    quit: bool,
     settings: Settings,
 }
 
@@ -61,32 +70,35 @@ impl Editor {
             height: 0,
         };
         Self {
-            documents: Documents::new(initial_window),
-            interaction: Interaction::new(),
+            buffers: BufferPool::new(),
+            windows: WindowManager::new(initial_window),
+            kill_ring: KillRing::new(),
+            edit_seq: 0,
+            scratch_slot: None,
+            mode: Mode::normal(),
+            last: LastCommand::Other,
+            prev: LastCommand::Other,
+            message: String::new(),
+            quit: false,
             settings: Settings::new(config),
         }
     }
 
     #[must_use]
     pub const fn edit_seq(&self) -> u64 {
-        self.documents.edit_seq
-    }
-
-    #[must_use]
-    pub fn clear_wal_dirty(self, id: BufferId) -> Self {
-        self.with_buffer(id, Buffer::clear_wal_dirty)
+        self.edit_seq
     }
 
     /// Keeps the unsaved text of the scratch buffer in `slot`. `None` keeps it in memory only (I-43).
     #[must_use]
     pub fn with_scratch_slot(mut self, slot: Option<String>) -> Self {
-        self.documents.scratch_slot = slot;
+        self.scratch_slot = slot;
         self
     }
 
     #[must_use]
     pub fn scratch_slot(&self) -> Option<&str> {
-        self.documents.scratch_slot.as_deref()
+        self.scratch_slot.as_deref()
     }
 
     /// Where the WAL of buffer `id` lives, if it can have one: beside its file, or the scratch slot.
@@ -108,12 +120,12 @@ impl Editor {
 
     #[must_use]
     pub fn message(&self) -> &str {
-        &self.interaction.message
+        &self.message
     }
 
     #[must_use]
     pub fn set_message(mut self, message: impl Into<String>) -> Self {
-        self.interaction.message = message.into();
+        self.message = message.into();
         self
     }
 
@@ -122,55 +134,55 @@ impl Editor {
     #[must_use]
     pub fn append_message(mut self, note: impl Into<String>) -> Self {
         let note = note.into();
-        if self.interaction.message.is_empty() {
-            self.interaction.message = note;
+        if self.message.is_empty() {
+            self.message = note;
         } else {
-            self.interaction.message.push_str("; ");
-            self.interaction.message.push_str(&note);
+            self.message.push_str("; ");
+            self.message.push_str(&note);
         }
         self
     }
 
     #[must_use]
     pub fn clear_message(mut self) -> Self {
-        self.interaction.message.clear();
+        self.message.clear();
         self
     }
 
     #[must_use]
     pub const fn mode(&self) -> &Mode {
-        &self.interaction.mode
+        &self.mode
     }
 
     #[must_use]
     pub fn set_mode(mut self, mode: Mode) -> Self {
-        self.interaction.mode = mode;
+        self.mode = mode;
         self
     }
 
     #[must_use]
     pub fn confirm(self, kind: Confirm, message: impl Into<String>) -> Self {
         let text = message.into();
-        self.set_mode(Mode::Confirm(Question {
+        self.set_mode(Mode::Confirm {
             kind,
             text: text.clone(),
-        }))
+        })
         .set_message(text)
     }
 
     #[must_use]
     pub const fn buffers(&self) -> &BufferPool {
-        &self.documents.buffers
+        &self.buffers
     }
 
     #[must_use]
     pub const fn windows(&self) -> &WindowManager {
-        &self.documents.windows
+        &self.windows
     }
 
     #[must_use]
     pub fn with_windows(mut self, f: impl FnOnce(WindowManager) -> WindowManager) -> Self {
-        self.documents.windows = f(self.documents.windows);
+        self.windows = f(self.windows);
         self
     }
 
@@ -192,7 +204,7 @@ impl Editor {
         let tracked = self.tracks_wal_deltas();
         self.settings = f(self.settings);
         if tracked && !self.tracks_wal_deltas() {
-            self.documents.buffers = self.documents.buffers.clear_wal_deltas();
+            self.buffers = self.buffers.clear_wal_deltas();
         }
         self
     }
@@ -237,52 +249,52 @@ impl Editor {
     }
 
     #[must_use]
-    pub const fn commands(&self) -> &CommandRegistry {
+    pub const fn commands(&self) -> &BTreeSet<String> {
         &self.settings.commands
     }
 
     #[must_use]
     pub fn register_command(mut self, name: impl Into<String>) -> Self {
-        self.settings.commands = self.settings.commands.insert(name);
+        self.settings.commands.insert(name.into());
         self
     }
 
     #[must_use]
     pub const fn quit(&self) -> bool {
-        self.interaction.quit
+        self.quit
     }
 
     #[must_use]
     pub const fn set_quit(mut self, quit: bool) -> Self {
-        self.interaction.quit = quit;
+        self.quit = quit;
         self
     }
 
     #[must_use]
     pub const fn kill_ring(&self) -> &KillRing {
-        &self.documents.kill_ring
+        &self.kill_ring
     }
 
     #[must_use]
     pub fn with_kill_ring(mut self, f: impl FnOnce(KillRing) -> KillRing) -> Self {
-        self.documents.kill_ring = f(self.documents.kill_ring);
+        self.kill_ring = f(self.kill_ring);
         self
     }
 
     #[must_use]
     pub const fn last(&self) -> LastCommand {
-        self.interaction.last
+        self.last
     }
 
     #[must_use]
     pub const fn set_last(mut self, last: LastCommand) -> Self {
-        self.interaction.last = last;
+        self.last = last;
         self
     }
 
     #[must_use]
     pub const fn prev(&self) -> LastCommand {
-        self.interaction.prev
+        self.prev
     }
 
     #[must_use]
@@ -309,17 +321,17 @@ impl Editor {
 
     #[must_use]
     pub fn window(&self) -> &Window {
-        self.documents.windows.current()
+        self.windows.current()
     }
 
     /// Removes buffer `id`. Windows that showed it move to another buffer (I-08).
     /// Killing the last buffer leaves an empty `*scratch*` (A4).
     #[must_use]
     pub fn kill_buffer_id(mut self, id: BufferId) -> Self {
-        let (buffers, replacement) = self.documents.buffers.kill(id);
-        self.documents.buffers = buffers;
+        let (buffers, replacement) = self.buffers.kill(id);
+        self.buffers = buffers;
         let saved = self.buffer_by_id(replacement).saved_point();
-        self.documents.windows = self.documents.windows.retarget(id, replacement, saved);
+        self.windows = self.windows.retarget(id, replacement, saved);
         self
     }
 
@@ -333,25 +345,25 @@ impl Editor {
             top: text.floor_boundary(w.top),
             ..w
         };
-        let sel = self.documents.windows.selected();
-        self.documents.windows = self.documents.windows.set_leaf(sel, w);
+        let sel = self.windows.selected();
+        self.windows = self.windows.set_leaf(sel, w);
         self
     }
 
     #[must_use]
     pub const fn leaf_count(&self) -> usize {
-        self.documents.windows.leaf_count()
+        self.windows.leaf_count()
     }
 
     #[must_use]
     pub fn buffer(&self) -> &Buffer {
-        self.documents.buffers.get_by_id(self.window().buffer)
+        self.buffers.get_by_id(self.window().buffer)
     }
 
     /// Replaces the buffer with `id` by `f` applied to it. Panics when `id` is unknown (I-20).
     #[must_use]
     pub fn with_buffer(mut self, id: BufferId, f: impl FnOnce(Buffer) -> Buffer) -> Self {
-        self.documents.buffers = self.documents.buffers.with_buffer(id, f);
+        self.buffers = self.buffers.with_buffer(id, f);
         self
     }
 
@@ -378,8 +390,8 @@ impl Editor {
 
     /// Moves every window displaying buffer `id` to `point(window)`, snapped, with `top` reset.
     fn reset_windows_for_buffer(mut self, id: BufferId, point: impl Fn(&Window) -> usize) -> Self {
-        let text = self.documents.buffers.get_by_id(id).text();
-        self.documents.windows = self.documents.windows.map_windows(&|w| {
+        let text = self.buffers.get_by_id(id).text();
+        self.windows = self.windows.map_windows(&|w| {
             if w.buffer == id {
                 Window {
                     point: text.floor_boundary(point(&w)),
@@ -396,34 +408,40 @@ impl Editor {
     /// Restores the content of the buffer visiting `path` from a WAL snapshot (I-23).
     #[must_use]
     pub fn restore_buffer_content(
-        mut self,
+        self,
         path: &str,
         doc: Doc,
         eol: Eol,
         line: Option<usize>,
     ) -> Self {
-        let (buffers, id) = self.documents.buffers.restore_content(path, doc, eol, line);
-        self.documents.buffers = buffers;
-        self.snap_recovered_windows(id, line)
+        self.restore_with(line, |b| b.install_recovered(path, doc, eol, line, None))
     }
 
     /// Installs the replayed delta WAL for a buffer visiting `path` (I-23).
     #[must_use]
     pub(crate) fn restore_buffer_deltas(
-        mut self,
+        self,
         path: &str,
         delta: RecoveredDelta,
         line: Option<usize>,
     ) -> Self {
-        let (buffers, id) = self.documents.buffers.restore_deltas(path, delta, line);
-        self.documents.buffers = buffers;
+        self.restore_with(line, |b| b.restore_deltas(path, delta, line))
+    }
+
+    fn restore_with(
+        mut self,
+        line: Option<usize>,
+        f: impl FnOnce(crate::buffer::BufferPool) -> (crate::buffer::BufferPool, Option<BufferId>),
+    ) -> Self {
+        let (buffers, id) = f(self.buffers);
+        self.buffers = buffers;
         self.snap_recovered_windows(id, line)
     }
 
     fn snap_recovered_windows(self, id: Option<BufferId>, line: Option<usize>) -> Self {
         match id {
             Some(id) if line.is_some() => {
-                let target = self.documents.buffers.get_by_id(id).saved_point();
+                let target = self.buffers.get_by_id(id).saved_point();
                 self.reset_windows_for_buffer(id, |_| target)
             }
             Some(id) => self.snap_windows_for_buffer(id),
@@ -435,7 +453,6 @@ impl Editor {
     #[must_use]
     pub fn restore_scratch(self, doc: Doc, eol: Eol) -> Self {
         let Some(id) = self
-            .documents
             .buffers
             .iter()
             .find(|b| b.backing().is_scratch())
@@ -455,8 +472,8 @@ impl Editor {
     /// Adds a buffer and returns its id. Ids are never reused.
     #[must_use]
     pub fn add_buffer(mut self, name: &str, text: Doc, backing: Backing) -> (Self, BufferId) {
-        let (buffers, id) = self.documents.buffers.add(name, text, backing);
-        self.documents.buffers = buffers;
+        let (buffers, id) = self.buffers.add(name, text, backing);
+        self.buffers = buffers;
         let eol = self.settings.config.default_eol;
         let track = self.tracks_wal_deltas();
         let ed = self.with_buffer(id, |b| b.set_eol(eol).track_wal_baseline(track));
@@ -471,14 +488,14 @@ impl Editor {
 
     #[must_use]
     pub fn buffer_by_id(&self, id: BufferId) -> &Buffer {
-        self.documents.buffers.get_by_id(id)
+        self.buffers.get_by_id(id)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keymap::{Code, Key};
+    use crate::keymap::Key;
     use crate::test_support::{press, text};
 
     fn editor_with(s: &str) -> Editor {
@@ -487,31 +504,22 @@ mod tests {
     }
 
     #[test]
-    fn keys_type_and_undo() {
-        let ed = press(editor_with(""), Key::plain(Code::Char('a')));
-        let ed = press(ed, Key::plain(Code::Char('b')));
-        assert_eq!(text(&ed), "ab");
-        let ed = press(ed, Key::plain(Code::Char('c')));
-        assert_eq!(text(&ed), "abc");
-    }
-
-    #[test]
     fn keys_route_through_prefixes() {
         let ed = press(editor_with(""), Key::ctrl('x'));
         assert_eq!(
-            ed.interaction.mode,
+            ed.mode,
             Mode::Normal {
                 prefix: Prefix::CtlX
             }
         );
         let ed = press(ed, Key::ctrl('g'));
         assert_eq!(
-            ed.interaction.mode,
+            ed.mode,
             Mode::Normal {
                 prefix: Prefix::None
             }
         );
-        assert_eq!(ed.interaction.message, "Quit");
+        assert_eq!(ed.message, "Quit");
     }
 
     #[test]

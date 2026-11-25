@@ -4,7 +4,8 @@
 use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
-use crate::file::{Read, loaded_from};
+use crate::file::{RawFile, loaded_from};
+use crate::goto_line_offset;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -80,7 +81,7 @@ pub fn file_read(
     ed: Editor,
     target: ReadTarget,
     path: String,
-    result: Result<Read, String>,
+    result: Result<Option<RawFile>, String>,
     mut fx: Effects,
 ) -> (Editor, Effects) {
     let max_size = ed.config().max_file_size;
@@ -98,9 +99,7 @@ pub fn file_read(
                     let (mut ed, id) = ed.add_buffer(&name_of(&path), loaded.text, loaded.backing);
                     ed = ed.with_buffer(id, |b| b.set_eol(loaded.eol));
                     if let Some(n) = line {
-                        let text = ed.buffer_by_id(id).text();
-                        let line_idx = n.saturating_sub(1).min(text.total_lines() - 1);
-                        let pos = text.line_to_offset(line_idx).expect("line < total_lines");
+                        let pos = goto_line_offset(ed.buffer_by_id(id).text(), n);
                         ed = ed.with_buffer(id, |b| b.set_saved_point(pos));
                     }
                     if show {
@@ -114,7 +113,7 @@ pub fn file_read(
                     });
                     (ed, fx)
                 }
-                Err(e) => (ed.set_message(e.message()), fx),
+                Err(e) => (ed.set_message(e), fx),
             }
         }
         (ReadTarget::Open { .. }, Err(e)) => {
@@ -122,7 +121,7 @@ pub fn file_read(
             (ed, fx)
         }
         // A deleted file is not an empty one: keep the buffer and its WAL.
-        (ReadTarget::Revert(_), Ok(Read::Missing)) => {
+        (ReadTarget::Revert(_), Ok(None)) => {
             let ed = ed.set_message(format!("Revert failed: {path} does not exist"));
             (ed, fx)
         }
@@ -144,7 +143,7 @@ pub fn file_read(
                 });
                 (ed, fx)
             }
-            Err(e) => (ed.set_message(e.message()), fx),
+            Err(e) => (ed.set_message(e), fx),
         },
         (ReadTarget::Revert(_), Err(e)) => {
             let ed = ed.set_message(format!("Revert failed: {e}"));
@@ -185,13 +184,13 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
+    use crate::Doc;
     use crate::config::Config;
     use crate::effect::Recovered;
     use crate::eol::Eol;
+    use crate::file::RawFile;
     use crate::file::{Backing, DiskState, FilePath};
-    use crate::file::{RawFile, Read};
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
-    use crate::weave_tree::Doc;
 
     /// An editor whose `max-file-size` is 4 bytes.
     fn small_limit() -> Editor {
@@ -202,63 +201,45 @@ mod tests {
     }
 
     #[test]
-    fn opened_mixed_file_normalizes_and_saves_majority_crlf() {
-        let read = Read::Found(RawFile::from_bytes(7, DiskState::Unknown, b"a\r\nb\r\nc\n"));
-        let target = ReadTarget::Open {
-            line: None,
-            show: false,
-        };
-        let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
-        let id = ed.buffers().iter().last().unwrap().id();
-        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
-        assert_eq!(
-            *ed.buffer_by_id(id).text(),
-            crate::weave_tree::Doc::from_bytes(b"a\nb\nc\n")
-        );
-        assert!(!ed.buffer_by_id(id).modified());
-        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\nc\r\n");
-    }
-
-    #[test]
-    fn opened_mixed_file_normalizes_and_saves_majority_lf_or_tie() {
-        let read = Read::Found(RawFile::from_bytes(5, DiskState::Unknown, b"a\r\nb\n"));
-        let target = ReadTarget::Open {
-            line: None,
-            show: false,
-        };
-        let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
-        let id = ed.buffers().iter().last().unwrap().id();
-        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Lf);
-        assert_eq!(
-            *ed.buffer_by_id(id).text(),
-            crate::weave_tree::Doc::from_bytes(b"a\nb\n")
-        );
-        assert!(!ed.buffer_by_id(id).modified());
-        assert_eq!(saved_bytes(&ed, id), b"a\nb\n");
-    }
-
-    #[test]
-    fn opened_crlf_file_saves_crlf_bytes() {
-        let read = Read::Found(RawFile::from_bytes(6, DiskState::Unknown, b"a\r\nb\r\n"));
-        let target = ReadTarget::Open {
-            line: None,
-            show: false,
-        };
-        let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
-        let id = ed.buffers().iter().last().unwrap().id();
-        assert_eq!(ed.buffer_by_id(id).eol(), Eol::Crlf);
-        assert_eq!(
-            *ed.buffer_by_id(id).text(),
-            crate::weave_tree::Doc::from_bytes(b"a\nb\n")
-        );
-        assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
+    fn opened_files_normalize_eol_and_save_expected_bytes() {
+        type Case<'a> = (&'a [u8], Eol, &'a [u8], &'a [u8]);
+        let cases: &[Case<'_>] = &[
+            (
+                b"a\r\nb\r\nc\n",
+                Eol::Crlf,
+                b"a\nb\nc\n",
+                b"a\r\nb\r\nc\r\n",
+            ),
+            (b"a\r\nb\n", Eol::Lf, b"a\nb\n", b"a\nb\n"),
+            (b"a\r\nb\r\n", Eol::Crlf, b"a\nb\n", b"a\r\nb\r\n"),
+        ];
+        for &(raw, expected_eol, expected_doc, expected_saved) in cases {
+            let read = Some(RawFile::from_bytes(
+                raw.len() as u64,
+                DiskState::Unknown,
+                raw,
+            ));
+            let target = ReadTarget::Open {
+                line: None,
+                show: false,
+            };
+            let (ed, _) = file_read(editor(), target, "f.txt".to_owned(), Ok(read), Vec::new());
+            let id = ed.buffers().iter().last().unwrap().id();
+            assert_eq!(ed.buffer_by_id(id).eol(), expected_eol);
+            assert_eq!(
+                *ed.buffer_by_id(id).text(),
+                crate::Doc::from_bytes(expected_doc)
+            );
+            assert!(!ed.buffer_by_id(id).modified());
+            assert_eq!(saved_bytes(&ed, id), expected_saved);
+        }
     }
 
     #[test]
     fn revert_picks_up_line_endings_from_disk() {
         let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
         let id = ed.window().buffer;
-        let read = Read::Found(RawFile::from_bytes(6, DiskState::Unknown, b"a\r\nb\r\n"));
+        let read = Some(RawFile::from_bytes(6, DiskState::Unknown, b"a\r\nb\r\n"));
         let (ed, _) = file_read(
             ed,
             ReadTarget::Revert(id),
@@ -270,8 +251,8 @@ mod tests {
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
     }
 
-    fn found(bytes: &[u8], disk: DiskState) -> Read {
-        Read::Found(RawFile::from_bytes(bytes.len() as u64, disk, bytes))
+    fn found(bytes: &[u8], disk: DiskState) -> Option<RawFile> {
+        Some(RawFile::from_bytes(bytes.len() as u64, disk, bytes))
     }
 
     #[test]
@@ -309,10 +290,7 @@ mod tests {
     #[test]
     fn no_wal_changes_nothing() {
         let ed = probed(WalProbe::Absent);
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"disk")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"disk"));
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "");
     }
@@ -323,10 +301,7 @@ mod tests {
             eol: Eol::Crlf,
             doc: Doc::from_bytes(b"draft"),
         }));
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"draft")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"draft"));
         assert_eq!(ed.buffer().eol(), Eol::Crlf);
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "[Recovered f.txt from WAL]");
@@ -334,8 +309,8 @@ mod tests {
 
     #[test]
     fn replayed_delta_wal_restores_text_and_eol() {
+        use crate::Replace;
         use crate::effect::RecoveredDelta;
-        use crate::weave_tree::Replace;
         let delta = RecoveredDelta::replay(
             Doc::from_bytes(b"disk"),
             Eol::Crlf,
@@ -357,10 +332,7 @@ mod tests {
     #[test]
     fn unusable_wal_is_reported_and_leaves_the_text() {
         let ed = probed(WalProbe::Stale(Ok("dir/.f.txt.wal.stale".to_owned())));
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"disk")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"disk"));
         assert!(!ed.buffer().modified());
         assert_eq!(ed.message(), "Stale WAL kept as .f.txt.wal.stale");
 
@@ -372,7 +344,7 @@ mod tests {
     fn oversized_open_creates_no_buffer() {
         let ed = small_limit();
         let count = ed.buffers().iter().count();
-        let read = Read::Found(RawFile::from_bytes(10, DiskState::Unknown, &[]));
+        let read = Some(RawFile::from_bytes(10, DiskState::Unknown, &[]));
         let target = ReadTarget::Open {
             line: None,
             show: true,
@@ -388,7 +360,7 @@ mod tests {
         let ed =
             file_buffer(small_limit(), b"ab", Eol::Lf).with_current_buffer(Buffer::mark_modified);
         let id = ed.window().buffer;
-        let read = Read::Found(RawFile::from_bytes(10, DiskState::Unknown, &[]));
+        let read = Some(RawFile::from_bytes(10, DiskState::Unknown, &[]));
         let (ed, fx) = file_read(
             ed,
             ReadTarget::Revert(id),
@@ -396,10 +368,7 @@ mod tests {
             Ok(read),
             Vec::new(),
         );
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"ab")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"ab"));
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
         // Nothing is removed: the unsaved edits stay recoverable from the WAL.
@@ -410,7 +379,7 @@ mod tests {
     fn successful_revert_removes_wal_after_reload() {
         let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
         let id = ed.window().buffer;
-        let read = Read::Found(RawFile::from_bytes(2, DiskState::Unknown, b"x\n"));
+        let read = Some(RawFile::from_bytes(2, DiskState::Unknown, b"x\n"));
         let (ed, fx) = file_read(
             ed,
             ReadTarget::Revert(id),
@@ -418,20 +387,17 @@ mod tests {
             Ok(read),
             Vec::new(),
         );
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"x\n")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"x\n"));
         assert!(
             matches!(fx.as_slice(), [Effect::RemoveWal { target }] if target.path() == "f.txt")
         );
     }
 
     #[test]
-    fn open_of_visited_path_reuses_buffer() {
+    fn open_of_visited_or_parent_spelled_path_reuses_buffer() {
         let ed = file_buffer(editor(), b"abc", Eol::Lf);
         let count = ed.buffers().iter().count();
-        let read = Read::Found(RawFile::from_bytes(3, DiskState::Unknown, b"abc"));
+        let read = Some(RawFile::from_bytes(3, DiskState::Unknown, b"abc"));
         let (ed, fx) = file_read(
             ed,
             ReadTarget::Open {
@@ -444,10 +410,7 @@ mod tests {
         );
         assert_eq!(ed.buffers().iter().count(), count);
         assert_eq!(fx, [] as [Effect; 0]);
-    }
 
-    #[test]
-    fn open_with_parent_spelling_reuses_buffer() {
         let ed = editor().with_cwd("/w".to_owned());
         let ed = ed.with_current_buffer(|b| {
             b.with_text(Doc::from_bytes(b"abc"))
@@ -459,7 +422,7 @@ mod tests {
                 .mark_clean()
         });
         let count = ed.buffers().iter().count();
-        let read = Read::Found(RawFile::from_bytes(3, DiskState::Unknown, b"abc"));
+        let read = Some(RawFile::from_bytes(3, DiskState::Unknown, b"abc"));
         let (ed, fx) = file_read(
             ed,
             ReadTarget::Open {
@@ -486,13 +449,10 @@ mod tests {
             ed,
             ReadTarget::Revert(id),
             "f.txt".to_owned(),
-            Ok(Read::Missing),
+            Ok(None),
             Vec::new(),
         );
-        assert_eq!(
-            *ed.buffer().text(),
-            crate::weave_tree::Doc::from_bytes(b"abc")
-        );
+        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"abc"));
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "Revert failed: f.txt does not exist");
         assert_eq!(fx, [] as [Effect; 0]);

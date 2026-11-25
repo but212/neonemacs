@@ -1,9 +1,11 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use neonemacs_core::weave_tree::Doc;
+use weave_tree::{LineBreaks, WeaveTree};
 
-fn make_lines_doc(total_bytes: usize, line_len: usize) -> Doc {
+type Doc = WeaveTree<LineBreaks>;
+
+fn make_lines_bytes(total_bytes: usize, line_len: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(total_bytes);
     let mut col = 0usize;
     while buf.len() < total_bytes {
@@ -15,7 +17,11 @@ fn make_lines_doc(total_bytes: usize, line_len: usize) -> Doc {
             col += 1;
         }
     }
-    Doc::from_bytes(&buf)
+    buf
+}
+
+fn make_lines_doc(total_bytes: usize, line_len: usize) -> Doc {
+    Doc::from_bytes(&make_lines_bytes(total_bytes, line_len))
 }
 
 fn make_fragmented_doc(slices: usize, slice_bytes: usize) -> Doc {
@@ -64,9 +70,7 @@ fn bench_micro_edits(c: &mut Criterion) {
             || base_100k.clone(),
             |doc| {
                 let (after_del, _) = doc.replace(50 * 1024, 1, b"").expect("valid delete");
-                let (after_ins, inv) = after_del
-                    .replace(50 * 1024, 0, b"q")
-                    .expect("valid insert");
+                let (after_ins, inv) = after_del.replace(50 * 1024, 0, b"q").expect("valid insert");
                 black_box((after_ins, inv))
             },
             BatchSize::SmallInput,
@@ -99,7 +103,7 @@ fn bench_micro_edits(c: &mut Criterion) {
         );
     });
 
-    // H1: first keystroke after mid-slice split (CoW) vs immediate subsequent keystroke (Arc::get_mut)
+    // Subsequent keystroke after mid-slice split exercises in-place append via Arc::get_mut
     group.bench_function("mid_split_subsequent_char_100kb", |b| {
         b.iter_batched(
             || {
@@ -113,6 +117,56 @@ fn bench_micro_edits(c: &mut Criterion) {
                 let (next, inv) = doc
                     .replace(50 * 1024 + 1, 0, b"z")
                     .expect("valid in-place append");
+                black_box((next, inv))
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let pad32 = vec![b'q'; 32];
+    group.bench_function("delete_subsequent_100kb", |b| {
+        b.iter_batched(
+            || {
+                base_100k
+                    .clone()
+                    .replace(50 * 1024, 0, &pad32)
+                    .expect("valid")
+                    .0
+            },
+            |doc| {
+                let (next, inv) = doc.replace(50 * 1024 + 31, 1, b"").expect("valid");
+                black_box((next, inv))
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("delete_16_consecutive_100kb", |b| {
+        b.iter_batched(
+            || {
+                base_100k
+                    .clone()
+                    .replace(50 * 1024, 0, &pad32)
+                    .expect("valid")
+                    .0
+            },
+            |mut doc| {
+                for i in (0..16).rev() {
+                    let (next, _) = doc.replace(50 * 1024 + 16 + i, 1, b"").expect("valid");
+                    doc = next;
+                }
+                black_box(doc)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let small_100b = vec![b'a'; 100];
+    group.bench_function("fresh_slice_first_append_100b", |b| {
+        b.iter_batched(
+            || Doc::from_bytes(&small_100b),
+            |doc| {
+                let (next, inv) = doc.replace(100, 0, b"z").expect("valid");
                 black_box((next, inv))
             },
             BatchSize::SmallInput,
@@ -140,9 +194,7 @@ fn bench_micro_edits(c: &mut Criterion) {
         b.iter_batched(
             || base_100k.clone(),
             |doc| {
-                let (next, inv) = doc
-                    .replace(50 * 1024, 0, &paste_64k)
-                    .expect("valid paste");
+                let (next, inv) = doc.replace(50 * 1024, 0, &paste_64k).expect("valid paste");
                 black_box((next, inv))
             },
             BatchSize::SmallInput,
@@ -166,14 +218,42 @@ fn bench_tree_and_lines(c: &mut Criterion) {
         });
     });
 
-    let doc_1mb = make_lines_doc(1024 * 1024, 80);
-    let mid_line = doc_1mb.total_lines() / 2;
-    let mid_offset = doc_1mb.line_to_offset(mid_line).expect("valid line");
+    let raw_1mb = make_lines_bytes(1024 * 1024, 80);
+    let doc_1mb = Doc::from_bytes(&raw_1mb);
+
+    group.bench_function("from_bytes_1mb", |b| {
+        b.iter(|| black_box(Doc::from_bytes(black_box(&raw_1mb))));
+    });
+
+    group.bench_function("cow_split_join_1mb", |b| {
+        b.iter_batched(
+            || doc_1mb.clone(),
+            |doc| {
+                let (next, inv) = doc.replace(512 * 1024, 1, b"xy").expect("valid");
+                black_box((next, inv))
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("cow_deep_2000_slices", |b| {
+        b.iter_batched(
+            || deep_doc.clone(),
+            |doc| {
+                let (next, inv) = doc.replace(mid, 0, b"x").expect("valid");
+                black_box((next, inv))
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    let mid_line = doc_1mb.total_metric().div_ceil(2);
+    let mid_offset = doc_1mb.metric_to_byte(mid_line).expect("valid line");
 
     group.bench_function("line_to_offset_1mb", |b| {
         b.iter(|| {
             let off = doc_1mb
-                .line_to_offset(black_box(mid_line))
+                .metric_to_byte(black_box(mid_line))
                 .expect("valid line");
             black_box(off)
         });
@@ -182,38 +262,11 @@ fn bench_tree_and_lines(c: &mut Criterion) {
     group.bench_function("offset_to_line_1mb", |b| {
         b.iter(|| {
             let line = doc_1mb
-                .offset_to_line(black_box(mid_offset))
+                .byte_to_metric(black_box(mid_offset))
                 .expect("valid offset");
             black_box(line)
         });
     });
-
-    // H2 sweep: worst-case leaf scan at end of 4 KiB / 16 KiB / 64 KiB slices
-    for (label, slice_sz) in [("4kb", 4 * 1024), ("16kb", 16 * 1024), ("64kb", 64 * 1024)] {
-        let mut buf = vec![b'a'; slice_sz];
-        buf[slice_sz - 1] = b'\n';
-        group.bench_function(format!("h2_memchr_worst_case_{label}"), |b| {
-            b.iter(|| {
-                let count = memchr::memchr_iter(b'\n', black_box(&buf)).count();
-                black_box(count)
-            });
-        });
-    }
-
-    // H2 sweep: CHUNK_CAP (256 B / 1 KiB / 4 KiB) CoW seam merge allocation + copy cost
-    for (label, cap) in [("256b", 256usize), ("1kb", 1024), ("4kb", 4096)] {
-        let left = vec![b'a'; cap / 2];
-        let right = vec![b'b'; cap / 2];
-        group.bench_function(format!("h2_chunk_cap_merge_{label}"), |b| {
-            b.iter(|| {
-                let mut merged = Vec::with_capacity(left.len() + right.len());
-                merged.extend_from_slice(black_box(&left));
-                merged.extend_from_slice(black_box(&right));
-                let arc = std::sync::Arc::new(merged);
-                black_box(arc)
-            });
-        });
-    }
 
     group.finish();
 }

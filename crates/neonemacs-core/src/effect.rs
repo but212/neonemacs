@@ -2,13 +2,13 @@
 //! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15), except that an interactive session answers
 //! `RunShell` and `ReloadInit` itself: a `RunShell` refused while another runs gets no `Event`.
 
+use crate::Doc;
 use crate::buffer::BufferId;
 pub use crate::buffer::RecoveredDelta;
 use crate::config::ShellSpec;
 use crate::eol::Eol;
-use crate::file::{DiskState, Read};
+use crate::file::{DiskState, RawFile};
 use crate::keymap::Key;
-use crate::weave_tree::Doc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -142,6 +142,8 @@ pub enum WalProbe {
 /// How `init.lua` was applied. The settings never hold part of it (I-54).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitLoad {
+    /// Reload was requested from a Lua command, where the Lua state cannot be replaced.
+    Ignored,
     /// There is no `init.lua`. The settings are the bundled ones.
     Absent,
     /// The settings are the bundled ones plus all of `init.lua`.
@@ -168,9 +170,8 @@ pub enum Event {
     FileRead {
         target: ReadTarget,
         path: String,
-        result: Result<Read, String>,
+        result: Result<Option<RawFile>, String>,
     },
-    WalRemoved,
     /// The shell saw no input for one second after an edit (I-23).
     Idle,
     WalFlushed(Vec<WalWrite>),
@@ -183,7 +184,6 @@ pub enum Event {
     ShellDone(Result<String, String>),
     /// Error text when the Lua command failed. The core shows its first line.
     LuaDone(Result<(), String>),
-    /// Answers `ReloadInit`. `None` when the reload was asked for where the Lua state cannot be
-    /// replaced: from a Lua command.
-    InitLoaded(Option<InitLoad>),
+    /// Answers `ReloadInit`.
+    InitLoaded(InitLoad),
 }

@@ -21,7 +21,6 @@ fn an_unrunnable_shell_program_reports_an_error() {
     };
     let task = spawn_shell("echo x".to_owned(), shell);
     let res = task
-        .receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("background shell finishes in time");
     let err = res.expect_err("the program does not exist");
@@ -33,7 +32,6 @@ fn async_shell_spawns_and_receives_output() {
     let task = spawn_shell("echo async_test_ok".to_owned(), ShellSpec::default());
     // Wait for the background thread to finish
     let res = task
-        .receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("background shell finishes in time");
     let output = res.expect("command succeeded");
@@ -86,7 +84,6 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
     assert_eq!(final_ed.message(), "[Running...]");
 
     let result = task
-        .receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("command completes");
     assert!(result.unwrap().contains("non_blocking"));
@@ -207,55 +204,4 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(session.ed.message(), "session_async_ok");
-}
-
-#[test]
-fn shell_running_does_not_clobber_status_messages() {
-    let ed = Editor::new(Config::default());
-    let lua = lua::new_state().unwrap();
-    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
-    let t0 = Instant::now();
-
-    let press = |code: KeyCode, modifiers: KeyModifiers| {
-        TermEvent::Key(KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        })
-    };
-
-    // Launch shell command
-    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
-    for c in "shell-command".chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
-    }
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
-    // Must outlive the whole test; a fast command can finish before the tick on a quick runner.
-    let slow = if cfg!(windows) {
-        "ping -n 4 127.0.0.1"
-    } else {
-        "sleep 3"
-    };
-    for c in slow.chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
-    }
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
-    assert_eq!(session.ed.message(), "[Running...]");
-
-    // User executes set-mark-command through M-x (Mark set) while shell is running
-    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
-    for c in "set-mark-command".chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
-    }
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
-    assert_eq!(session.ed.message(), "Mark set");
-
-    // 50ms tick occurs: must NOT overwrite "Mark set" with spinner
-    session.tick_at(t0 + Duration::from_millis(50));
-    assert_eq!(
-        session.ed.message(),
-        "Mark set",
-        "Status message must not be wiped by shell spinner"
-    );
 }

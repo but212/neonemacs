@@ -73,20 +73,12 @@ fn run_in_pty(bin: &str, args: &[&Path], xdg_config_home: &Path) -> u32 {
 fn cli_invalid_line_numbers_and_trailing_flags_exit_code_2() {
     let bin = env!("CARGO_BIN_EXE_neonemacs");
 
+    // Exhaustive flag/line-number validation lives in `shell::startup::args::tests`;
+    // here we spot-check binary exit code 2 and stderr wiring across each error category.
     let test_cases = [
         (vec!["+0", "test.txt"], "invalid line number: +0"),
-        (vec!["+-1", "test.txt"], "invalid line number: +-1"),
-        (vec!["+abc", "test.txt"], "invalid line number: +abc"),
-        (vec!["+", "test.txt"], "invalid line number: +"),
-        (vec!["+  5", "test.txt"], "invalid line number: +  5"),
-        (
-            vec!["+18446744073709551616", "test.txt"],
-            "invalid line number: +18446744073709551616",
-        ),
         (vec!["+5"], "+n must be followed by a file"),
-        (vec!["file.txt", "+10"], "+n must be followed by a file"),
         (vec!["-x"], "unknown option: -x"),
-        (vec!["file.txt", "--versoin"], "unknown option: --versoin"),
     ];
 
     for (args, expected_err) in test_cases {
@@ -113,33 +105,27 @@ fn cli_invalid_line_numbers_and_trailing_flags_exit_code_2() {
 #[test]
 fn cli_version_and_help_exit_0_without_starting_editor() {
     let bin = env!("CARGO_BIN_EXE_neonemacs");
-
-    for flag in ["-v", "--version"] {
+    let run_flag = |flag: &str| {
         let output = Command::new(bin)
             .arg(flag)
             .output()
             .unwrap_or_else(|e| panic!("failed to run {bin} {flag}: {e}"));
-
         assert_eq!(output.status.code(), Some(0), "exit code for {flag}");
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            format!("neonemacs {}\n", env!("CARGO_PKG_VERSION")),
-            "stdout for {flag}"
-        );
         assert!(output.stderr.is_empty(), "stderr for {flag}");
-    }
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
 
-    for flag in ["-h", "--help"] {
-        let output = Command::new(bin)
-            .arg(flag)
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run {bin} {flag}: {e}"));
+    assert_eq!(
+        run_flag("-v"),
+        format!("neonemacs {}\n", env!("CARGO_PKG_VERSION")),
+        "stdout for -v"
+    );
 
-        assert_eq!(output.status.code(), Some(0), "exit code for {flag}");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("Usage:"), "stdout for {flag}: {stdout:?}");
-        assert!(output.stderr.is_empty(), "stderr for {flag}");
-    }
+    let help_stdout = run_flag("-h");
+    assert!(
+        help_stdout.contains("Usage:"),
+        "stdout for -h: {help_stdout:?}"
+    );
 }
 
 #[test]

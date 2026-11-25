@@ -31,7 +31,7 @@ pub enum InitSource {
 
 /// Reads `init.lua` from the path that `xdg` and `home` give. Only a missing file is `Absent`.
 fn read_init(xdg: Option<&OsStr>, home: Option<&Path>) -> InitSource {
-    let Some(path) = lua::config_path(xdg, home) else {
+    let Some(path) = crate::shell::xdg_path(xdg, home, &[".config"], "init.lua") else {
         return InitSource::Absent;
     };
     match fs::read(&path) {
@@ -52,8 +52,8 @@ fn read_init(xdg: Option<&OsStr>, home: Option<&Path>) -> InitSource {
 #[must_use]
 pub fn init_source() -> InitSource {
     let xdg = env::var_os("XDG_CONFIG_HOME");
-    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
-    read_init(xdg.as_deref(), home.as_deref().map(Path::new))
+    let home = crate::shell::home_dir();
+    read_init(xdg.as_deref(), home.as_deref())
 }
 
 /// The editor and Lua state with only the bundled scripts applied.
@@ -139,7 +139,7 @@ pub fn start(cwd: PathBuf, source: InitSource) -> mlua::Result<(Editor, Lua)> {
     let (ed, lua, load) = configure(cwd, source)?;
     let ed = match load {
         InitLoad::Rejected(text) => record_init_error(ed, &text),
-        InitLoad::Absent | InitLoad::Applied => ed,
+        InitLoad::Absent | InitLoad::Applied | InitLoad::Ignored => ed,
     };
     Ok((ed, lua))
 }

@@ -74,6 +74,18 @@ impl Prompt {
         format!("{}{}{}", self.label, self.before, self.after)
     }
 
+    /// True when `s` equals `self.echo()` without allocating.
+    #[must_use]
+    pub fn matches_echo(&self, s: &str) -> bool {
+        let Some(rest) = s.strip_prefix(&self.label) else {
+            return false;
+        };
+        let Some(tail) = rest.strip_prefix(&self.before) else {
+            return false;
+        };
+        tail == self.after
+    }
+
     /// Display column of the cursor in the echo area.
     #[must_use]
     pub fn cursor_width(&self, m: Metrics) -> usize {
@@ -127,13 +139,6 @@ pub enum Confirm {
     RevertModified(BufferId),
 }
 
-/// A pending yes-or-no question and the text that asked it, so a wrong answer can repeat it (I-46).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Question {
-    pub kind: Confirm,
-    pub text: String,
-}
-
 /// An incremental search in progress (§9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Isearch {
@@ -172,7 +177,7 @@ pub struct QueryReplace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Normal { prefix: Prefix },
-    Confirm(Question),
+    Confirm { kind: Confirm, text: String },
     Isearch(Isearch),
     QueryReplace(QueryReplace),
     Prompt(Prompt),
@@ -184,29 +189,6 @@ impl Mode {
     pub const fn normal() -> Self {
         Self::Normal {
             prefix: Prefix::None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Interaction {
-    pub(super) mode: Mode,
-    /// Kind of the command that just ran. The running command sets it.
-    pub(super) last: LastCommand,
-    /// Kind of the command before the running one. Chaining commands read it.
-    pub(super) prev: LastCommand,
-    pub(super) message: String,
-    pub(super) quit: bool,
-}
-
-impl Interaction {
-    pub const fn new() -> Self {
-        Self {
-            mode: Mode::normal(),
-            last: LastCommand::Other,
-            prev: LastCommand::Other,
-            message: String::new(),
-            quit: false,
         }
     }
 }

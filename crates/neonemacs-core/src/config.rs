@@ -46,8 +46,7 @@ pub struct Config {
     /// Line ending of a new buffer, a missing file, and a file without any line break.
     pub default_eol: Eol,
     /// Program that runs `shell-command`, called as `program switch command`.
-    pub shell_file_name: String,
-    pub shell_command_switch: String,
+    pub shell: ShellSpec,
 }
 
 /// The shell that runs a `shell-command`.
@@ -74,7 +73,6 @@ impl Default for ShellSpec {
 impl Config {
     #[must_use]
     pub fn new() -> Self {
-        let shell = ShellSpec::default();
         Self {
             fill_column: 70,
             tab_width: 8,
@@ -84,8 +82,7 @@ impl Config {
             kill_ring_max: 120,
             amalgamating_undo_limit: 20,
             default_eol: Eol::Lf,
-            shell_file_name: shell.program,
-            shell_command_switch: shell.switch,
+            shell: ShellSpec::default(),
         }
     }
 }
@@ -126,6 +123,19 @@ pub enum Setting {
 }
 
 impl Setting {
+    #[must_use]
+    pub const fn toggle(self) -> Option<Toggles> {
+        match self {
+            Self::ExpandTabs => Some(Toggles::EXPAND_TABS),
+            Self::CaseFoldSearch => Some(Toggles::CASE_FOLD_SEARCH),
+            Self::SyntaxHighlight => Some(Toggles::SYNTAX_HIGHLIGHT),
+            Self::IsearchWrap => Some(Toggles::ISEARCH_WRAP),
+            Self::EchoPrefix => Some(Toggles::ECHO_PREFIX),
+            Self::WalDeltas => Some(Toggles::WAL_DELTAS),
+            _ => None,
+        }
+    }
+
     pub const ALL: &'static [Self] = &[
         Self::FillColumn,
         Self::TabWidth,
@@ -185,29 +195,25 @@ impl Config {
     #[must_use]
     pub fn metrics(&self) -> Metrics {
         Metrics {
-            tab: usize::from(self.tab_width),
+            tab: self.tab_width,
             cjk: self.toggles.contains(Toggles::CJK_AMBIGUOUS),
         }
     }
 
     #[must_use]
     pub fn shell_spec(&self) -> ShellSpec {
-        ShellSpec {
-            program: self.shell_file_name.clone(),
-            switch: self.shell_command_switch.clone(),
-        }
+        self.shell.clone()
     }
 
     /// Returns the current value of `setting`.
     #[must_use]
     pub fn get(&self, setting: Setting) -> Value {
+        if let Some(flag) = setting.toggle() {
+            return Value::Bool(self.toggles.contains(flag));
+        }
         match setting {
             Setting::FillColumn => Value::Int(i64::from(self.fill_column)),
             Setting::TabWidth => Value::Int(i64::from(self.tab_width)),
-            Setting::ExpandTabs => Value::Bool(self.toggles.contains(Toggles::EXPAND_TABS)),
-            Setting::CaseFoldSearch => {
-                Value::Bool(self.toggles.contains(Toggles::CASE_FOLD_SEARCH))
-            }
             Setting::MaxFileSize => {
                 Value::Int(i64::try_from(self.max_file_size).unwrap_or(i64::MAX))
             }
@@ -218,12 +224,6 @@ impl Config {
             Setting::AmalgamatingUndoLimit => {
                 Value::Int(i64::try_from(self.amalgamating_undo_limit).unwrap_or(i64::MAX))
             }
-            Setting::SyntaxHighlight => {
-                Value::Bool(self.toggles.contains(Toggles::SYNTAX_HIGHLIGHT))
-            }
-            Setting::IsearchWrap => Value::Bool(self.toggles.contains(Toggles::ISEARCH_WRAP)),
-            Setting::EchoPrefix => Value::Bool(self.toggles.contains(Toggles::ECHO_PREFIX)),
-            Setting::WalDeltas => Value::Bool(self.toggles.contains(Toggles::WAL_DELTAS)),
             Setting::DefaultEol => Value::Str(
                 match self.default_eol {
                     Eol::Lf => "lf",
@@ -231,8 +231,8 @@ impl Config {
                 }
                 .to_owned(),
             ),
-            Setting::ShellFileName => Value::Str(self.shell_file_name.clone()),
-            Setting::ShellCommandSwitch => Value::Str(self.shell_command_switch.clone()),
+            Setting::ShellFileName => Value::Str(self.shell.program.clone()),
+            Setting::ShellCommandSwitch => Value::Str(self.shell.switch.clone()),
             Setting::AmbiguousWidth => {
                 Value::Int(if self.toggles.contains(Toggles::CJK_AMBIGUOUS) {
                     2
@@ -240,6 +240,7 @@ impl Config {
                     1
                 })
             }
+            _ => unreachable!("toggle settings handled above"),
         }
     }
 
@@ -250,15 +251,18 @@ impl Config {
     pub fn set(&self, setting: Setting, value: Value) -> Result<Self, String> {
         let name = setting.name();
         let mut next = self.clone();
+        if let Some(flag) = setting.toggle() {
+            let Value::Bool(b) = value else {
+                return Err(format!("{name} takes a boolean"));
+            };
+            next.toggles.set(flag, b);
+            return Ok(next);
+        }
         match (setting, value) {
             (Setting::FillColumn, Value::Int(n)) => {
                 next.fill_column = bounded(name, n, 1, i64::from(u16::MAX))?;
             }
             (Setting::TabWidth, Value::Int(n)) => next.tab_width = bounded(name, n, 1, 16)?,
-            (Setting::ExpandTabs, Value::Bool(b)) => next.toggles.set(Toggles::EXPAND_TABS, b),
-            (Setting::CaseFoldSearch, Value::Bool(b)) => {
-                next.toggles.set(Toggles::CASE_FOLD_SEARCH, b);
-            }
             (Setting::MaxFileSize, Value::Int(n)) => {
                 next.max_file_size = bounded(name, n, 1, i64::MAX)?;
             }
@@ -269,21 +273,15 @@ impl Config {
             (Setting::AmalgamatingUndoLimit, Value::Int(n)) => {
                 next.amalgamating_undo_limit = bounded(name, n, 1, i64::MAX)?;
             }
-            (Setting::SyntaxHighlight, Value::Bool(b)) => {
-                next.toggles.set(Toggles::SYNTAX_HIGHLIGHT, b);
-            }
-            (Setting::IsearchWrap, Value::Bool(b)) => next.toggles.set(Toggles::ISEARCH_WRAP, b),
-            (Setting::EchoPrefix, Value::Bool(b)) => next.toggles.set(Toggles::ECHO_PREFIX, b),
-            (Setting::WalDeltas, Value::Bool(b)) => next.toggles.set(Toggles::WAL_DELTAS, b),
             (Setting::AmbiguousWidth, Value::Int(n)) => {
                 let wide = bounded::<u8>(name, n, 1, 2)? == 2;
                 next.toggles.set(Toggles::CJK_AMBIGUOUS, wide);
             }
             (Setting::ShellFileName, Value::Str(s)) => {
-                next.shell_file_name = non_empty(name, s)?;
+                next.shell.program = non_empty(name, s)?;
             }
             (Setting::ShellCommandSwitch, Value::Str(s)) => {
-                next.shell_command_switch = non_empty(name, s)?;
+                next.shell.switch = non_empty(name, s)?;
             }
             (Setting::DefaultEol, Value::Str(s)) => {
                 next.default_eol = match s.as_str() {
@@ -291,17 +289,6 @@ impl Config {
                     "crlf" => Eol::Crlf,
                     _ => return Err(format!("{name} must be \"lf\" or \"crlf\"")),
                 };
-            }
-            (
-                Setting::ExpandTabs
-                | Setting::CaseFoldSearch
-                | Setting::SyntaxHighlight
-                | Setting::IsearchWrap
-                | Setting::EchoPrefix
-                | Setting::WalDeltas,
-                _,
-            ) => {
-                return Err(format!("{name} takes a boolean"));
             }
             (Setting::DefaultEol | Setting::ShellFileName | Setting::ShellCommandSwitch, _) => {
                 return Err(format!("{name} takes a string"));
@@ -333,7 +320,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn get_and_set_are_checked() {
+    fn get_and_set_validate_values_and_update_config() {
         let c = Config::default();
         assert_eq!(c.get(Setting::FillColumn), Value::Int(70));
         assert_eq!(c.get(Setting::CaseFoldSearch), Value::Bool(true));
@@ -342,6 +329,63 @@ mod tests {
         assert!(c.set(Setting::TabWidth, Value::Int(0)).is_err());
         assert!(c.set(Setting::FillColumn, Value::Bool(true)).is_err());
         assert_eq!(c.tab_width, 8);
+
+        assert_eq!(c.get(Setting::DefaultEol), Value::Str("lf".to_owned()));
+        let c = c
+            .set(Setting::DefaultEol, Value::Str("crlf".to_owned()))
+            .unwrap();
+        assert_eq!(c.default_eol, Eol::Crlf);
+        assert!(
+            c.set(Setting::DefaultEol, Value::Str("cr".to_owned()))
+                .is_err()
+        );
+        assert_eq!(
+            c.set(Setting::DefaultEol, Value::Int(1)),
+            Err("default-eol takes a string".to_owned())
+        );
+
+        assert_eq!(c.shell_spec(), ShellSpec::default());
+        let c = c
+            .set(Setting::ShellFileName, Value::Str("pwsh".to_owned()))
+            .unwrap()
+            .set(
+                Setting::ShellCommandSwitch,
+                Value::Str("-Command".to_owned()),
+            )
+            .unwrap();
+        assert_eq!(
+            c.shell_spec(),
+            ShellSpec {
+                program: "pwsh".to_owned(),
+                switch: "-Command".to_owned()
+            }
+        );
+        assert_eq!(
+            c.set(Setting::ShellFileName, Value::Str(String::new())),
+            Err("shell-file-name must not be empty".to_owned())
+        );
+        assert_eq!(
+            c.set(Setting::ShellCommandSwitch, Value::Bool(true)),
+            Err("shell-command-switch takes a string".to_owned())
+        );
+
+        assert_eq!(c.get(Setting::AmbiguousWidth), Value::Int(1));
+        assert!(!c.metrics().cjk);
+        let c = c.set(Setting::AmbiguousWidth, Value::Int(2)).unwrap();
+        assert!(c.metrics().cjk);
+        assert_eq!(c.metrics().tab, 8);
+        assert_eq!(
+            c.set(Setting::AmbiguousWidth, Value::Int(3)),
+            Err("ambiguous-width must be between 1 and 2".to_owned())
+        );
+
+        assert_eq!(c.get(Setting::ExpandTabs), Value::Bool(false));
+        let c = c.set(Setting::ExpandTabs, Value::Bool(true)).unwrap();
+        assert!(c.toggles.contains(Toggles::EXPAND_TABS));
+        assert_eq!(
+            c.set(Setting::ExpandTabs, Value::Int(1)),
+            Err("expand-tabs takes a boolean".to_owned())
+        );
     }
 
     #[test]
@@ -383,78 +427,5 @@ mod tests {
         }
         let indexes: Vec<usize> = Setting::ALL.iter().map(|&s| index(s)).collect();
         assert_eq!(indexes, (0..16).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn default_eol_takes_lf_or_crlf() {
-        let c = Config::default();
-        assert_eq!(c.get(Setting::DefaultEol), Value::Str("lf".to_owned()));
-        let c = c
-            .set(Setting::DefaultEol, Value::Str("crlf".to_owned()))
-            .unwrap();
-        assert_eq!(c.default_eol, Eol::Crlf);
-        assert!(
-            c.set(Setting::DefaultEol, Value::Str("cr".to_owned()))
-                .is_err()
-        );
-        assert_eq!(
-            c.set(Setting::DefaultEol, Value::Int(1)),
-            Err("default-eol takes a string".to_owned())
-        );
-    }
-
-    #[test]
-    fn shell_settings_take_non_empty_strings() {
-        let c = Config::default();
-        assert_eq!(c.shell_spec(), ShellSpec::default());
-        let c = c
-            .set(Setting::ShellFileName, Value::Str("pwsh".to_owned()))
-            .unwrap()
-            .set(
-                Setting::ShellCommandSwitch,
-                Value::Str("-Command".to_owned()),
-            )
-            .unwrap();
-        assert_eq!(
-            c.shell_spec(),
-            ShellSpec {
-                program: "pwsh".to_owned(),
-                switch: "-Command".to_owned()
-            }
-        );
-        assert_eq!(
-            c.set(Setting::ShellFileName, Value::Str(String::new())),
-            Err("shell-file-name must not be empty".to_owned())
-        );
-        assert_eq!(
-            c.set(Setting::ShellCommandSwitch, Value::Bool(true)),
-            Err("shell-command-switch takes a string".to_owned())
-        );
-    }
-
-    #[test]
-    fn ambiguous_width_is_one_or_two() {
-        let c = Config::default();
-        assert_eq!(c.get(Setting::AmbiguousWidth), Value::Int(1));
-        assert!(!c.metrics().cjk);
-        let c = c.set(Setting::AmbiguousWidth, Value::Int(2)).unwrap();
-        assert!(c.metrics().cjk);
-        assert_eq!(c.metrics().tab, 8);
-        assert_eq!(
-            c.set(Setting::AmbiguousWidth, Value::Int(3)),
-            Err("ambiguous-width must be between 1 and 2".to_owned())
-        );
-    }
-
-    #[test]
-    fn expand_tabs_defaults_off_and_takes_a_boolean() {
-        let c = Config::default();
-        assert_eq!(c.get(Setting::ExpandTabs), Value::Bool(false));
-        let c = c.set(Setting::ExpandTabs, Value::Bool(true)).unwrap();
-        assert!(c.toggles.contains(Toggles::EXPAND_TABS));
-        assert_eq!(
-            c.set(Setting::ExpandTabs, Value::Int(1)),
-            Err("expand-tabs takes a boolean".to_owned())
-        );
     }
 }

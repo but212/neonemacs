@@ -25,7 +25,9 @@ pub fn idle(ed: Editor, mut fx: Effects) -> (Editor, Effects) {
             None => memory_only.push(buf.id()),
         }
     }
-    let ed = memory_only.into_iter().fold(ed, Editor::clear_wal_dirty);
+    let ed = memory_only.into_iter().fold(ed, |ed, id| {
+        ed.with_buffer(id, crate::editor::Buffer::clear_wal_dirty)
+    });
     if !entries.is_empty() {
         fx.push(Effect::FlushWal { entries });
     }
@@ -41,7 +43,7 @@ pub fn wal_flushed(ed: Editor, writes: Vec<WalWrite>) -> Editor {
     let mut ed = ed;
     for write in writes {
         match write.result {
-            Ok(()) => ed = ed.clear_wal_dirty(write.id),
+            Ok(()) => ed = ed.with_buffer(write.id, crate::editor::Buffer::clear_wal_dirty),
             Err(e) => failures.push(format!("{}: {e}", write.target.path())),
         }
     }
@@ -156,7 +158,7 @@ mod tests {
     fn a_pending_question_keeps_its_message() {
         let ed = keys(typed_scratch(Some(slot())), "C-x C-c");
         let before = ed.message().to_owned();
-        assert!(matches!(ed.mode(), Mode::Confirm(_)));
+        assert!(matches!(ed.mode(), Mode::Confirm { .. }));
         let ed = wal_flushed(ed.clone(), vec![write(&ed, Err("disk full".to_owned()))]);
         assert_eq!(ed.message(), before);
     }

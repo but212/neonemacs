@@ -1,13 +1,48 @@
 //! Undo log in groups, kept in memory.
 
 use crate::eol::Eol;
-use crate::weave_tree::{Doc, Replace};
+use crate::{Doc, Replace, compact_small};
 use alloc::vec::Vec;
+
+/// Stack-allocated byte buffer of at most 16 bytes for small inline edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineBytes {
+    len: u8,
+    bytes: [u8; 16],
+}
+
+impl InlineBytes {
+    /// Wraps `src` if `src.len() <= 16`.
+    #[must_use]
+    pub fn new(src: &[u8]) -> Option<Self> {
+        if src.len() > 16 {
+            return None;
+        }
+        let mut bytes = [0u8; 16];
+        bytes[..src.len()].copy_from_slice(src);
+        Some(Self {
+            len: src.len() as u8,
+            bytes,
+        })
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len as usize
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
     /// Replaces `delete_len` bytes at `offset` with `insert`.
     Replace(Replace),
+    /// Fast-path inline byte insertion (avoids allocating a `Doc` for small edits).
+    InsertInline { offset: usize, data: InlineBytes },
     /// Changes the save encoding only. The text is unchanged.
     SetEol { from: Eol, to: Eol },
 }
@@ -15,10 +50,14 @@ pub enum Edit {
 impl Edit {
     #[must_use]
     pub fn insert(pos: usize, bytes: impl AsRef<[u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        if let Some(data) = InlineBytes::new(bytes) {
+            return Self::InsertInline { offset: pos, data };
+        }
         Self::Replace(Replace {
             offset: pos,
             delete_len: 0,
-            insert: Doc::from_bytes(bytes.as_ref()),
+            insert: Doc::from_bytes(bytes),
         })
     }
 
@@ -93,7 +132,7 @@ pub struct RecordedEdit {
 }
 
 impl RecordedEdit {
-    fn size(&self) -> u128 {
+    fn size(&self) -> u64 {
         match (&self.edit, self.span) {
             (
                 Edit::Replace(patch),
@@ -102,8 +141,10 @@ impl RecordedEdit {
                 },
             ) => {
                 // Preserve the logical charge for cheap inverses, but do not undercount CoW storage.
-                (removed as u128 + inserted as u128).max(patch.insert.backing_bytes() as u128)
+                let logical = (removed as u64).saturating_add(inserted as u64);
+                logical.max(patch.insert.backing_bytes() as u64)
             }
+            (Edit::InsertInline { data, .. }, _) => data.len() as u64,
             _ => 0,
         }
     }
@@ -116,6 +157,11 @@ impl From<Edit> for RecordedEdit {
                 pos: r.offset,
                 removed: r.delete_len,
                 inserted: r.insert.total_bytes(),
+            },
+            Edit::InsertInline { offset, data } => EditSpan::Replace {
+                pos: *offset,
+                removed: 0,
+                inserted: data.len(),
             },
             Edit::SetEol { .. } => EditSpan::SetEol,
         };
@@ -144,7 +190,7 @@ impl Group {
         self.clean_epoch
     }
 
-    fn size(&self) -> u128 {
+    fn size(&self) -> u64 {
         self.edits.iter().map(RecordedEdit::size).sum()
     }
 }
@@ -154,8 +200,10 @@ impl Group {
 pub struct UndoLog {
     groups: Vec<Group>,
     open: bool,
-    size: u128,
+    size: u64,
 }
+
+const _: () = assert!(core::mem::size_of::<UndoLog>() <= 40);
 
 impl UndoLog {
     #[must_use]
@@ -187,7 +235,7 @@ impl UndoLog {
         clean_epoch: Option<u32>,
     ) -> (Self, usize) {
         if let Edit::Replace(patch) = &mut edit.edit {
-            patch.insert = core::mem::take(&mut patch.insert).compact_small();
+            patch.insert = compact_small(core::mem::take(&mut patch.insert));
         }
         if !self.open {
             self.groups.push(Group {
@@ -225,7 +273,7 @@ impl UndoLog {
         let keep_open = usize::from(self.open);
         let max_drop = self.groups.len().saturating_sub(keep_open);
         let mut dropped = 0;
-        while self.size > limit as u128 && dropped < max_drop {
+        while self.size > limit as u64 && dropped < max_drop {
             self.size -= self.groups[dropped].size();
             dropped += 1;
         }

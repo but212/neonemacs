@@ -2,6 +2,7 @@
 //! transition that asks the shell for anything panics, so such a test belongs in `tests/`,
 //! where the shell performs the effects (I-14, I-15).
 
+use crate::Doc;
 use crate::config::Config;
 use crate::dispatch;
 use crate::editor::{BufferId, Editor};
@@ -10,7 +11,6 @@ use crate::eol::Eol;
 use crate::file::{Backing, DiskState, FilePath};
 use crate::keymap::{Code, Key, parse_keys};
 use crate::step;
-use crate::weave_tree::Doc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -103,12 +103,7 @@ pub fn run_command(ed: Editor, run: impl FnOnce(Editor, Effects) -> (Editor, Eff
 /// Streams all bytes of `doc` into a `Vec<u8>` for test assertions.
 #[must_use]
 pub fn doc_bytes(doc: &Doc) -> Vec<u8> {
-    let mut out = Vec::with_capacity(doc.total_bytes());
-    let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
-        out.extend_from_slice(chunk);
-        core::ops::ControlFlow::<()>::Continue(())
-    });
-    out
+    crate::doc_range_bytes(doc, 0..doc.total_bytes())
 }
 
 /// Streams `doc` with `eol` conversion into a `Vec<u8>` for test assertions.

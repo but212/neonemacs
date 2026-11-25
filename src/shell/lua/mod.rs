@@ -5,25 +5,19 @@
 //!
 //! Each submodule installs one group of functions into the Lua globals.
 
-mod alias;
 mod buffer;
 mod command;
-mod config;
-mod keymap;
+mod settings;
 mod syntax;
 #[cfg(test)]
 mod tests;
 
 use crate::core::Editor;
-use alias::install_alias_api;
 use buffer::install_buffer_api;
 use command::install_command_api;
-use config::install_config_api;
-use keymap::install_keymap_api;
 use mlua::{Lua, LuaOptions, StdLib};
+use settings::install_settings_api;
 use std::cell::{Cell, Ref, RefCell};
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
 use syntax::install_syntax_api;
 
 pub(crate) use command::call_lua;
@@ -31,19 +25,13 @@ pub(crate) use command::call_lua;
 /// Global table holding the commands defined with `command`.
 const COMMANDS: &str = "neonemacs_commands";
 
-/// The default syntax definitions bundled into the binary (§5, §12).
-pub const BUNDLED_SYNTAX: &str = include_str!("../syntax.lua");
-
-/// Standard text transformation commands bundled into the binary (§6, §12).
-pub const BUNDLED_TEXT: &str = include_str!("../text.lua");
-
 /// The default extended keymap bundled into the binary (§3, §12).
 pub const BUNDLED_KEYMAP: &str = include_str!("../keymap.lua");
 
 /// All bundled scripts loaded during bootstrap, in evaluation order.
 pub const BUNDLED_SCRIPTS: &[(&str, &str)] = &[
-    ("syntax.lua", BUNDLED_SYNTAX),
-    ("text.lua", BUNDLED_TEXT),
+    ("syntax.lua", include_str!("../syntax.lua")),
+    ("text.lua", include_str!("../text.lua")),
     ("keymap.lua", BUNDLED_KEYMAP),
 ];
 
@@ -82,15 +70,6 @@ pub fn new_state() -> mlua::Result<Lua> {
     Ok(lua)
 }
 
-/// `$XDG_CONFIG_HOME/neonemacs/init.lua`, else `<home>/.config/neonemacs/init.lua` (U2).
-#[must_use]
-pub fn config_path(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    xdg.filter(|s| !s.is_empty()).map_or_else(
-        || home.map(|h| h.join(".config").join("neonemacs").join("init.lua")),
-        |xdg| Some(PathBuf::from(xdg).join("neonemacs").join("init.lua")),
-    )
-}
-
 /// The editor in `cell`. The cell is full whenever Lua runs (I-21).
 fn editor_ref(cell: &RefCell<Option<Editor>>) -> Ref<'_, Editor> {
     Ref::map(cell.borrow(), |slot| {
@@ -100,11 +79,7 @@ fn editor_ref(cell: &RefCell<Option<Editor>>) -> Ref<'_, Editor> {
 
 /// Applies an infallible transition `f` to the editor inside `cell`.
 fn mutate_editor(cell: &RefCell<Option<Editor>>, f: impl FnOnce(Editor) -> Editor) {
-    let current = cell
-        .borrow_mut()
-        .take()
-        .expect("editor is in the cell (I-21)");
-    *cell.borrow_mut() = Some(f(current));
+    crate::shell::with_editor_cell(cell, |ed| (f(ed), ()));
 }
 
 /// Runs `body` with the API bound to the editor in `cell`.
@@ -119,10 +94,8 @@ pub fn with_api<R>(
     let depth = Cell::new(0);
     lua.scope(|scope| {
         let g = lua.globals();
-        install_keymap_api(scope, &g, cell)?;
-        install_alias_api(scope, &g, cell)?;
+        install_settings_api(scope, &g, cell)?;
         install_command_api(scope, &g, cell, &depth)?;
-        install_config_api(scope, &g, cell)?;
         install_syntax_api(lua, scope, &g, cell)?;
         install_buffer_api(lua, scope, &g, cell)?;
         body(lua)

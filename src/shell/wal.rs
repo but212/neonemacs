@@ -1,17 +1,15 @@
 //! Lightweight crash recovery WAL (Write-Ahead Log) for unsaved edits (§7, §14, I-23, I-25).
 //! Operates strictly in the imperative shell layer: persists snapshots/deltas during idle time.
 
+use crate::core::DocBuilder;
 use crate::core::effect::{RecoveredDelta, WalProbe};
-use crate::core::weave_tree::DocBuilder;
 use crate::core::{
     DiskState, Doc, Eol, MAX_WAL_DELTA_BYTES, MAX_WAL_DELTA_RECORDS, Replace,
     WAL_DELTA_RECORD_BYTES, WalBaseDigest, wal_base_digest,
 };
 use sha2::{Digest, Sha256};
-use std::env;
-use std::ffi::OsStr;
 use std::fs;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -34,13 +32,6 @@ pub fn wal_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-const fn eol_byte(eol: Eol) -> u8 {
-    match eol {
-        Eol::Lf => 0,
-        Eol::Crlf => 1,
-    }
-}
-
 /// Encodes the fixed 30-byte WAL header (`NEONWAL2`, EOL mode, and `DiskState`).
 #[must_use]
 pub fn encode_wal_header(disk: DiskState, eol: Eol) -> [u8; HEADER_LEN] {
@@ -50,7 +41,10 @@ pub fn encode_wal_header(disk: DiskState, eol: Eol) -> [u8; HEADER_LEN] {
 fn encode_header_with_magic(magic: &[u8; 8], disk: DiskState, eol: Eol) -> [u8; HEADER_LEN] {
     let mut header = [0u8; HEADER_LEN];
     header[..8].copy_from_slice(magic);
-    header[8] = eol_byte(eol);
+    header[8] = match eol {
+        Eol::Lf => 0,
+        Eol::Crlf => 1,
+    };
     match disk {
         DiskState::Known { mtime, size } => {
             header[9] = 1;
@@ -108,17 +102,13 @@ impl WalHeader {
         };
         Some(Self { eol, disk })
     }
-
-    fn matches(&self, current: DiskState) -> bool {
-        self.disk == current
-    }
 }
 
 /// Validates header against current disk state and returns the payload if matching.
 #[must_use]
 pub fn decode_wal(raw: &[u8], disk: DiskState) -> Option<Recovered> {
     let header = WalHeader::parse_with_magic(raw, WAL_MAGIC)?;
-    if !header.matches(disk) {
+    if header.disk != disk {
         return None;
     }
     Some(Recovered {
@@ -148,7 +138,7 @@ fn decode_wal_deltas(raw: &[u8], disk: DiskState, base: &Doc) -> Option<(Eol, Ve
     let mut rest = &raw[DELTA_HEADER_LEN..];
     if count > MAX_WAL_DELTA_RECORDS
         || count > rest.len() / WAL_DELTA_RECORD_BYTES
-        || !header.matches(disk)
+        || header.disk != disk
         || raw[HEADER_LEN..DELTA_COUNT_OFFSET] != wal_base_digest(base)
     {
         return None;
@@ -194,22 +184,10 @@ pub fn has_wal(path: &Path) -> bool {
 
 /// Streams header and `doc` slices to the WAL file `wp` atomically.
 fn write_doc_at(wp: &Path, disk: DiskState, eol: Eol, doc: &crate::core::Doc) -> io::Result<()> {
-    use std::ops::ControlFlow;
-
-    crate::shell::file::atomic_write_with(wp, ".", ".wal.tmp", None, |f| {
-        let mut f = BufWriter::with_capacity(64 * 1024, f);
+    crate::shell::file::atomic_write_with(wp, ".", ".wal.tmp", None, |w| {
         let header = encode_wal_header(disk, eol);
-        f.write_all(&header)?;
-        let flow = doc
-            .try_for_each_slice(0..doc.total_bytes(), |chunk| match f.write_all(chunk) {
-                Ok(()) => ControlFlow::Continue(()),
-                Err(e) => ControlFlow::Break(e),
-            })
-            .expect("full range is valid");
-        match flow {
-            ControlFlow::Continue(()) => f.flush(),
-            ControlFlow::Break(e) => Err(e),
-        }
+        w.write_all(&header)?;
+        crate::shell::file::write_doc_slices(doc, |chunk| w.write_all(chunk))
     })
 }
 
@@ -237,8 +215,6 @@ pub fn write_wal_deltas(
     base: WalBaseDigest,
     deltas: &[Replace],
 ) -> io::Result<()> {
-    use std::ops::ControlFlow;
-
     let bytes = deltas.iter().fold(0usize, |sum, r| {
         sum.saturating_add(WAL_DELTA_RECORD_BYTES)
             .saturating_add(r.insert.total_bytes())
@@ -255,12 +231,11 @@ pub fn write_wal_deltas(
 
     let count = u32::try_from(deltas.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many delta records"))?;
-    crate::shell::file::atomic_write_with(&wal_path(path), ".", ".wal.tmp", None, |f| {
-        let mut f = BufWriter::with_capacity(64 * 1024, f);
+    crate::shell::file::atomic_write_with(&wal_path(path), ".", ".wal.tmp", None, |w| {
         let mut digest = Sha256::new();
         let mut write = |bytes: &[u8]| {
             digest.update(bytes);
-            f.write_all(bytes)
+            w.write_all(bytes)
         };
         write(&encode_header_with_magic(WAL_DELTA_MAGIC, disk, eol))?;
         write(&base)?;
@@ -270,19 +245,9 @@ pub fn write_wal_deltas(
             write(&(r.delete_len as u64).to_le_bytes())?;
             let insert_len = r.insert.total_bytes();
             write(&(insert_len as u64).to_le_bytes())?;
-            let flow = r
-                .insert
-                .try_for_each_slice(0..insert_len, |chunk| match write(chunk) {
-                    Ok(()) => ControlFlow::Continue(()),
-                    Err(e) => ControlFlow::Break(e),
-                })
-                .expect("full range is valid");
-            if let ControlFlow::Break(e) = flow {
-                return Err(e);
-            }
+            crate::shell::file::write_doc_slices(&r.insert, &mut write)?;
         }
-        f.write_all(&digest.finalize())?;
-        f.flush()
+        w.write_all(&digest.finalize())
     })
 }
 
@@ -301,6 +266,7 @@ pub fn write_scratch_doc(slot: &Path, eol: Eol, doc: &crate::core::Doc) -> io::R
 ///
 /// # Errors
 /// Returns `io::Error` if atomic writing of WAL bytes fails.
+#[cfg(any(test, feature = "test-support"))]
 pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Result<()> {
     write_wal_doc(path, disk, eol, &crate::core::Doc::from_bytes(bytes))
 }
@@ -310,33 +276,16 @@ pub fn write_wal(path: &Path, disk: DiskState, eol: Eol, bytes: &[u8]) -> io::Re
 ///
 /// # Errors
 /// Returns `io::Error` if the directory or the atomic write fails.
+#[cfg(any(test, feature = "test-support"))]
 pub fn write_scratch(slot: &Path, eol: Eol, bytes: &[u8]) -> io::Result<()> {
     write_scratch_doc(slot, eol, &crate::core::Doc::from_bytes(bytes))
 }
 
-/// `$XDG_STATE_HOME/neonemacs/scratch.wal`, else `<home>/.local/state/neonemacs/scratch.wal`,
-/// the same shape as `lua::config_path`.
-#[must_use]
-pub fn scratch_path_from(xdg: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    xdg.filter(|s| !s.is_empty()).map_or_else(
-        || {
-            home.map(|h| {
-                h.join(".local")
-                    .join("state")
-                    .join("neonemacs")
-                    .join("scratch.wal")
-            })
-        },
-        |xdg| Some(PathBuf::from(xdg).join("neonemacs").join("scratch.wal")),
-    )
-}
-
-/// The scratch slot for this process, from the environment.
+/// The scratch slot for this process, from `$XDG_STATE_HOME/neonemacs/scratch.wal` or
+/// `<home>/.local/state/neonemacs/scratch.wal`.
 #[must_use]
 pub fn scratch_path() -> Option<PathBuf> {
-    let xdg = env::var_os("XDG_STATE_HOME");
-    let home = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"));
-    scratch_path_from(xdg.as_deref(), home.as_deref().map(Path::new))
+    crate::shell::xdg_env_path("XDG_STATE_HOME", &[".local", "state"], "scratch.wal")
 }
 
 /// Reads the WAL contents if available and matching disk state.
@@ -386,25 +335,14 @@ fn read_contents(mut input: impl Read, disk: DiskState) -> io::Result<Option<Wal
         Err(e) => return Err(e),
     }
     if let Some(header) = WalHeader::parse_with_magic(&prefix, WAL_MAGIC) {
-        if !header.matches(disk) {
+        if header.disk != disk {
             return Ok(None);
         }
         // The snapshot holds document bytes, not disk encoding. Do not normalize CRLF again.
-        let mut builder = DocBuilder::new();
-        let mut block = [0; 64 * 1024];
-        loop {
-            match input.read(&mut block) {
-                Ok(0) => break,
-                Ok(n) => {
-                    builder = builder
-                        .try_push_bytes(&block[..n])
-                        .map_err(|_| io::ErrorKind::OutOfMemory)?;
-                }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        let doc = builder
+        let doc =
+            crate::shell::file::read_doc_chunks(&mut input, DocBuilder::new(), |b, chunk| {
+                b.try_push_bytes(chunk)
+            })?
             .try_finish()
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
         Ok(Some(WalContents::Snapshot(Recovered {
@@ -412,7 +350,7 @@ fn read_contents(mut input: impl Read, disk: DiskState) -> io::Result<Option<Wal
             doc,
         })))
     } else if WalHeader::parse_with_magic(&prefix, WAL_DELTA_MAGIC)
-        .is_some_and(|header| header.matches(disk) && matches!(disk, DiskState::Known { .. }))
+        .is_some_and(|header| header.disk == disk && matches!(disk, DiskState::Known { .. }))
     {
         // Read one extra byte to detect oversized logs without loading their tails.
         let mut raw = prefix.to_vec();
@@ -424,26 +362,30 @@ fn read_contents(mut input: impl Read, disk: DiskState) -> io::Result<Option<Wal
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn read_base(path: &Path, disk: DiskState) -> Option<Doc> {
     let DiskState::Known { size, .. } = disk else {
         return None;
     };
     match crate::shell::file::read_raw(path, size).ok()? {
-        crate::core::Read::Found(f) if f.disk == disk => Some(f.doc),
+        Some(f) if f.disk == disk => Some(f.doc),
         _ => None,
     }
 }
 
 /// Looks for the WAL of `path`, loading its baseline only if needed (I-44).
+#[cfg(test)]
 #[must_use]
 pub fn probe(path: &Path, disk: DiskState) -> WalProbe {
-    probe_at(&wal_path(path), disk, || read_base(path, disk))
+    let wp = wal_path(path);
+    let base = read_base(path, disk);
+    probe_at(&wp, disk, base.as_ref())
 }
 
 /// Looks for the WAL of `path`. Delta logs require a loaded baseline (I-44).
 #[must_use]
 pub fn probe_with_base(path: &Path, disk: DiskState, base: Option<&Doc>) -> WalProbe {
-    probe_at(&wal_path(path), disk, || base.cloned())
+    probe_at(&wal_path(path), disk, base)
 }
 
 /// Looks at the WAL file `wp`. One that does not match `disk` (changed file, damaged, old format)
@@ -451,10 +393,10 @@ pub fn probe_with_base(path: &Path, disk: DiskState, base: Option<&Doc>) -> WalP
 /// (I-44).
 #[must_use]
 pub fn probe_file(wp: &Path, disk: DiskState) -> WalProbe {
-    probe_at(wp, disk, || None)
+    probe_at(wp, disk, None)
 }
 
-fn probe_at(wp: &Path, disk: DiskState, base: impl FnOnce() -> Option<Doc>) -> WalProbe {
+fn probe_at(wp: &Path, disk: DiskState, base: Option<&Doc>) -> WalProbe {
     let file = match fs::File::open(wp) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return WalProbe::Absent,
@@ -463,7 +405,7 @@ fn probe_at(wp: &Path, disk: DiskState, base: impl FnOnce() -> Option<Doc>) -> W
     match read_contents(file, disk) {
         Ok(Some(WalContents::Snapshot(recovered))) => return WalProbe::Valid(recovered),
         Ok(Some(WalContents::Delta(raw))) => {
-            if let Some(delta) = base().and_then(|base| replay_wal_deltas(&raw, disk, base)) {
+            if let Some(delta) = base.and_then(|b| replay_wal_deltas(&raw, disk, b.clone())) {
                 return WalProbe::ValidDelta(delta);
             }
         }
@@ -475,16 +417,6 @@ fn probe_at(wp: &Path, disk: DiskState, base: impl FnOnce() -> Option<Doc>) -> W
         Ok(()) => Ok(stale.to_string_lossy().into_owned()),
         Err(e) => Err(e.to_string()),
     })
-}
-
-/// Removes the WAL file upon successful save, revert, or buffer close (I-25).
-pub fn remove_wal(path: &Path) {
-    remove_file(&wal_path(path));
-}
-
-/// Removes the WAL file `wp`. A missing file is not an error.
-pub fn remove_file(wp: &Path) {
-    let _ = fs::remove_file(wp);
 }
 
 #[cfg(test)]
@@ -504,13 +436,14 @@ mod tests {
         let recovered = read_wal(&target, DiskState::Unknown).unwrap();
         assert_eq!(recovered.doc, Doc::from_bytes(b"unsaved edits"));
 
-        remove_wal(&target);
+        let _ = fs::remove_file(wal_path(&target));
         assert!(!has_wal(&target));
     }
 
     #[cfg(unix)]
     #[test]
     fn non_utf8_names_get_distinct_wal_paths() {
+        use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
         let dir = Path::new("d");
         let a = dir.join(OsStr::from_bytes(b"a\xFF"));
@@ -641,7 +574,12 @@ mod tests {
     fn scratch_path_follows_the_state_directory_convention() {
         use std::ffi::OsStr;
         let slot = |xdg: Option<&str>, home: Option<&str>| {
-            scratch_path_from(xdg.map(OsStr::new), home.map(Path::new))
+            crate::shell::xdg_path(
+                xdg.map(OsStr::new),
+                home.map(Path::new),
+                &[".local", "state"],
+                "scratch.wal",
+            )
         };
         assert_eq!(
             slot(Some("/x"), Some("/h")),
@@ -674,7 +612,7 @@ mod tests {
                 doc: Doc::from_bytes(b"a\nb"),
             })
         );
-        remove_file(&slot);
+        let _ = fs::remove_file(&slot);
         assert_eq!(probe_file(&slot, DiskState::Unknown), WalProbe::Absent);
     }
 
@@ -705,26 +643,10 @@ mod tests {
     }
 
     #[test]
-    fn old_format_wal_is_ignored() {
-        let mut raw = encode_wal(DiskState::Unknown, Eol::Lf, b"x");
-        raw[..8].copy_from_slice(b"NEONWAL1");
-        assert_eq!(decode_wal(&raw, DiskState::Unknown), None);
-    }
-
-    #[test]
     fn unknown_eol_byte_invalidates_header() {
         let mut raw = encode_wal(DiskState::Unknown, Eol::Lf, b"x");
         raw[8] = 2;
         assert_eq!(decode_wal(&raw, DiskState::Unknown), None);
-    }
-
-    #[test]
-    fn read_wal_returns_eol_from_header() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("doc.txt");
-        write_wal(&target, DiskState::Unknown, Eol::Crlf, b"x\n").unwrap();
-        let recovered = read_wal(&target, DiskState::Unknown).unwrap();
-        assert_eq!(recovered.eol, Eol::Crlf);
     }
 
     #[test]

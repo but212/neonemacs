@@ -29,9 +29,6 @@ pub struct Key {
     pub meta: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct KeyError(pub String);
-
 impl Key {
     #[must_use]
     pub const fn plain(code: Code) -> Self {
@@ -44,7 +41,31 @@ impl Key {
 
     #[must_use]
     pub const fn ctrl(c: char) -> Self {
-        ctrl_key(c)
+        let code = match c.to_ascii_lowercase() {
+            '_' | '/' | '7' => Code::Char('_'),
+            other => Code::Char(other),
+        };
+        Self {
+            code,
+            ctrl: true,
+            meta: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_cancel(self) -> bool {
+        matches!(
+            self,
+            Self {
+                code: Code::Char('g'),
+                ctrl: true,
+                meta: false
+            } | Self {
+                code: Code::Esc,
+                ctrl: false,
+                meta: false
+            }
+        )
     }
 
     #[must_use]
@@ -91,44 +112,41 @@ impl Key {
     }
 }
 
+/// Returns the character in `s` when `s` is a single Unicode scalar value.
 #[must_use]
-pub const fn ctrl_key(c: char) -> Key {
-    let code = match c.to_ascii_lowercase() {
-        '_' | '/' | '7' => Code::Char('_'),
-        other => Code::Char(other),
-    };
-    Key {
-        code,
-        ctrl: true,
-        meta: false,
+pub fn parse_single_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
     }
 }
 
 /// Parses key tokens such as `"C-x C-f"`, `"M-x"`, `"C-SPC"`, or `"left"`.
 ///
 /// # Errors
-/// Returns `KeyError` if any token cannot be recognized as a valid key.
-pub fn parse_keys(s: &str) -> Result<Vec<Key>, KeyError> {
+/// Returns an error message if any token cannot be recognized as a valid key.
+pub fn parse_keys(s: &str) -> Result<Vec<Key>, String> {
     s.split_whitespace().map(parse_key).collect()
 }
 
 /// Parses a binding key sequence. Only single keys or C-x 2-key sequences are valid bindings (I-12).
 ///
 /// # Errors
-/// Returns `KeyError` if `s` is empty, contains unrecognized keys, or is an unsupported sequence.
-pub fn parse_key_seq(s: &str) -> Result<Vec<Key>, KeyError> {
+/// Returns an error message if `s` is empty, contains unrecognized keys, or is an unsupported sequence.
+pub fn parse_key_seq(s: &str) -> Result<Vec<Key>, String> {
     let keys = parse_keys(s)?;
     match keys.as_slice() {
-        [] => Err(KeyError("empty key sequence".to_owned())),
+        [] => Err("empty key sequence".to_owned()),
         [_] => Ok(keys),
         [k1, _] if *k1 == Key::ctrl('x') => Ok(keys),
-        _ => Err(KeyError(format!(
+        _ => Err(format!(
             "unsupported key binding: '{s}' (only single keys or C-x prefix supported)"
-        ))),
+        )),
     }
 }
 
-fn parse_key(tok: &str) -> Result<Key, KeyError> {
+fn parse_key(tok: &str) -> Result<Key, String> {
     let mut rest = tok;
     let mut ctrl = false;
     let mut meta = false;
@@ -155,20 +173,29 @@ fn parse_key(tok: &str) -> Result<Key, KeyError> {
         "down" => Code::Down,
         "home" => Code::Home,
         "end" => Code::End,
-        _ => {
-            let mut chars = rest.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => Code::Char(c),
-                _ => return Err(KeyError(format!("unknown key: {tok}"))),
-            }
-        }
+        _ => match parse_single_char(rest) {
+            Some(c) => Code::Char(c),
+            None => return Err(format!("unknown key: {tok}")),
+        },
     };
     let key = match (code, ctrl) {
-        (Code::Char(c), true) => ctrl_key(c),
-        (_, true) => return Err(KeyError(format!("C- cannot apply to: {tok}"))),
-        (_, false) => Key::plain(code),
+        (Code::Char(c), true) => make_key(c, true, meta),
+        (_, true) => return Err(format!("C- cannot apply to: {tok}")),
+        (_, false) => {
+            let base = Key::plain(code);
+            if meta { base.with_meta() } else { base }
+        }
     };
-    Ok(if meta { key.with_meta() } else { key })
+    Ok(key)
+}
+
+fn make_key(c: char, ctrl: bool, meta: bool) -> Key {
+    let base = if ctrl {
+        Key::ctrl(c)
+    } else {
+        Key::plain(Code::Char(c))
+    };
+    if meta { base.with_meta() } else { base }
 }
 
 /// One ASCII graphic character (`!`..=`~`): what a key alias stands for (I-48).
@@ -186,9 +213,8 @@ impl AliasTarget {
     /// # Errors
     /// Returns a message unless `s` is exactly one ASCII graphic character.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let mut chars = s.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) if c.is_ascii_graphic() => Ok(Self(c)),
+        match parse_single_char(s) {
+            Some(c) if c.is_ascii_graphic() => Ok(Self(c)),
             _ => Err(format!(
                 "alias target must be one ASCII graphic character: '{s}'"
             )),
@@ -229,12 +255,7 @@ impl KeyAliases {
             return None;
         };
         let to = self.get(c)?;
-        let base = if key.ctrl {
-            ctrl_key(to)
-        } else {
-            Key::plain(Code::Char(to))
-        };
-        Some(if key.meta { base.with_meta() } else { base })
+        Some(make_key(to, key.ctrl, key.meta))
     }
 }
 
@@ -254,8 +275,8 @@ impl Keymap {
     /// Binds `keys` parsed from string notation to command `name`.
     ///
     /// # Errors
-    /// Returns `KeyError` if `keys` notation cannot be parsed or is unsupported.
-    pub fn bind_str(self, keys: &str, name: &str) -> Result<Self, KeyError> {
+    /// Returns an error message if `keys` notation cannot be parsed or is unsupported.
+    pub fn bind_str(self, keys: &str, name: &str) -> Result<Self, String> {
         Ok(self.bind(parse_key_seq(keys)?, name))
     }
 
@@ -370,13 +391,15 @@ mod tests {
     }
 
     #[test]
-    fn unbind_removes_existing_binding() {
+    fn unbind_removes_existing_and_ignores_missing() {
         let map = Keymap::survival();
-        let key = parse_key_seq("C-x C-s").unwrap();
-        assert_eq!(map.lookup(&key), Some("save-buffer"));
+        let existing = parse_key_seq("C-x C-s").unwrap();
+        assert_eq!(map.lookup(&existing), Some("save-buffer"));
+        assert_eq!(map.clone().unbind(&existing).lookup(&existing), None);
 
-        let unmapped = map.unbind(&key);
-        assert_eq!(unmapped.lookup(&key), None);
+        let missing = parse_key_seq("C-k").unwrap();
+        assert_eq!(map.lookup(&missing), None);
+        assert_eq!(map.unbind(&missing).lookup(&missing), None);
     }
 
     fn target(s: &str) -> AliasTarget {
@@ -420,15 +443,5 @@ mod tests {
         assert_eq!(a.rewrite(key("C-M-ㅠ")), Some(key("C-M-b")));
         assert_eq!(a.rewrite(key("x")), None, "no alias");
         assert_eq!(a.rewrite(key("RET")), None, "not a character key");
-    }
-
-    #[test]
-    fn unbind_nonexistent_is_noop() {
-        let map = Keymap::survival();
-        let key = parse_key_seq("C-k").unwrap();
-        assert_eq!(map.lookup(&key), None);
-
-        let map2 = map.unbind(&key);
-        assert_eq!(map2.lookup(&key), None);
     }
 }

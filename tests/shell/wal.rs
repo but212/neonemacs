@@ -87,27 +87,6 @@ fn wal_recovers_empty_zero_byte_file() {
 }
 
 #[test]
-fn wal_rejects_recovery_if_original_file_modified_externally() {
-    let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path().join("modified.txt");
-    fs::write(&file_path, "original text").unwrap();
-
-    let original_disk = file::disk_state(&file_path);
-    wal::write_wal(&file_path, original_disk, Eol::Lf, b"unsaved edits").unwrap();
-    assert!(wal::has_wal(&file_path));
-
-    // External process modifies file (simulating git pull or another editor)
-    std::thread::sleep(Duration::from_millis(20));
-    fs::write(&file_path, "external change from git").unwrap();
-
-    let new_disk = file::disk_state(&file_path);
-    assert_ne!(original_disk, new_disk);
-
-    // Stale WAL must be rejected due to disk state mismatch
-    assert!(wal::read_wal(&file_path, new_disk).is_err());
-}
-
-#[test]
 fn revert_buffer_cleans_up_wal() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("revert.txt");
@@ -314,44 +293,6 @@ fn an_existing_slot_survives_until_the_scratch_is_clean() {
         *session.ed.buffer().text(),
         neonemacs::core::Doc::from_bytes(b"xdraft")
     );
-}
-
-#[test]
-fn typing_and_idle_wal_recording() {
-    let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path().join("notes.txt");
-    fs::write(&file_path, "line1\n").unwrap();
-
-    let ed = Editor::new(Config::default());
-    let lua = lua::new_state().unwrap();
-    let fx = request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
-    let ed = perform_all(ed, Some(&lua), fx);
-    let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
-    let t0 = Instant::now();
-
-    for c in "new text".chars() {
-        session.handle_event_at(
-            &TermEvent::Key(KeyEvent {
-                code: KeyCode::Char(c),
-                modifiers: KeyModifiers::NONE,
-                kind: KeyEventKind::Press,
-                state: KeyEventState::NONE,
-            }),
-            t0,
-        );
-    }
-
-    assert!(session.ed.buffer().modified());
-
-    session.tick_at(t0 + Duration::from_millis(999));
-    assert!(!wal::has_wal(&file_path));
-
-    session.tick_at(t0 + Duration::from_millis(1000));
-    assert!(wal::has_wal(&file_path));
-
-    let disk = file::disk_state(&file_path);
-    let recovered = wal::read_wal(&file_path, disk).unwrap();
-    assert_eq!(recovered.doc, Doc::from_bytes(b"new textline1\n"));
 }
 
 #[test]

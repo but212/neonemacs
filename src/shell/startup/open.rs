@@ -18,12 +18,11 @@ pub fn restore_scratch(ed: Editor) -> Editor {
         return ed;
     };
     let (ed, note) = match wal::probe_file(&slot, DiskState::Unknown) {
-        WalProbe::Absent => return ed,
+        WalProbe::Absent | WalProbe::ValidDelta(_) => return ed,
         WalProbe::Valid(r) => (
             ed.restore_scratch(r.doc, r.eol),
             "[Recovered *scratch* from WAL]".to_owned(),
         ),
-        WalProbe::ValidDelta(_) => return ed,
         WalProbe::Stale(Ok(kept)) => {
             let name = Path::new(&kept)
                 .file_name()
@@ -37,20 +36,6 @@ pub fn restore_scratch(ed: Editor) -> Editor {
     ed.append_message(note)
 }
 
-/// Opens one file in the background. Its notice (recovered, stale WAL, refused, unreadable) is
-/// left in the echo area.
-fn open_one(ed: Editor, lua: Option<&mlua::Lua>, arg: &FileArg) -> Editor {
-    let Some(raw_path) = arg.path.to_str() else {
-        return ed.append_message(format!(
-            "Cannot open {}: path is not valid UTF-8",
-            arg.path.display()
-        ));
-    };
-    let path = ed.resolve_path(raw_path);
-    let fx = request_open(&ed, path.as_str(), arg.line, false, Vec::new());
-    perform_all(ed, lua, fx)
-}
-
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
 ///
 /// The notices of all files follow the earlier message (for example an `init.lua` error), joined
@@ -61,7 +46,17 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
     let mut notes = Vec::new();
 
     for f in files {
-        ed = open_one(ed.clear_message(), lua, f);
+        ed = ed.clear_message();
+        ed = if let Some(raw_path) = f.path.to_str() {
+            let path = ed.resolve_path(raw_path);
+            let fx = request_open(&ed, path.as_str(), f.line, false, Vec::new());
+            perform_all(ed, lua, fx)
+        } else {
+            ed.append_message(format!(
+                "Cannot open {}: path is not valid UTF-8",
+                f.path.display()
+            ))
+        };
         if !ed.message().is_empty() {
             notes.push(ed.message().to_owned());
         }
@@ -72,7 +67,7 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
         ed = ed.append_message(note);
     }
 
-    match ed.buffers().get(first_new).map(Buffer::id) {
+    match ed.buffers().iter().nth(first_new).map(Buffer::id) {
         Some(id) => switch_to(ed, id),
         None => ed,
     }
@@ -126,42 +121,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.txt");
         fs::write(&a, b"a\n").unwrap();
-        // The second spelling names the same file, so it must reuse the buffer.
-        let args = [
-            a.display().to_string(),
-            dir.path().join(".").join("a.txt").display().to_string(),
-        ];
-        let files = files_of(&args);
-
-        let ed = open_files(Editor::new(Config::default()), None, &files);
-        assert_eq!(
-            ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
-            1
-        );
-    }
-
-    #[test]
-    fn duplicate_args_with_parent_make_one_buffer() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.txt");
-        fs::write(&a, b"a\n").unwrap();
-        // `sub` does not exist: `..` folds lexically, so the second spelling is the same file.
-        let args = [
-            a.display().to_string(),
-            dir.path()
-                .join("sub")
-                .join("..")
-                .join("a.txt")
-                .display()
-                .to_string(),
-        ];
-        let files = files_of(&args);
-
-        let ed = open_files(Editor::new(Config::default()), None, &files);
-        assert_eq!(
-            ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
-            1
-        );
+        // Both `.` and `sub/..` fold lexically to the same file, so each must reuse the buffer.
+        for alias in [
+            dir.path().join(".").join("a.txt"),
+            dir.path().join("sub").join("..").join("a.txt"),
+        ] {
+            let args = [a.display().to_string(), alias.display().to_string()];
+            let files = files_of(&args);
+            let ed = open_files(Editor::new(Config::default()), None, &files);
+            assert_eq!(
+                ed.buffers().iter().filter(|b| b.name() == "a.txt").count(),
+                1
+            );
+        }
     }
 
     #[test]

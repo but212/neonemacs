@@ -1,13 +1,9 @@
+use super::test_script as script;
 use super::*;
 use crate::core::Config;
 use crate::core::effect::Event;
 use crate::shell::{handle, run_source};
 use mlua::Table;
-
-/// Runs `src` against `ed`. Returns the editor back with the result.
-fn script(lua: &Lua, ed: Editor, src: &str) -> (Editor, mlua::Result<()>) {
-    run_source(ed, lua, "=test", src)
-}
 
 #[test]
 fn mutate_editor_preserves_cell_on_error() {
@@ -20,15 +16,29 @@ fn mutate_editor_preserves_cell_on_error() {
 
 #[test]
 fn config_path_follows_xdg_then_home() {
+    use crate::shell::xdg_path;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
     assert_eq!(
-        config_path(Some(OsStr::new("/x")), Some(Path::new("/h"))),
+        xdg_path(
+            Some(OsStr::new("/x")),
+            Some(Path::new("/h")),
+            &[".config"],
+            "init.lua"
+        ),
         Some(PathBuf::from("/x/neonemacs/init.lua"))
     );
     assert_eq!(
-        config_path(Some(OsStr::new("")), Some(Path::new("/h"))),
+        xdg_path(
+            Some(OsStr::new("")),
+            Some(Path::new("/h")),
+            &[".config"],
+            "init.lua"
+        ),
         Some(Path::new("/h/.config/neonemacs/init.lua").to_path_buf())
     );
-    assert_eq!(config_path(None, None), None);
+    assert_eq!(xdg_path(None, None, &[".config"], "init.lua"), None);
 }
 
 #[test]

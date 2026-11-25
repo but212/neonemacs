@@ -11,36 +11,12 @@ use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prompt, Purpose};
 use crate::effect::Effects;
 use crate::file::Backing;
 use crate::keymap::{Code, Key};
-use crate::weave_tree::Doc;
+use crate::{Doc, goto_line_offset};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-
-pub(crate) fn execute_extended_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx)
-}
-
-pub(crate) fn find_file_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Find file: ", Purpose::FindFile), fx)
-}
-
-pub(crate) fn write_file_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Write file: ", Purpose::WriteFile), fx)
-}
-
-pub(crate) fn switch_to_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Switch to buffer: ", Purpose::SwitchBuffer), fx)
-}
-
-pub(crate) fn kill_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Kill buffer: ", Purpose::KillBuffer), fx)
-}
-
-pub(crate) fn goto_line_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Goto line: ", Purpose::GotoLine), fx)
-}
 
 pub(crate) fn prompt(ed: Editor, label: &str, purpose: Purpose) -> Editor {
     ed.set_message(label)
@@ -54,7 +30,12 @@ pub fn completions(ed: &Editor, prefix: &str) -> Vec<(String, String)> {
         .iter()
         .map(|(n, _)| *n)
         .filter(|n| n.starts_with(prefix))
-        .chain(ed.commands().completions(prefix))
+        .chain(
+            ed.commands()
+                .iter()
+                .map(String::as_str)
+                .filter(|n| n.starts_with(prefix)),
+        )
         .collect();
 
     names
@@ -134,7 +115,7 @@ pub fn prompt_key(ed: Editor, key: Key, fx: Effects) -> (Editor, Effects) {
     let Mode::Prompt(mut p) = ed.mode().clone() else {
         return (ed, fx);
     };
-    if key == Key::ctrl('g') || key == Key::plain(Code::Esc) {
+    if key.is_cancel() {
         let ed = ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE);
         return (ed, fx);
     }
@@ -243,9 +224,7 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
     let Ok(n) = input.trim().parse::<usize>() else {
         return ed.set_message(format!("Not a line number: {input}"));
     };
-    let text = ed.buffer().text();
-    let line = n.saturating_sub(1).min(text.total_lines() - 1);
-    let pos = text.line_to_offset(line).expect("line < total_lines");
+    let pos = goto_line_offset(ed.buffer().text(), n);
     ed.move_point(pos)
 }
 
@@ -259,19 +238,17 @@ mod tests {
     use crate::test_support::{editor, keys, typ};
 
     #[test]
-    fn mx_completes_and_cancels() {
-        let ed = keys(editor(), "M-x");
-        assert!(matches!(ed.mode(), Mode::Prompt(_)));
-        let ed = typ(ed, "for");
-        let ed = keys(ed, "TAB");
-        assert!(matches!(ed.mode(), Mode::Prompt(p) if p.input() == "forward-char"));
-        let ed = keys(ed, "C-g");
-        assert_eq!(
-            ed.mode(),
-            &Mode::Normal {
-                prefix: Prefix::None
-            }
-        );
+    fn mx_completes_and_cancels_on_ctrl_g_and_esc() {
+        for cancel in ["C-g", "ESC"] {
+            let ed = keys(editor(), "M-x");
+            assert!(matches!(ed.mode(), Mode::Prompt(_)));
+            let ed = typ(ed, "for");
+            let ed = keys(ed, "TAB");
+            assert!(matches!(ed.mode(), Mode::Prompt(p) if p.input() == "forward-char"));
+            let ed = keys(ed, cancel);
+            assert_eq!(ed.mode(), &Mode::normal());
+            assert_eq!(ed.message(), "Quit");
+        }
     }
 
     #[test]
@@ -444,14 +421,6 @@ mod tests {
         let (ed, _) = kill_named(ed, "*init-log*", Vec::new());
         assert!(ed.buffers().iter().all(|b| b.id() != log));
         assert!(ed.buffers().iter().any(|b| b.id() == file));
-    }
-
-    #[test]
-    fn esc_cancels_prompt_like_ctrl_g() {
-        let ed = typ_prompt(keys(editor(), "M-x"), "kill");
-        let ed = keys(ed, "ESC");
-        assert_eq!(ed.mode(), &Mode::normal());
-        assert_eq!(ed.message(), "Quit");
     }
 
     fn typ_prompt(ed: Editor, s: &str) -> Editor {

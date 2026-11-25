@@ -4,8 +4,8 @@
 use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
-use crate::weave_tree::{Doc, Unit};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
+use crate::{Doc, line_to_offset, offset_to_line, total_lines, unit_char};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -85,38 +85,33 @@ struct Rect {
 fn rects(layout: &Layout, rect: Rect) -> Vec<Rect> {
     match layout {
         Layout::Leaf(_) => vec![rect],
-        Layout::Split {
-            dir: Dir::Below,
-            first,
-            second,
-        } => {
-            let top = rect.h.div_ceil(2);
-            let mut out = rects(first, Rect { h: top, ..rect });
-            out.extend(rects(
-                second,
-                Rect {
-                    y: rect.y + top,
-                    h: rect.h - top,
-                    ..rect
-                },
-            ));
-            out
-        }
-        Layout::Split {
-            dir: Dir::Right,
-            first,
-            second,
-        } => {
-            let left = rect.w.div_ceil(2);
-            let mut out = rects(first, Rect { w: left, ..rect });
-            out.extend(rects(
-                second,
-                Rect {
-                    x: rect.x + left,
-                    w: rect.w - left,
-                    ..rect
-                },
-            ));
+        Layout::Split { dir, first, second } => {
+            let (first_rect, second_rect) = match dir {
+                Dir::Below => {
+                    let top = rect.h.div_ceil(2);
+                    (
+                        Rect { h: top, ..rect },
+                        Rect {
+                            y: rect.y + top,
+                            h: rect.h - top,
+                            ..rect
+                        },
+                    )
+                }
+                Dir::Right => {
+                    let left = rect.w.div_ceil(2);
+                    (
+                        Rect { w: left, ..rect },
+                        Rect {
+                            x: rect.x + left,
+                            w: rect.w - left,
+                            ..rect
+                        },
+                    )
+                }
+            };
+            let mut out = rects(first, first_rect);
+            out.extend(rects(second, second_rect));
             out
         }
     }
@@ -155,16 +150,14 @@ pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
 
 fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
     let height = area.h.saturating_sub(1).max(1);
-    w.height = height;
+    w.height = u32::try_from(height).unwrap_or(u32::MAX);
     let width = area.w.max(1);
     let total = text.total_bytes();
     let p = text.floor_boundary(w.point.min(total));
-    let p_line = text.offset_to_line(p).expect("floor_boundary is valid");
-    let top_line = text
-        .offset_to_line(text.floor_boundary(w.top.min(total)))
-        .expect("floor_boundary is valid");
+    let p_line = offset_to_line(text, p).expect("floor_boundary is valid");
+    let top_line = crate::line_at(text, w.top);
     if p < w.top || p_line.saturating_sub(top_line) >= height {
-        w.top = text.line_to_offset(p_line).expect("p_line < total_lines");
+        w.top = line_to_offset(text, p_line).expect("p_line < total_lines");
     }
     let col = column(text, p, m);
     if col < w.left_col {
@@ -223,7 +216,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     if rows > 0 {
         // While a prompt is shown, the cursor sits in the echo area and the tail of a long line stays visible.
         let message = match ed.mode() {
-            Mode::Prompt(p) if ed.message() == p.echo() => {
+            Mode::Prompt(p) if p.matches_echo(ed.message()) => {
                 let want = (p.cursor_width(m) + 1).saturating_sub(cols);
                 let (rest, skipped) = skip_cells(ed.message(), want, m);
                 let x = p.cursor_width(m).saturating_sub(skipped);
@@ -247,7 +240,7 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     Frame { rows: grid, cursor }
 }
 
-fn put<T: Clone>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
+fn put<T>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
     if let Some(line) = grid.get_mut(row) {
         for (i, item) in items.into_iter().enumerate() {
             if let Some(slot) = line.get_mut(col + i) {
@@ -270,17 +263,15 @@ fn window_cells(
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
     let total = text.total_bytes();
-    let total_lines = text.total_lines();
+    let total_lines = total_lines(text);
     let point = window.point.min(total);
     let mut cursor = (0, 0);
     let mut body = Vec::with_capacity(height);
-    let first_line = text
-        .offset_to_line(text.floor_boundary(window.top.min(total)))
-        .expect("floor_boundary is valid");
-    let mut start = text.line_to_offset(first_line).expect("line exists");
+    let first_line = crate::line_at(text, window.top);
+    let mut start = line_to_offset(text, first_line).expect("line exists");
     for line in (first_line..total_lines).take(height) {
         let next = if line + 1 < total_lines {
-            Some(text.line_to_offset(line + 1).expect("next line exists"))
+            Some(line_to_offset(text, line + 1).expect("next line exists"))
         } else {
             None
         };
@@ -372,7 +363,7 @@ fn line_cells(
                 let Some(b) = text.byte_at(cap_end) else {
                     break;
                 };
-                if b.is_ascii_alphanumeric() || b == b'_' {
+                if crate::syntax::is_ident_byte(b) {
                     cap_end += 1;
                 } else {
                     break;
@@ -447,13 +438,6 @@ fn line_cells(
     cells
 }
 
-fn unit_char(unit: Unit) -> char {
-    match unit {
-        Unit::Char(c) => c,
-        Unit::Raw(b) => char::from(b),
-    }
-}
-
 /// `w` cells for one character: control characters as `^X`, C1 as `\HH`,
 /// tabs as spaces, and wide characters followed by an empty cell.
 fn glyph(c: char, w: usize) -> Vec<String> {
@@ -470,7 +454,13 @@ fn glyph(c: char, w: usize) -> Vec<String> {
         return vec!["^".to_owned(), "?".to_owned()];
     }
     if (0x80..=0x9F).contains(&code) {
-        return format!("\\{code:02X}").chars().map(String::from).collect();
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let b = code as usize;
+        return vec![
+            "\\".to_owned(),
+            char::from(HEX[b >> 4]).to_string(),
+            char::from(HEX[b & 0xF]).to_string(),
+        ];
     }
     let mut cells = vec![c.to_string()];
     cells.extend(core::iter::repeat_n(String::new(), w.saturating_sub(1)));
@@ -498,8 +488,7 @@ fn status_text_with_col(
         .checked_div(buf.text().total_bytes() as u128)
         .unwrap_or(100);
     let text = buf.text();
-    let p = text.floor_boundary(point.min(text.total_bytes()));
-    let line = text.offset_to_line(p).expect("floor_boundary is valid") + 1;
+    let line = crate::line_at(text, point) + 1;
     let col = display_col + 1;
     let head = format!("-{mark}-  {}{view}", buf.name());
     let eol = buf.eol().label();
@@ -509,7 +498,7 @@ fn status_text_with_col(
         format!("{head}  {pos}  {percent}%"),
     ]
     .into_iter()
-    .find(|s| text_width(s, m) <= width)
+    .find(|s| crate::width::str_width(s, m) <= width)
     .unwrap_or_else(|| format!("{head}  {pos}"))
 }
 
@@ -523,10 +512,6 @@ fn skip_cells(s: &str, cells: usize, m: Metrics) -> (&str, usize) {
         skipped += m.char(c);
     }
     ("", skipped)
-}
-
-fn text_width(s: &str, m: Metrics) -> usize {
-    s.chars().map(|c| m.char(c)).sum()
 }
 
 /// Fits `s` into `width` cells, padding with `fill`. Wide characters are not split.
@@ -546,9 +531,7 @@ fn fit(s: &str, width: usize, fill: char, m: Metrics) -> Vec<String> {
         cells.push(c.to_string());
         cells.extend(core::iter::repeat_n(String::new(), w - 1));
     }
-    while cells.len() < width {
-        cells.push(fill.to_string());
-    }
+    cells.resize(width, fill.to_string());
     cells
 }
 
@@ -621,7 +604,7 @@ mod tests {
 
     #[test]
     fn viewport_streams_lines_across_slices_through_the_last_line() {
-        use crate::weave_tree::{DocBuilder, MAX_SLICE_BYTES};
+        use crate::{DocBuilder, MAX_SLICE_BYTES};
 
         let doc = DocBuilder::new()
             .push_bytes(&vec![b'\n'; MAX_SLICE_BYTES - 1])
@@ -644,12 +627,8 @@ mod tests {
     }
 
     #[test]
-    fn a_combining_mark_joins_the_cell_before_it() {
+    fn combining_mark_joins_previous_cell_or_drops_at_left_edge() {
         assert_eq!(cells_of("e\u{301}x", 0, 4), ["e\u{301}", "x", " ", " "]);
-    }
-
-    #[test]
-    fn a_combining_mark_at_the_left_edge_is_dropped_not_misplaced() {
         // The base "e" is scrolled off; its mark sits at column 1 == left and has no cell to join.
         assert_eq!(cells_of("e\u{301}x", 1, 3), ["x", " ", " "]);
     }
@@ -701,15 +680,23 @@ mod tests {
     }
 
     #[test]
-    fn echo_prefix_off_keeps_the_message_visible() {
-        let ed = Editor::new(Config {
+    fn echo_prefix_pending_keys_and_toggle_behavior() {
+        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
+
+        let off = Editor::new(Config {
             toggles: Toggles::DEFAULT.difference(Toggles::ECHO_PREFIX),
             ..Config::default()
         })
         .set_message("Wrote f");
-        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
-        assert_eq!(echo(keys(ed.clone(), "C-x")), "Wrote f");
-        assert_eq!(echo(keys(ed, "ESC")), "Wrote f");
+        assert_eq!(echo(keys(off.clone(), "C-x")), "Wrote f");
+        assert_eq!(echo(keys(off, "ESC")), "Wrote f");
+
+        let on = Editor::new(Config::default()).set_message("Wrote f");
+        assert_eq!(echo(on.clone()), "Wrote f");
+        assert_eq!(echo(keys(on.clone(), "C-x")), "C-x-");
+        assert_eq!(echo(keys(on.clone(), "ESC")), "ESC-");
+        // The message returns once the sequence ends.
+        assert_eq!(echo(keys(on, "C-x C-g")), "Quit");
     }
 
     #[test]
@@ -750,17 +737,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_prefix_key_shows_in_the_echo_area() {
-        let ed = Editor::new(Config::default()).set_message("Wrote f");
-        let echo = |ed: Editor| drawn(ed, 12, 4).row_strings()[3].trim_end().to_owned();
-        assert_eq!(echo(ed.clone()), "Wrote f");
-        assert_eq!(echo(keys(ed.clone(), "C-x")), "C-x-");
-        assert_eq!(echo(keys(ed.clone(), "ESC")), "ESC-");
-        // The message returns once the sequence ends.
-        assert_eq!(echo(keys(ed, "C-x C-g")), "Quit");
-    }
-
-    #[test]
     fn scroll_records_body_height_per_window() {
         let ed = Editor::new(Config::default());
         assert_eq!(ed.window().height, 0);
@@ -778,17 +754,10 @@ mod tests {
     }
 
     #[test]
-    fn wide_char_at_right_edge_is_clipped_with_dollar() {
-        let r = screen_rows("abcd가", 0, 5, 3);
-        assert_eq!(r[0], "abcd$");
-        let r1 = screen_rows("가", 0, 1, 3);
-        assert_eq!(r1[0], "$");
-    }
-
-    #[test]
-    fn frame_long_line_is_cut_with_dollar() {
-        let r = screen_rows("abcdefghijklmnop", 0, 10, 3);
-        assert_eq!(r[0], "abcdefghi$");
+    fn right_edge_overflow_clips_wide_and_long_lines_with_dollar() {
+        assert_eq!(screen_rows("abcd가", 0, 5, 3)[0], "abcd$");
+        assert_eq!(screen_rows("가", 0, 1, 3)[0], "$");
+        assert_eq!(screen_rows("abcdefghijklmnop", 0, 10, 3)[0], "abcdefghi$");
     }
 
     #[test]
@@ -824,34 +793,19 @@ mod tests {
     }
 
     #[test]
-    fn status_line_shows_eol_mode() {
-        let ed = scroll(status_editor(Eol::Crlf), 26, 3);
-        assert_eq!(
-            frame(&ed, 26, 3).row_strings()[1],
-            "----  f.txt  CRLF  1:1  0%"
-        );
-
-        let ed = scroll(status_editor(Eol::Lf), 24, 3);
-        assert_eq!(
-            frame(&ed, 24, 3).row_strings()[1],
-            "----  f.txt  LF  1:1  0%"
-        );
-    }
-
-    #[test]
-    fn status_line_drops_eol_before_percent_when_narrow() {
-        // Full text is 26 cells. At 25 the EOL goes and the position and percent stay.
-        let ed = scroll(status_editor(Eol::Crlf), 25, 3);
-        let r = frame(&ed, 25, 3).row_strings();
-        assert_eq!(r[1], format!("{:-<25}", "----  f.txt  1:1  0%"));
-    }
-
-    #[test]
-    fn status_line_drops_percent_before_position_when_narrower() {
-        // Without EOL and percent the text is 16 cells.
-        let ed = scroll(status_editor(Eol::Crlf), 19, 3);
-        let r = frame(&ed, 19, 3).row_strings();
-        assert_eq!(r[1], format!("{:-<19}", "----  f.txt  1:1"));
+    fn status_line_shows_eol_and_drops_segments_by_width() {
+        let cases = [
+            (Eol::Crlf, 26, "----  f.txt  CRLF  1:1  0%".to_owned()),
+            (Eol::Lf, 24, "----  f.txt  LF  1:1  0%".to_owned()),
+            // Full text is 26 cells. At 25 the EOL goes and the position and percent stay.
+            (Eol::Crlf, 25, format!("{:-<25}", "----  f.txt  1:1  0%")),
+            // Without EOL and percent the text is 16 cells.
+            (Eol::Crlf, 19, format!("{:-<19}", "----  f.txt  1:1")),
+        ];
+        for (eol, width, expected) in cases {
+            let ed = scroll(status_editor(eol), width, 3);
+            assert_eq!(frame(&ed, width, 3).row_strings()[1], expected);
+        }
     }
 
     #[test]
@@ -915,23 +869,17 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cursor_follows_input_cursor_in_display_columns() {
-        let ed = prompt_editor("가a", "bc");
+    fn prompt_cursor_scroll_and_note_message_behavior() {
         // "Find file: " is 11 columns; "가" is 2 and "a" is 1.
+        let ed = prompt_editor("가a", "bc");
         assert_eq!(frame(&ed, 40, 4).cursor, (14, 3));
-    }
 
-    #[test]
-    fn prompt_long_input_scrolls_to_keep_cursor_visible() {
         let ed = prompt_editor(&"x".repeat(30), "");
         let f = frame(&ed, 20, 4);
         assert_eq!(f.cursor, (19, 3));
         let echo = f.row_strings()[3].clone();
         assert!(echo.starts_with(&"x".repeat(19)), "{echo}");
-    }
 
-    #[test]
-    fn prompt_note_message_leaves_cursor_in_text_area() {
         let ed = prompt_editor("is", "").set_message("No match");
         assert_eq!(frame(&ed, 40, 4).cursor, (0, 0));
     }
@@ -1141,7 +1089,7 @@ mod tests {
         for _ in 0..13 {
             let dup = huge.clone();
             huge = huge
-                .apply(crate::weave_tree::Replace {
+                .apply(crate::Replace {
                     offset: 0,
                     delete_len: 0,
                     insert: dup,
@@ -1153,7 +1101,7 @@ mod tests {
         if prefix.is_empty() {
             huge
         } else {
-            huge.apply(crate::weave_tree::Replace {
+            huge.apply(crate::Replace {
                 offset: 0,
                 delete_len: 0,
                 insert: Doc::from_bytes(prefix),

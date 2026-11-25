@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/neonemacs-core"]
-default-members = [".", "crates/neonemacs-core"]
+members = ["crates/neonemacs-core", "crates/weave-tree"]
+default-members = [".", "crates/neonemacs-core", "crates/weave-tree"]
 
 [workspace.package]
 edition = "2024"
@@ -33,7 +33,6 @@ tempfile = "3"
 lto = true
 codegen-units = 1
 opt-level = "s"
-incremental = true
 panic = "abort"
 debug = "full"
 split-debuginfo = "packed"
