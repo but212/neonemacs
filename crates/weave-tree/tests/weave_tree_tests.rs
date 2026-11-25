@@ -127,3 +127,16 @@ proptest! {
         prop_assert_eq!(t3, tree);
     }
 }
+
+#[test]
+fn interleaved_front_delete_and_tail_insert_bounds_backing_and_u16_end() {
+    let mut tree: WeaveTree<LineBreaks> = WeaveTree::from_bytes(&[b'a'; 1024]);
+    let chunk = [b'b'; 1000];
+    for _ in 0..80 {
+        (tree, _) = tree.replace(0, 1000, b"").unwrap();
+        (tree, _) = tree.replace(24, 0, &chunk).unwrap();
+        tree.assert_invariants();
+        assert!(tree.backing_bytes() <= weave_tree::MAX_SLICE_BYTES);
+    }
+    assert_eq!(tree.total_bytes(), 1024);
+}

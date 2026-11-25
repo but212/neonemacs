@@ -595,7 +595,7 @@ pub(crate) fn try_insert_in_place<S: Summary>(
         if offset <= acc + len {
             let local = offset - acc;
             if local == len
-                && len + bytes.len() <= MAX_SLICE_BYTES
+                && usize::from(slice.end) + bytes.len() <= MAX_SLICE_BYTES
                 && let Some(buf) = Arc::get_mut(&mut slice.buf)
             {
                 buf.truncate(usize::from(slice.end));
