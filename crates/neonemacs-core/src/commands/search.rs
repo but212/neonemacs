@@ -426,8 +426,7 @@ mod tests {
     fn isearch_regexp_extends_pattern() {
         let ed = typ(editor(), "x1 x22");
         let ed = keys(ed, "C-a");
-        let (ed, _) = crate::commands::find("isearch-forward-regexp")
-            .unwrap()(ed, Vec::new());
+        let (ed, _) = crate::commands::find("isearch-forward-regexp").unwrap()(ed, Vec::new());
         let ed = typ(ed, "x[0-9]*");
         assert_eq!(point(&ed), 2);
     }

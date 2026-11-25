@@ -331,8 +331,7 @@ more"
 
     #[test]
     fn reload_init_asks_the_shell() {
-        let (_, fx) = crate::commands::find("reload-init")
-            .unwrap()(editor(), Vec::new());
+        let (_, fx) = crate::commands::find("reload-init").unwrap()(editor(), Vec::new());
         assert_eq!(fx, [Effect::ReloadInit]);
     }
 

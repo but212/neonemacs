@@ -519,7 +519,10 @@ mod tests {
         let (ed, _) = kill_buffer(ed, other, Vec::new());
         assert!(matches!(
             ed.mode(),
-            Mode::Confirm { kind: Confirm::KillModified(_), .. }
+            Mode::Confirm {
+                kind: Confirm::KillModified(_),
+                ..
+            }
         ));
         let ed = keys(ed, "n");
         assert_eq!(ed.buffers().len(), 2);

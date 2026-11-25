@@ -51,7 +51,13 @@ pub fn answer_char(aliases: &KeyAliases, key: Key) -> Option<char> {
 /// Answers a yes-or-no question. `y` confirms; `n`, `C-g`, and `Esc` cancel. Any other key
 /// leaves the question open and repeats it (I-46).
 #[must_use]
-pub fn answer(mut ed: Editor, kind: Confirm, text: &str, key: Key, fx: Effects) -> (Editor, Effects) {
+pub fn answer(
+    mut ed: Editor,
+    kind: Confirm,
+    text: &str,
+    key: Key,
+    fx: Effects,
+) -> (Editor, Effects) {
     let choice = answer_char(ed.key_aliases(), key);
     if choice == Some('y') {
         ed = ed.set_mode(Mode::normal());
@@ -212,7 +218,10 @@ mod tests {
         assert_eq!(text(&ed), "x", "aliased ㅜ cancels");
         assert_eq!(ed.message(), "Quit");
         let ed = press(asking(), Key::plain(Code::Char('ㅛ')));
-        assert!(matches!(ed.mode(), Mode::Confirm { .. }), "no alias, no answer");
+        assert!(
+            matches!(ed.mode(), Mode::Confirm { .. }),
+            "no alias, no answer"
+        );
     }
 
     #[test]

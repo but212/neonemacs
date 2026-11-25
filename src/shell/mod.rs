@@ -354,8 +354,8 @@ fn run_shell_capped(command: &str, shell: &ShellSpec, cap: usize) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::effect::{ReadTarget, StatTarget};
     use crate::core::DiskState;
+    use crate::core::effect::{ReadTarget, StatTarget};
 
     #[test]
     fn effect_round_trip_yields_one_event_each() {

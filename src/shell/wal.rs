@@ -573,7 +573,12 @@ mod tests {
     fn scratch_path_follows_the_state_directory_convention() {
         use std::ffi::OsStr;
         let slot = |xdg: Option<&str>, home: Option<&str>| {
-            crate::shell::xdg_path(xdg.map(OsStr::new), home.map(Path::new), &[".local", "state"], "scratch.wal")
+            crate::shell::xdg_path(
+                xdg.map(OsStr::new),
+                home.map(Path::new),
+                &[".local", "state"],
+                "scratch.wal",
+            )
         };
         assert_eq!(
             slot(Some("/x"), Some("/h")),

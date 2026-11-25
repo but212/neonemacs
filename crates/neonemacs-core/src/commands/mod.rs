@@ -39,39 +39,37 @@ pub const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("delete-backward-char", delete_backward_char),
     ("delete-char", delete_char),
     ("delete-other-windows", delete_other_windows),
-    (
-        "execute-extended-command",
-        |ed, fx| (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx),
-    ),
-    (
-        "find-file",
-        |ed, fx| (prompt(ed, "Find file: ", Purpose::FindFile), fx),
-    ),
+    ("execute-extended-command", |ed, fx| {
+        (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx)
+    }),
+    ("find-file", |ed, fx| {
+        (prompt(ed, "Find file: ", Purpose::FindFile), fx)
+    }),
     ("forward-char", forward_char),
-    (
-        "goto-line",
-        |ed, fx| (prompt(ed, "Goto line: ", Purpose::GotoLine), fx),
-    ),
-    (
-        "isearch-backward",
-        |ed, fx| (start_isearch(ed, Direction::Backward, MatchKind::Literal), fx),
-    ),
-    (
-        "isearch-backward-regexp",
-        |ed, fx| (start_isearch(ed, Direction::Backward, MatchKind::Regex), fx),
-    ),
-    (
-        "isearch-forward",
-        |ed, fx| (start_isearch(ed, Direction::Forward, MatchKind::Literal), fx),
-    ),
-    (
-        "isearch-forward-regexp",
-        |ed, fx| (start_isearch(ed, Direction::Forward, MatchKind::Regex), fx),
-    ),
-    (
-        "kill-buffer",
-        |ed, fx| (prompt(ed, "Kill buffer: ", Purpose::KillBuffer), fx),
-    ),
+    ("goto-line", |ed, fx| {
+        (prompt(ed, "Goto line: ", Purpose::GotoLine), fx)
+    }),
+    ("isearch-backward", |ed, fx| {
+        (
+            start_isearch(ed, Direction::Backward, MatchKind::Literal),
+            fx,
+        )
+    }),
+    ("isearch-backward-regexp", |ed, fx| {
+        (start_isearch(ed, Direction::Backward, MatchKind::Regex), fx)
+    }),
+    ("isearch-forward", |ed, fx| {
+        (
+            start_isearch(ed, Direction::Forward, MatchKind::Literal),
+            fx,
+        )
+    }),
+    ("isearch-forward-regexp", |ed, fx| {
+        (start_isearch(ed, Direction::Forward, MatchKind::Regex), fx)
+    }),
+    ("kill-buffer", |ed, fx| {
+        (prompt(ed, "Kill buffer: ", Purpose::KillBuffer), fx)
+    }),
     ("kill-region", kill_region),
     ("kill-ring-save", kill_ring_save),
     ("move-beginning-of-line", move_beginning_of_line),
@@ -79,36 +77,30 @@ pub const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("next-line", next_line),
     ("other-window", other_window),
     ("previous-line", previous_line),
-    (
-        "query-replace",
-        |ed, fx| {
-            (
-                prompt(
-                    ed,
-                    "Query replace: ",
-                    Purpose::QueryFrom {
-                        kind: MatchKind::Literal,
-                    },
-                ),
-                fx,
-            )
-        },
-    ),
-    (
-        "query-replace-regexp",
-        |ed, fx| {
-            (
-                prompt(
-                    ed,
-                    "Query replace regexp: ",
-                    Purpose::QueryFrom {
-                        kind: MatchKind::Regex,
-                    },
-                ),
-                fx,
-            )
-        },
-    ),
+    ("query-replace", |ed, fx| {
+        (
+            prompt(
+                ed,
+                "Query replace: ",
+                Purpose::QueryFrom {
+                    kind: MatchKind::Literal,
+                },
+            ),
+            fx,
+        )
+    }),
+    ("query-replace-regexp", |ed, fx| {
+        (
+            prompt(
+                ed,
+                "Query replace regexp: ",
+                Purpose::QueryFrom {
+                    kind: MatchKind::Regex,
+                },
+            ),
+            fx,
+        )
+    }),
     ("recenter", recenter),
     ("reload-init", |ed, mut fx| {
         fx.push(Effect::ReloadInit);
@@ -118,23 +110,20 @@ pub const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("save-buffer", save_buffer),
     ("save-buffers-kill-emacs", save_buffers_kill_emacs),
     ("set-mark-command", set_mark_command),
-    (
-        "shell-command",
-        |ed, fx| (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx),
-    ),
+    ("shell-command", |ed, fx| {
+        (prompt(ed, "Shell command: ", Purpose::ShellCommand), fx)
+    }),
     ("split-window-below", |ed, fx| (split(ed, Dir::Below), fx)),
     ("split-window-right", |ed, fx| (split(ed, Dir::Right), fx)),
-    (
-        "switch-to-buffer",
-        |ed, fx| (prompt(ed, "Switch to buffer: ", Purpose::SwitchBuffer), fx),
-    ),
+    ("switch-to-buffer", |ed, fx| {
+        (prompt(ed, "Switch to buffer: ", Purpose::SwitchBuffer), fx)
+    }),
     ("toggle-eol", toggle_eol),
     ("undo", Editor::undo),
     ("view-mode", view_mode),
-    (
-        "write-file",
-        |ed, fx| (prompt(ed, "Write file: ", Purpose::WriteFile), fx),
-    ),
+    ("write-file", |ed, fx| {
+        (prompt(ed, "Write file: ", Purpose::WriteFile), fx)
+    }),
     ("yank", yank),
     ("yank-pop", yank_pop),
 ];

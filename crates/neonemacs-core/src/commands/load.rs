@@ -188,8 +188,8 @@ mod tests {
     use crate::config::Config;
     use crate::effect::Recovered;
     use crate::eol::Eol;
-    use crate::file::{Backing, DiskState, FilePath};
     use crate::file::RawFile;
+    use crate::file::{Backing, DiskState, FilePath};
     use crate::test_support::{editor, file_buffer, known, saved_bytes};
 
     /// An editor whose `max-file-size` is 4 bytes.

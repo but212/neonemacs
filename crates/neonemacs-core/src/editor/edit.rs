@@ -90,9 +90,7 @@ impl Editor {
             return ed;
         }
         let max = ed.config().kill_ring_max;
-        let ed = if ed.prev == LastCommand::Kill
-            || ed.last == LastCommand::Kill
-        {
+        let ed = if ed.prev == LastCommand::Kill || ed.last == LastCommand::Kill {
             ed.with_kill_ring(|kr| kr.append_last(killed))
         } else {
             ed.with_kill_ring(|kr| kr.push(killed, max))

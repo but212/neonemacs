@@ -431,7 +431,10 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             changed.mode(),
-            crate::editor::Mode::Confirm { kind: Confirm::SaveExternal(_), .. }
+            crate::editor::Mode::Confirm {
+                kind: Confirm::SaveExternal(_),
+                ..
+            }
         ));
     }
 
@@ -470,7 +473,10 @@ mod tests {
         assert_eq!(fx, [] as [Effect; 0]);
         assert!(matches!(
             asked.mode(),
-            crate::editor::Mode::Confirm { kind: Confirm::SaveExternal(_), .. }
+            crate::editor::Mode::Confirm {
+                kind: Confirm::SaveExternal(_),
+                ..
+            }
         ));
 
         let (_, fx) = disk_checked(

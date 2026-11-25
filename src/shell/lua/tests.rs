@@ -21,11 +21,21 @@ fn config_path_follows_xdg_then_home() {
     use std::path::{Path, PathBuf};
 
     assert_eq!(
-        xdg_path(Some(OsStr::new("/x")), Some(Path::new("/h")), &[".config"], "init.lua"),
+        xdg_path(
+            Some(OsStr::new("/x")),
+            Some(Path::new("/h")),
+            &[".config"],
+            "init.lua"
+        ),
         Some(PathBuf::from("/x/neonemacs/init.lua"))
     );
     assert_eq!(
-        xdg_path(Some(OsStr::new("")), Some(Path::new("/h")), &[".config"], "init.lua"),
+        xdg_path(
+            Some(OsStr::new("")),
+            Some(Path::new("/h")),
+            &[".config"],
+            "init.lua"
+        ),
         Some(Path::new("/h/.config/neonemacs/init.lua").to_path_buf())
     );
     assert_eq!(xdg_path(None, None, &[".config"], "init.lua"), None);

@@ -1,24 +1,28 @@
 use core::ops::ControlFlow;
 use proptest::prelude::*;
-use weave_tree::{DocError, LineBreaks, MAX_SLICE_BYTES, Replace, Summary, WeaveTree, WeaveTreeBuilder};
+use weave_tree::{
+    DocError, LineBreaks, MAX_SLICE_BYTES, Replace, Summary, WeaveTree, WeaveTreeBuilder,
+};
 
 fn collect_range(tree: &WeaveTree<LineBreaks>, range: core::ops::Range<usize>) -> Vec<u8> {
     let mut out = Vec::new();
-    let _ = tree.try_for_each_slice(range, |chunk| {
-        out.extend_from_slice(chunk);
-        ControlFlow::<()>::Continue(())
-    })
-    .unwrap();
+    let _ = tree
+        .try_for_each_slice(range, |chunk| {
+            out.extend_from_slice(chunk);
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
     out
 }
 
 fn collect_range_rev(tree: &WeaveTree<LineBreaks>, range: core::ops::Range<usize>) -> Vec<u8> {
     let mut chunks = Vec::new();
-    let _ = tree.try_for_each_slice_rev(range, |chunk| {
-        chunks.push(chunk.to_vec());
-        ControlFlow::<()>::Continue(())
-    })
-    .unwrap();
+    let _ = tree
+        .try_for_each_slice_rev(range, |chunk| {
+            chunks.push(chunk.to_vec());
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
     chunks.reverse();
     chunks.concat()
 }

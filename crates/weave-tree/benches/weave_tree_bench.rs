@@ -248,9 +248,7 @@ fn bench_tree_and_lines(c: &mut Criterion) {
     });
 
     let mid_line = doc_1mb.total_metric().div_ceil(2);
-    let mid_offset = doc_1mb
-        .metric_to_byte(mid_line)
-        .expect("valid line");
+    let mid_offset = doc_1mb.metric_to_byte(mid_line).expect("valid line");
 
     group.bench_function("line_to_offset_1mb", |b| {
         b.iter(|| {

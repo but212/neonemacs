@@ -122,7 +122,10 @@ fn cli_version_and_help_exit_0_without_starting_editor() {
     );
 
     let help_stdout = run_flag("-h");
-    assert!(help_stdout.contains("Usage:"), "stdout for -h: {help_stdout:?}");
+    assert!(
+        help_stdout.contains("Usage:"),
+        "stdout for -h: {help_stdout:?}"
+    );
 }
 
 #[test]
