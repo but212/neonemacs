@@ -3,7 +3,7 @@
 
 use core::ops::ControlFlow;
 
-use crate::{Doc, EditorDocExt, Unit};
+use crate::{Doc, Unit, line_end, line_start};
 use unicode_width::UnicodeWidthChar;
 use weave_tree::utf8::decode_in_slice;
 
@@ -58,8 +58,7 @@ fn ascii_printable_run(bytes: &[u8]) -> usize {
 #[must_use]
 pub fn column(text: &Doc, pos: usize, tab: Metrics) -> usize {
     let pos = text.floor_boundary(pos);
-    let line = text.offset_to_line(pos).expect("floor_boundary is valid");
-    let start = text.line_to_offset(line).expect("line < total_lines");
+    let start = line_start(text, pos);
     let mut col = 0;
     let _ = text.try_for_each_slice(start..pos, |chunk| {
         let mut i = 0;
@@ -85,14 +84,7 @@ pub fn column(text: &Doc, pos: usize, tab: Metrics) -> usize {
 #[must_use]
 pub(crate) fn pos_and_column(text: &Doc, line: usize, col: usize, tab: Metrics) -> (usize, usize) {
     let line = text.floor_boundary(line);
-    let line_idx = text.offset_to_line(line).expect("floor_boundary is valid");
-    let end = if line_idx + 1 < text.total_lines() {
-        text.line_to_offset(line_idx + 1)
-            .expect("line_idx + 1 < total_lines")
-            - 1
-    } else {
-        text.total_bytes()
-    };
+    let end = line_end(text, line);
     let (mut p, mut c) = (line, 0);
     let _ = text.try_for_each_slice(line..end, |chunk| {
         let mut i = 0;

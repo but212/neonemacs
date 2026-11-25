@@ -11,36 +11,12 @@ use crate::editor::{Buffer, CANCEL_MESSAGE, Editor, Mode, Prompt, Purpose};
 use crate::effect::Effects;
 use crate::file::Backing;
 use crate::keymap::{Code, Key};
-use crate::{Doc, EditorDocExt};
+use crate::{Doc, goto_line_offset};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-
-pub(crate) fn execute_extended_command(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "M-x ", Purpose::ExecuteCommand), fx)
-}
-
-pub(crate) fn find_file_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Find file: ", Purpose::FindFile), fx)
-}
-
-pub(crate) fn write_file_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Write file: ", Purpose::WriteFile), fx)
-}
-
-pub(crate) fn switch_to_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Switch to buffer: ", Purpose::SwitchBuffer), fx)
-}
-
-pub(crate) fn kill_buffer_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Kill buffer: ", Purpose::KillBuffer), fx)
-}
-
-pub(crate) fn goto_line_cmd(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (prompt(ed, "Goto line: ", Purpose::GotoLine), fx)
-}
 
 pub(crate) fn prompt(ed: Editor, label: &str, purpose: Purpose) -> Editor {
     ed.set_message(label)
@@ -243,9 +219,7 @@ fn goto_line(ed: Editor, input: &str) -> Editor {
     let Ok(n) = input.trim().parse::<usize>() else {
         return ed.set_message(format!("Not a line number: {input}"));
     };
-    let text = ed.buffer().text();
-    let line = n.saturating_sub(1).min(text.total_lines() - 1);
-    let pos = text.line_to_offset(line).expect("line < total_lines");
+    let pos = goto_line_offset(ed.buffer().text(), n);
     ed.move_point(pos)
 }
 

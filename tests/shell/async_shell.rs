@@ -21,7 +21,6 @@ fn an_unrunnable_shell_program_reports_an_error() {
     };
     let task = spawn_shell("echo x".to_owned(), shell);
     let res = task
-        .receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("background shell finishes in time");
     let err = res.expect_err("the program does not exist");
@@ -33,7 +32,6 @@ fn async_shell_spawns_and_receives_output() {
     let task = spawn_shell("echo async_test_ok".to_owned(), ShellSpec::default());
     // Wait for the background thread to finish
     let res = task
-        .receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("background shell finishes in time");
     let output = res.expect("command succeeded");
@@ -86,7 +84,6 @@ fn handle_interactive_dispatches_async_shell_without_blocking() {
     assert_eq!(final_ed.message(), "[Running...]");
 
     let result = task
-        .receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("command completes");
     assert!(result.unwrap().contains("non_blocking"));

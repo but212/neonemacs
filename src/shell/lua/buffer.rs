@@ -3,7 +3,7 @@
 use super::{editor_ref, mutate_editor};
 use crate::core::Editor;
 use mlua::{Lua, Scope, Table};
-use neonemacs_core::EditorDocExt;
+use neonemacs_core::{line_end, line_start};
 use std::cell::RefCell;
 
 #[allow(clippy::too_many_lines)]
@@ -56,31 +56,11 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
     )?;
     buffer_table.set(
         "line_start",
-        scope.create_function(|_, pos: usize| {
-            let ed = editor_ref(cell);
-            let text = ed.buffer().text();
-            let pos = text.floor_boundary(pos.min(text.total_bytes()));
-            let line = text.offset_to_line(pos).expect("floor_boundary is valid");
-            Ok(text.line_to_offset(line).expect("line < total_lines"))
-        })?,
+        scope.create_function(|_, pos: usize| Ok(line_start(editor_ref(cell).buffer().text(), pos)))?,
     )?;
     buffer_table.set(
         "line_end",
-        scope.create_function(|_, pos: usize| {
-            let ed = editor_ref(cell);
-            let text = ed.buffer().text();
-            let total = text.total_bytes();
-            let pos = text.floor_boundary(pos.min(total));
-            let line = text.offset_to_line(pos).expect("floor_boundary is valid");
-            if line + 1 < text.total_lines() {
-                Ok(text
-                    .line_to_offset(line + 1)
-                    .expect("line + 1 < total_lines")
-                    - 1)
-            } else {
-                Ok(total)
-            }
-        })?,
+        scope.create_function(|_, pos: usize| Ok(line_end(editor_ref(cell).buffer().text(), pos)))?,
     )?;
     buffer_table.set(
         "width",

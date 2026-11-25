@@ -1,6 +1,9 @@
 use std::ops::ControlFlow;
 
-use neonemacs_core::{Doc, DocBuilder, DocError, EditorDocExt, MAX_SLICE_BYTES, Replace, Unit};
+use neonemacs_core::{
+    Doc, DocBuilder, DocError, MAX_SLICE_BYTES, Replace, Unit, line_to_offset, offset_to_line,
+    total_lines,
+};
 use proptest::prelude::*;
 
 fn collect_bytes(doc: &Doc) -> Vec<u8> {
@@ -57,17 +60,17 @@ fn empty_doc_contracts() {
     let doc = Doc::default();
     assert_eq!(doc, Doc::from_bytes(b""));
     assert_eq!(doc.total_bytes(), 0);
-    assert_eq!(doc.total_lines(), 1);
-    assert_eq!(doc.line_to_offset(0), Ok(0));
+    assert_eq!(total_lines(&doc), 1);
+    assert_eq!(line_to_offset(&doc, 0), Ok(0));
     assert_eq!(
-        doc.line_to_offset(1),
+        line_to_offset(&doc, 1),
         Err(DocError::OutOfBounds {
             offset: 1,
             len: 0,
             total: 0
         })
     );
-    assert_eq!(doc.offset_to_line(0), Ok(0));
+    assert_eq!(offset_to_line(&doc, 0), Ok(0));
     assert_eq!(doc.byte_at(0), None);
     assert_eq!(doc.decode_at(0), None);
     assert_eq!(doc.floor_boundary(10), 0);
@@ -126,11 +129,11 @@ fn error_paths_return_original_doc() {
     assert_eq!(collect_bytes(&doc), "가나다".as_bytes());
 
     assert_eq!(
-        doc.offset_to_line(2),
+        offset_to_line(&doc, 2),
         Err(DocError::InvalidBoundary { offset: 2 })
     );
     assert_eq!(
-        doc.offset_to_line(10),
+        offset_to_line(&doc, 10),
         Err(DocError::OutOfBounds {
             offset: 10,
             len: 0,
@@ -214,7 +217,7 @@ fn multi_level_tree_height_3_and_split_join() {
         .clone()
         .replace(MAX_SLICE_BYTES * 20, 123, b"hello\nworld")
         .expect("edit");
-    assert_eq!(doc2.total_lines(), 2);
+    assert_eq!(total_lines(&doc2), 2);
     let (doc3, _) = doc2.apply(inv).expect("undo");
     assert_eq!(doc3, doc);
 }
@@ -318,21 +321,21 @@ proptest! {
             oracle.splice(off..off + del, ins.iter().copied());
 
             prop_assert_eq!(next_doc.total_bytes(), oracle.len());
-            prop_assert_eq!(next_doc.total_lines(), oracle_total_lines(&oracle));
+            prop_assert_eq!(total_lines(&next_doc), oracle_total_lines(&oracle));
             prop_assert_eq!(collect_bytes(&next_doc), oracle.clone());
             prop_assert_eq!(collect_bytes_rev(&next_doc), oracle.clone());
             prop_assert_eq!(&next_doc, &Doc::from_bytes(&oracle));
 
             // Verify coordinate mappings at sampled lines and offsets.
-            let total_lines = next_doc.total_lines();
-            let sample_line = off % total_lines;
+            let line_count = total_lines(&next_doc);
+            let sample_line = off % line_count;
             prop_assert_eq!(
-                next_doc.line_to_offset(sample_line),
+                line_to_offset(&next_doc, sample_line),
                 Ok(oracle_line_to_offset(&oracle, sample_line).unwrap())
             );
             let q_off = next_doc.floor_boundary(off.min(next_doc.total_bytes()));
             prop_assert_eq!(
-                next_doc.offset_to_line(q_off),
+                offset_to_line(&next_doc, q_off),
                 Ok(oracle_offset_to_line(&oracle, q_off))
             );
 

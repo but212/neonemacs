@@ -6,7 +6,6 @@ use crate::core::Doc;
 use crate::core::Editor;
 use crate::core::TokenKind;
 use crate::core::request_open;
-use crate::shell::ShellTask;
 use crate::shell::lua;
 use crate::shell::startup::InitSource;
 use crate::shell::wal;
@@ -84,7 +83,7 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
 fn spinner_tick_wrapping_and_prompt_mode_echo_preservation() {
     let mut session = make_session();
     let (tx, rx) = mpsc::channel();
-    let mut active = ActiveShell::new(ShellTask { receiver: rx });
+    let mut active = ActiveShell::new(rx);
     active.tick = usize::MAX;
     session.active_shell = Some(active);
 
@@ -117,7 +116,7 @@ fn spinner_tick_wrapping_and_prompt_mode_echo_preservation() {
 fn spinner_never_overwrites_a_message_it_did_not_write() {
     let mut session = make_session();
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
-    session.active_shell = Some(ActiveShell::new(ShellTask { receiver: rx }));
+    session.active_shell = Some(ActiveShell::new(rx));
     let t0 = Instant::now();
 
     session.tick_at(t0);
@@ -141,7 +140,7 @@ fn spinner_never_overwrites_a_message_it_did_not_write() {
 fn background_shell_disconnect_clears_active_shell_and_reports_error() {
     let mut session = make_session();
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
-    session.active_shell = Some(ActiveShell::new(ShellTask { receiver: rx }));
+    session.active_shell = Some(ActiveShell::new(rx));
     session.ed = session.ed.set_message("[Running... |]");
 
     // Simulate worker thread panic / abrupt channel drop without sending
@@ -160,7 +159,7 @@ fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
     let mut session = make_session();
     let t0 = Instant::now();
     let (tx, rx) = mpsc::channel();
-    session.active_shell = Some(ActiveShell::new(ShellTask { receiver: rx }));
+    session.active_shell = Some(ActiveShell::new(rx));
 
     // Attempt to run a second shell command while first is active: M-x shell-command RET echo 2 RET
     session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);

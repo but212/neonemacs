@@ -1,20 +1,14 @@
 //! Lua `key_alias` and `key_unalias`: which characters stand for an ASCII key (I-46, I-48).
 
 use super::mutate_editor;
-use crate::core::AliasTarget;
-use crate::core::Editor;
+use crate::core::{AliasTarget, Editor, parse_single_char};
 use mlua::{Scope, Table};
 use std::cell::RefCell;
 
 /// The one character in `s`.
 fn single_char(s: &str) -> mlua::Result<char> {
-    let mut chars = s.chars();
-    match (chars.next(), chars.next()) {
-        (Some(c), None) => Ok(c),
-        _ => Err(mlua::Error::RuntimeError(format!(
-            "key alias must be one character: '{s}'"
-        ))),
-    }
+    parse_single_char(s)
+        .ok_or_else(|| mlua::Error::RuntimeError(format!("key alias must be one character: '{s}'")))
 }
 
 pub(super) fn install_alias_api<'lua, 'scope>(

@@ -1,7 +1,7 @@
 //! Undo log in groups, kept in memory.
 
 use crate::eol::Eol;
-use crate::{Doc, EditorDocExt, Replace};
+use crate::{Doc, Replace, compact_small};
 use alloc::vec::Vec;
 
 /// Stack-allocated byte buffer of at most 16 bytes for small inline edits.
@@ -237,7 +237,7 @@ impl UndoLog {
         clean_epoch: Option<u32>,
     ) -> (Self, usize) {
         if let Edit::Replace(patch) = &mut edit.edit {
-            patch.insert = core::mem::take(&mut patch.insert).compact_small();
+            patch.insert = compact_small(core::mem::take(&mut patch.insert));
         }
         if !self.open {
             self.groups.push(Group {

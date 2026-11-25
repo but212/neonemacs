@@ -41,7 +41,7 @@ pub use dispatch::command;
 pub use editor::{CANCEL_MESSAGE, Confirm, Editor, LastCommand, Mode, Prefix, Window};
 pub use eol::{Eol, EolStreamDecoder};
 pub use file::{Backing, DiskState, FilePath, RawFile, Read, loaded_from};
-pub use keymap::{AliasTarget, Code, Key, KeyError, ctrl_key, parse_key_seq, parse_keys};
+pub use keymap::{AliasTarget, Code, Key, ctrl_key, parse_key_seq, parse_keys, parse_single_char};
 pub use syntax::{SyntaxDef, SyntaxRegistry, TokenKind, highlight_line};
 pub use undo::Edit;
 pub use weave_tree::{CHUNK_CAP, DocError, MAX_SLICE_BYTES, Unit};
@@ -51,46 +51,72 @@ pub type Doc = weave_tree::WeaveTree<LineBreaks>;
 pub type DocBuilder = weave_tree::WeaveTreeBuilder<LineBreaks>;
 pub type Replace = weave_tree::Replace<LineBreaks>;
 
-/// Editor-domain extensions on `Doc` (`total_lines`, line/offset mapping, compaction).
-pub trait EditorDocExt: Sized {
-    /// Total 1-based line count (`1` when empty).
-    fn total_lines(&self) -> usize;
-    /// Maps a 0-based line index to its starting byte offset.
-    fn line_to_offset(&self, line: usize) -> Result<usize, DocError>;
-    /// Maps a valid `Unit`-boundary byte offset to its 0-based line index.
-    fn offset_to_line(&self, offset: usize) -> Result<usize, DocError>;
-    /// Copies at most one small chunk rather than pinning larger backing allocations.
-    fn compact_small(self) -> Self;
+/// Total 1-based line count (`1` when empty).
+#[inline]
+#[must_use]
+pub fn total_lines(doc: &Doc) -> usize {
+    1 + doc.total_metric::<LineBreakMetric>()
 }
 
-impl EditorDocExt for Doc {
-    #[inline]
-    fn total_lines(&self) -> usize {
-        1 + self.total_metric::<LineBreakMetric>()
-    }
+/// Maps a 0-based line index to its starting byte offset.
+///
+/// # Errors
+/// Returns `DocError::OutOfBounds` if `line` is past the last line.
+#[inline]
+pub fn line_to_offset(doc: &Doc, line: usize) -> Result<usize, DocError> {
+    doc.metric_to_byte::<LineBreakMetric>(line)
+}
 
-    #[inline]
-    fn line_to_offset(&self, line: usize) -> Result<usize, DocError> {
-        self.metric_to_byte::<LineBreakMetric>(line)
-    }
+/// Maps a valid `Unit`-boundary byte offset to its 0-based line index.
+///
+/// # Errors
+/// Returns `DocError` if `offset` is out of bounds or not a `Unit` boundary.
+#[inline]
+pub fn offset_to_line(doc: &Doc, offset: usize) -> Result<usize, DocError> {
+    doc.byte_to_metric::<LineBreakMetric>(offset)
+}
 
-    #[inline]
-    fn offset_to_line(&self, offset: usize) -> Result<usize, DocError> {
-        self.byte_to_metric::<LineBreakMetric>(offset)
-    }
+/// Starting byte offset of the line containing `pos` (clamped and floored to a `Unit` boundary).
+#[must_use]
+pub fn line_start(doc: &Doc, pos: usize) -> usize {
+    let p = doc.floor_boundary(pos.min(doc.total_bytes()));
+    let line = offset_to_line(doc, p).expect("floor_boundary is valid");
+    line_to_offset(doc, line).expect("line < total_lines")
+}
 
-    fn compact_small(self) -> Self {
-        let len = self.total_bytes();
-        if len > CHUNK_CAP || self.backing_bytes() <= CHUNK_CAP {
-            return self;
-        }
-        let mut bytes = Vec::with_capacity(len);
-        let _ = self.try_for_each_slice(0..len, |chunk| {
-            bytes.extend_from_slice(chunk);
-            ControlFlow::<()>::Continue(())
-        });
-        Self::from_bytes(&bytes)
+/// Ending byte offset (excluding `'\n'`) of the line containing `pos`.
+#[must_use]
+pub fn line_end(doc: &Doc, pos: usize) -> usize {
+    let total = doc.total_bytes();
+    let p = doc.floor_boundary(pos.min(total));
+    let line = offset_to_line(doc, p).expect("floor_boundary is valid");
+    if line + 1 < total_lines(doc) {
+        line_to_offset(doc, line + 1).expect("line + 1 < total_lines") - 1
+    } else {
+        total
     }
+}
+
+/// Starting byte offset of 1-based `one_based_line`, clamped to `[1, total_lines(doc)]`.
+#[must_use]
+pub fn goto_line_offset(doc: &Doc, one_based_line: usize) -> usize {
+    let line_idx = one_based_line.saturating_sub(1).min(total_lines(doc) - 1);
+    line_to_offset(doc, line_idx).expect("line < total_lines")
+}
+
+/// Copies at most one small chunk rather than pinning larger backing allocations.
+#[must_use]
+pub fn compact_small(doc: Doc) -> Doc {
+    let len = doc.total_bytes();
+    if len > CHUNK_CAP || doc.backing_bytes() <= CHUNK_CAP {
+        return doc;
+    }
+    let mut bytes = Vec::with_capacity(len);
+    let _ = doc.try_for_each_slice(0..len, |chunk| {
+        bytes.extend_from_slice(chunk);
+        ControlFlow::<()>::Continue(())
+    });
+    Doc::from_bytes(&bytes)
 }
 
 use crate::effect::{Effects, Event};

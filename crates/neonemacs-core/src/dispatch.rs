@@ -137,7 +137,7 @@ pub fn run_named(ed: Editor, name: &str, mut fx: Effects) -> (Editor, Effects) {
         ed
     };
     if let Some(run) = commands::find(name) {
-        command(ed, fx, run)
+        command(ed, fx, |e, fx| run.run(e, fx))
     } else {
         let ed = ed.begin_command();
         fx.push(Effect::RunLua {

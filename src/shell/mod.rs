@@ -31,10 +31,7 @@ pub const RUNNING: &str = "[Running...]";
 pub const BUSY_NOTICE: &str = "A shell command is already running";
 
 /// A running background shell command.
-#[derive(Debug)]
-pub struct ShellTask {
-    pub receiver: mpsc::Receiver<Result<String, String>>,
-}
+pub type ShellTask = mpsc::Receiver<Result<String, String>>;
 
 /// The result of an interactive shell command dispatch.
 #[derive(Debug)]
@@ -54,7 +51,7 @@ pub fn spawn_shell(command: String, shell: ShellSpec) -> ShellTask {
         let res = run_shell(&command, &shell);
         let _ = tx.send(res);
     });
-    ShellTask { receiver: rx }
+    rx
 }
 
 /// Applies `event` in an interactive session.
@@ -125,19 +122,31 @@ pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
     }
 }
 
+/// Runs `f` against the editor in `cell`, putting the returned editor back. The cell is empty
+/// only during this call (I-21).
+///
+/// # Panics
+/// Panics if `cell` does not contain an editor (violating I-21).
+pub(crate) fn with_editor_cell<R>(
+    cell: &RefCell<Option<Editor>>,
+    f: impl FnOnce(Editor) -> (Editor, R),
+) -> R {
+    let ed = cell
+        .borrow_mut()
+        .take()
+        .expect("editor is in the cell (I-21)");
+    let (ed, out) = f(ed);
+    *cell.borrow_mut() = Some(ed);
+    out
+}
+
 /// Applies `event` to the editor in `cell`, then puts the new editor back. The cell is empty
 /// only during this call, since `step` never calls Lua (I-21). Returns the effects to perform.
 ///
 /// # Panics
 /// Panics if `cell` does not contain an editor (violating I-21).
 pub fn step_in(cell: &RefCell<Option<Editor>>, event: Event) -> Effects {
-    let ed = cell
-        .borrow_mut()
-        .take()
-        .expect("editor is in the cell (I-21)");
-    let (ed, effects) = step(ed, event);
-    *cell.borrow_mut() = Some(ed);
-    effects
+    with_editor_cell(cell, |ed| step(ed, event))
 }
 
 /// Performs `effects` against the editor in `cell`. Each event goes back to the core.

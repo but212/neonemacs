@@ -4,7 +4,7 @@ use crate::editor::{Buffer, BufferId, Confirm, Dir, Editor, LastCommand, Window}
 use crate::effect::Effects;
 use crate::width::{column, pos_at_column};
 use crate::window::WindowManager;
-use crate::{Doc, EditorDocExt};
+use crate::{Doc, line_end, line_start, line_to_offset, offset_to_line, total_lines};
 
 /// Helper for region lookup on `Editor`.
 pub(crate) fn region(ed: &Editor) -> Option<(usize, usize)> {
@@ -30,24 +30,12 @@ pub(crate) fn backward_char(ed: Editor, fx: Effects) -> (Editor, Effects) {
 }
 
 pub(crate) fn move_beginning_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let text = ed.buffer().text();
-    let p = text.floor_boundary(ed.window().point);
-    let line = text.offset_to_line(p).expect("floor_boundary is valid");
-    let start = text.line_to_offset(line).expect("line < total_lines");
+    let start = line_start(ed.buffer().text(), ed.window().point);
     (ed.move_point(start), fx)
 }
 
 pub(crate) fn move_end_of_line(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    let text = ed.buffer().text();
-    let p = text.floor_boundary(ed.window().point);
-    let line = text.offset_to_line(p).expect("floor_boundary is valid");
-    let end = if line + 1 < text.total_lines() {
-        text.line_to_offset(line + 1)
-            .expect("line + 1 < total_lines")
-            - 1
-    } else {
-        text.total_bytes()
-    };
+    let end = line_end(ed.buffer().text(), ed.window().point);
     (ed.move_point(end), fx)
 }
 
@@ -68,17 +56,12 @@ fn vertical(ed: Editor, down: bool) -> Editor {
         LastCommand::Vertical { col } => col,
         _ => column(text, p, m),
     };
-    let line = text.offset_to_line(p).expect("floor_boundary is valid");
+    let line = offset_to_line(text, p).expect("floor_boundary is valid");
     let target = if down {
-        (line + 1 < text.total_lines()).then(|| {
-            text.line_to_offset(line + 1)
-                .expect("line + 1 < total_lines")
-        })
+        (line + 1 < total_lines(text))
+            .then(|| line_to_offset(text, line + 1).expect("line + 1 < total_lines"))
     } else {
-        (line > 0).then(|| {
-            text.line_to_offset(line - 1)
-                .expect("line - 1 < total_lines")
-        })
+        (line > 0).then(|| line_to_offset(text, line - 1).expect("line - 1 < total_lines"))
     };
     let target_pos = target.map(|start| pos_at_column(text, start, goal, m));
     let ed = if let Some(pos) = target_pos {
@@ -97,9 +80,8 @@ fn vertical(ed: Editor, down: bool) -> Editor {
 /// Start of the line `n` lines before the line holding `start`; stops at the first line.
 fn lines_back(text: &Doc, start: usize, n: usize) -> usize {
     let b = text.floor_boundary(start.min(text.total_bytes()));
-    let line = text.offset_to_line(b).expect("floor_boundary is valid");
-    text.line_to_offset(line.saturating_sub(n))
-        .expect("line < total_lines")
+    let line = offset_to_line(text, b).expect("floor_boundary is valid");
+    line_to_offset(text, line.saturating_sub(n)).expect("line < total_lines")
 }
 
 /// `recenter` (C-l): puts the line holding point on the middle row. Text and point are unchanged.
@@ -288,7 +270,7 @@ mod tests {
     use crate::editor::{KillRing, Mode};
     use crate::file::Backing;
     use crate::test_support::{editor, keys, point, run_command, set_mark, text, typ};
-    use crate::{Doc, EditorDocExt};
+    use crate::{Doc, line_to_offset, offset_to_line};
 
     #[test]
     fn the_mark_is_active_until_an_edit_cancel_or_copy() {
@@ -374,8 +356,8 @@ mod tests {
         let ed = run_command(ed, recenter);
         // With no known height the point's own line becomes the top.
         let t = ed.buffer().text();
-        let line = t.offset_to_line(t.floor_boundary(point(&ed))).unwrap();
-        assert_eq!(top(&ed), t.line_to_offset(line).unwrap());
+        let line = offset_to_line(t, t.floor_boundary(point(&ed))).unwrap();
+        assert_eq!(top(&ed), line_to_offset(t, line).unwrap());
     }
 
     #[test]

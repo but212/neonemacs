@@ -1,7 +1,7 @@
 //! Opening and reading files: asking the shell to read, applying what it read (new buffer or
 //! revert), and applying what it found in a WAL (docs/context.md §3.2, §4.2).
 
-use crate::EditorDocExt;
+use crate::goto_line_offset;
 use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
 use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
@@ -99,9 +99,7 @@ pub fn file_read(
                     let (mut ed, id) = ed.add_buffer(&name_of(&path), loaded.text, loaded.backing);
                     ed = ed.with_buffer(id, |b| b.set_eol(loaded.eol));
                     if let Some(n) = line {
-                        let text = ed.buffer_by_id(id).text();
-                        let line_idx = n.saturating_sub(1).min(text.total_lines() - 1);
-                        let pos = text.line_to_offset(line_idx).expect("line < total_lines");
+                        let pos = goto_line_offset(ed.buffer_by_id(id).text(), n);
                         ed = ed.with_buffer(id, |b| b.set_saved_point(pos));
                     }
                     if show {

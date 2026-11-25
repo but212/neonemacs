@@ -2,7 +2,7 @@
 
 use super::mutate_editor;
 use crate::core::Editor;
-use crate::core::{KeyError, parse_key_seq};
+use crate::core::parse_key_seq;
 use mlua::{Scope, Table};
 use std::cell::RefCell;
 
@@ -14,8 +14,7 @@ pub(super) fn install_keymap_api<'lua, 'scope>(
     g.set(
         "bind",
         scope.create_function(|_, (keys, name): (String, String)| {
-            let seq =
-                parse_key_seq(&keys).map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+            let seq = parse_key_seq(&keys).map_err(mlua::Error::RuntimeError)?;
             mutate_editor(cell, |ed| ed.with_keymap(|km| km.bind(seq, &name)));
             Ok(())
         })?,
@@ -23,8 +22,7 @@ pub(super) fn install_keymap_api<'lua, 'scope>(
     g.set(
         "unbind",
         scope.create_function(|_, keys: String| {
-            let seq =
-                parse_key_seq(&keys).map_err(|KeyError(msg)| mlua::Error::RuntimeError(msg))?;
+            let seq = parse_key_seq(&keys).map_err(mlua::Error::RuntimeError)?;
             mutate_editor(cell, |ed| ed.with_keymap(|km| km.unbind(&seq)));
             Ok(())
         })?,

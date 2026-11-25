@@ -1,4 +1,4 @@
-use crate::{Doc, DocBuilder, EditorDocExt};
+use crate::{Doc, DocBuilder, total_lines};
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use memchr::memchr_iter;
@@ -23,7 +23,7 @@ impl Eol {
 
     /// Whether normalizing these bytes after saving leaves the document unchanged.
     pub(crate) fn preserves_saved_doc(self, doc: &Doc) -> bool {
-        if self == Self::Crlf || doc.total_lines() == 1 {
+        if self == Self::Crlf || total_lines(doc) == 1 {
             return true;
         }
         // LF saves verbatim, but reopening strips CRs immediately before LF, even across slices.

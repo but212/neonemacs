@@ -15,29 +15,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub(crate) fn isearch_forward(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        start_isearch(ed, Direction::Forward, MatchKind::Literal),
-        fx,
-    )
-}
-
-pub(crate) fn isearch_backward(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (
-        start_isearch(ed, Direction::Backward, MatchKind::Literal),
-        fx,
-    )
-}
-
-pub(crate) fn isearch_forward_regexp(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, Direction::Forward, MatchKind::Regex), fx)
-}
-
-pub(crate) fn isearch_backward_regexp(ed: Editor, fx: Effects) -> (Editor, Effects) {
-    (start_isearch(ed, Direction::Backward, MatchKind::Regex), fx)
-}
-
-fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
+pub(crate) fn start_isearch(ed: Editor, direction: Direction, kind: MatchKind) -> Editor {
     let origin = ed.window().point;
     ed.set_mode(Mode::Isearch(Isearch {
         direction,
@@ -481,7 +459,9 @@ mod tests {
     fn isearch_regexp_extends_pattern() {
         let ed = typ(editor(), "x1 x22");
         let ed = keys(ed, "C-a");
-        let ed = run_command(ed, isearch_forward_regexp);
+        let (ed, _) = crate::commands::find("isearch-forward-regexp")
+            .unwrap()
+            .run(ed, Vec::new());
         let ed = typ(ed, "x[0-9]*");
         assert_eq!(point(&ed), 2);
     }

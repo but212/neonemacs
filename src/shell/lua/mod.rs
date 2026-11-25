@@ -100,11 +100,7 @@ fn editor_ref(cell: &RefCell<Option<Editor>>) -> Ref<'_, Editor> {
 
 /// Applies an infallible transition `f` to the editor inside `cell`.
 fn mutate_editor(cell: &RefCell<Option<Editor>>, f: impl FnOnce(Editor) -> Editor) {
-    let current = cell
-        .borrow_mut()
-        .take()
-        .expect("editor is in the cell (I-21)");
-    *cell.borrow_mut() = Some(f(current));
+    crate::shell::with_editor_cell(cell, |ed| (f(ed), ()));
 }
 
 /// Runs `body` with the API bound to the editor in `cell`.

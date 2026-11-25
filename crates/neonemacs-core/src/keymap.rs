@@ -29,9 +29,6 @@ pub struct Key {
     pub meta: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct KeyError(pub String);
-
 impl Key {
     #[must_use]
     pub const fn plain(code: Code) -> Self {
@@ -104,31 +101,41 @@ pub const fn ctrl_key(c: char) -> Key {
     }
 }
 
+/// Returns the character in `s` when `s` is a single Unicode scalar value.
+#[must_use]
+pub fn parse_single_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
 /// Parses key tokens such as `"C-x C-f"`, `"M-x"`, `"C-SPC"`, or `"left"`.
 ///
 /// # Errors
-/// Returns `KeyError` if any token cannot be recognized as a valid key.
-pub fn parse_keys(s: &str) -> Result<Vec<Key>, KeyError> {
+/// Returns an error message if any token cannot be recognized as a valid key.
+pub fn parse_keys(s: &str) -> Result<Vec<Key>, String> {
     s.split_whitespace().map(parse_key).collect()
 }
 
 /// Parses a binding key sequence. Only single keys or C-x 2-key sequences are valid bindings (I-12).
 ///
 /// # Errors
-/// Returns `KeyError` if `s` is empty, contains unrecognized keys, or is an unsupported sequence.
-pub fn parse_key_seq(s: &str) -> Result<Vec<Key>, KeyError> {
+/// Returns an error message if `s` is empty, contains unrecognized keys, or is an unsupported sequence.
+pub fn parse_key_seq(s: &str) -> Result<Vec<Key>, String> {
     let keys = parse_keys(s)?;
     match keys.as_slice() {
-        [] => Err(KeyError("empty key sequence".to_owned())),
+        [] => Err("empty key sequence".to_owned()),
         [_] => Ok(keys),
         [k1, _] if *k1 == Key::ctrl('x') => Ok(keys),
-        _ => Err(KeyError(format!(
+        _ => Err(format!(
             "unsupported key binding: '{s}' (only single keys or C-x prefix supported)"
-        ))),
+        )),
     }
 }
 
-fn parse_key(tok: &str) -> Result<Key, KeyError> {
+fn parse_key(tok: &str) -> Result<Key, String> {
     let mut rest = tok;
     let mut ctrl = false;
     let mut meta = false;
@@ -155,17 +162,14 @@ fn parse_key(tok: &str) -> Result<Key, KeyError> {
         "down" => Code::Down,
         "home" => Code::Home,
         "end" => Code::End,
-        _ => {
-            let mut chars = rest.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => Code::Char(c),
-                _ => return Err(KeyError(format!("unknown key: {tok}"))),
-            }
-        }
+        _ => match parse_single_char(rest) {
+            Some(c) => Code::Char(c),
+            None => return Err(format!("unknown key: {tok}")),
+        },
     };
     let key = match (code, ctrl) {
         (Code::Char(c), true) => ctrl_key(c),
-        (_, true) => return Err(KeyError(format!("C- cannot apply to: {tok}"))),
+        (_, true) => return Err(format!("C- cannot apply to: {tok}")),
         (_, false) => Key::plain(code),
     };
     Ok(if meta { key.with_meta() } else { key })
@@ -186,9 +190,8 @@ impl AliasTarget {
     /// # Errors
     /// Returns a message unless `s` is exactly one ASCII graphic character.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let mut chars = s.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) if c.is_ascii_graphic() => Ok(Self(c)),
+        match parse_single_char(s) {
+            Some(c) if c.is_ascii_graphic() => Ok(Self(c)),
             _ => Err(format!(
                 "alias target must be one ASCII graphic character: '{s}'"
             )),
@@ -254,8 +257,8 @@ impl Keymap {
     /// Binds `keys` parsed from string notation to command `name`.
     ///
     /// # Errors
-    /// Returns `KeyError` if `keys` notation cannot be parsed or is unsupported.
-    pub fn bind_str(self, keys: &str, name: &str) -> Result<Self, KeyError> {
+    /// Returns an error message if `keys` notation cannot be parsed or is unsupported.
+    pub fn bind_str(self, keys: &str, name: &str) -> Result<Self, String> {
         Ok(self.bind(parse_key_seq(keys)?, name))
     }
 

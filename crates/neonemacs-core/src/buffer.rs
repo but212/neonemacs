@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::eol::Eol;
 use crate::file::{Backing, DiskState};
 use crate::undo::{Edit, RecordedEdit, UndoLog};
-use crate::{Doc, EditorDocExt, Replace};
+use crate::{Doc, Replace, compact_small, goto_line_offset};
 
 /// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
 pub const SCRATCH_NAME: &str = "*scratch*";
@@ -118,7 +118,7 @@ impl WalDeltaLog {
     }
 
     fn push(mut self, mut edit: Replace, doc_len: usize) -> Option<Self> {
-        edit.insert = edit.insert.compact_small();
+        edit.insert = compact_small(edit.insert);
         // The retained allocation charge also bounds the serialized insert length.
         let cost = edit
             .insert
@@ -622,11 +622,7 @@ impl BufferPool {
                     .clear_wal_dirty();
                 buf.wal_deltas = log;
                 if let Some(n) = line {
-                    let line_idx = n.saturating_sub(1).min(buf.text.total_lines() - 1);
-                    let pos = buf
-                        .text
-                        .line_to_offset(line_idx)
-                        .expect("line < total_lines");
+                    let pos = goto_line_offset(&buf.text, n);
                     buf = buf.set_saved_point(pos);
                 }
                 buf

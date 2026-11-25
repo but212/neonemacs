@@ -5,7 +5,7 @@ use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
 use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
-use crate::{Doc, EditorDocExt, Unit};
+use crate::{Doc, Unit, line_to_offset, offset_to_line, total_lines};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -159,12 +159,11 @@ fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
     let width = area.w.max(1);
     let total = text.total_bytes();
     let p = text.floor_boundary(w.point.min(total));
-    let p_line = text.offset_to_line(p).expect("floor_boundary is valid");
-    let top_line = text
-        .offset_to_line(text.floor_boundary(w.top.min(total)))
-        .expect("floor_boundary is valid");
+    let p_line = offset_to_line(text, p).expect("floor_boundary is valid");
+    let top_line =
+        offset_to_line(text, text.floor_boundary(w.top.min(total))).expect("floor_boundary is valid");
     if p < w.top || p_line.saturating_sub(top_line) >= height {
-        w.top = text.line_to_offset(p_line).expect("p_line < total_lines");
+        w.top = line_to_offset(text, p_line).expect("p_line < total_lines");
     }
     let col = column(text, p, m);
     if col < w.left_col {
@@ -270,17 +269,16 @@ fn window_cells(
 ) -> (Vec<Vec<Cell>>, (usize, usize)) {
     let height = area.h.saturating_sub(1);
     let total = text.total_bytes();
-    let total_lines = text.total_lines();
+    let total_lines = total_lines(text);
     let point = window.point.min(total);
     let mut cursor = (0, 0);
     let mut body = Vec::with_capacity(height);
-    let first_line = text
-        .offset_to_line(text.floor_boundary(window.top.min(total)))
+    let first_line = offset_to_line(text, text.floor_boundary(window.top.min(total)))
         .expect("floor_boundary is valid");
-    let mut start = text.line_to_offset(first_line).expect("line exists");
+    let mut start = line_to_offset(text, first_line).expect("line exists");
     for line in (first_line..total_lines).take(height) {
         let next = if line + 1 < total_lines {
-            Some(text.line_to_offset(line + 1).expect("next line exists"))
+            Some(line_to_offset(text, line + 1).expect("next line exists"))
         } else {
             None
         };
@@ -499,7 +497,7 @@ fn status_text_with_col(
         .unwrap_or(100);
     let text = buf.text();
     let p = text.floor_boundary(point.min(text.total_bytes()));
-    let line = text.offset_to_line(p).expect("floor_boundary is valid") + 1;
+    let line = offset_to_line(text, p).expect("floor_boundary is valid") + 1;
     let col = display_col + 1;
     let head = format!("-{mark}-  {}{view}", buf.name());
     let eol = buf.eol().label();
