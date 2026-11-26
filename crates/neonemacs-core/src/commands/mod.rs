@@ -100,6 +100,7 @@ pub const BUILTINS: &[(&str, BuiltinFn)] = &[
         )
     }),
     ("recenter", recenter),
+    ("redo", Editor::redo),
     ("reload-init", |ed, mut fx| {
         fx.push(Effect::ReloadInit);
         (ed, fx)

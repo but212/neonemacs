@@ -183,31 +183,21 @@ impl Editor {
         ed
     }
 
-    /// Emacs-style undo. Consecutive undos walk back through the log; any other
-    /// command starts the next undo from the newest group, which undoes the last undo.
-    #[must_use]
-    pub fn undo(self, fx: Effects) -> (Self, Effects) {
-        let mut ed = self.boundary();
-        let id = ed.window().buffer;
-        let groups = ed.buffer_by_id(id).undo().groups().len();
-        let idx = match ed.prev {
-            LastCommand::Undo { next } => next.checked_sub(1),
-            _ => groups.checked_sub(1),
-        };
-        let Some(idx) = idx else {
-            "No further undo information".clone_into(&mut ed.message);
-            return (ed, fx);
-        };
+    fn apply_undo_group(
+        mut self,
+        id: crate::buffer::BufferId,
+        idx: usize,
+    ) -> (Self, Option<usize>) {
         let (clean_epoch, inverses) = {
-            let group = &ed.buffer_by_id(id).undo().groups()[idx];
+            let group = &self.buffer_by_id(id).undo().groups()[idx];
             let inverses: Vec<_> = group.edits().iter().rev().cloned().collect();
             (group.clean_epoch(), inverses)
         };
         let mut dropped = 0;
         let mut complete = true;
         for inv in inverses {
-            let (next, applied) = ed.apply_recorded(inv);
-            ed = next;
+            let (next, applied) = self.apply_recorded(inv);
+            self = next;
             if let Some(d) = applied {
                 dropped += d;
             } else {
@@ -215,14 +205,80 @@ impl Editor {
                 break;
             }
         }
-        let mut ed = ed.boundary();
+        let mut ed = self.boundary();
         // The group opened on text equal to the saved one, so undoing all of it restores that text (I-41).
         if complete && clean_epoch == Some(ed.buffer_by_id(id).epoch()) {
             ed = ed.with_buffer(id, Buffer::restore_clean);
         }
+        (ed, complete.then_some(dropped))
+    }
+
+    /// Keeps an active undo/redo chain alive when `undo` or `redo` cannot advance.
+    const fn preserve_undo_chain(mut self) -> Self {
+        if matches!(
+            self.prev,
+            LastCommand::Undo { .. } | LastCommand::Redo { .. }
+        ) {
+            self.last = self.prev;
+        }
+        self
+    }
+
+    /// Emacs-style undo. Consecutive undos walk back through the log; any other
+    /// command starts the next undo from the newest group, which undoes the last undo.
+    #[must_use]
+    pub fn undo(self, fx: Effects) -> (Self, Effects) {
+        let mut ed = self.boundary();
+        let id = ed.window().buffer;
+        let groups = ed.buffer_by_id(id).undo().groups().len();
+        let (idx, prev_redo) = match ed.prev {
+            LastCommand::Undo { next, redo_count } => (next.checked_sub(1), redo_count),
+            _ => (groups.checked_sub(1), 0),
+        };
+        let Some(idx) = idx else {
+            "No further undo information".clone_into(&mut ed.message);
+            return (ed.preserve_undo_chain(), fx);
+        };
+        let (ed, dropped) = ed.apply_undo_group(id, idx);
+        let Some(dropped) = dropped else {
+            return (ed.preserve_undo_chain(), fx);
+        };
+        let mut ed = ed;
+        let len = ed.buffer_by_id(id).undo().groups().len();
         ed.last = LastCommand::Undo {
             next: idx.saturating_sub(dropped),
+            redo_count: (prev_redo + 1).min(len),
         };
+        (ed, fx)
+    }
+
+    /// Redoes undone groups from an active undo/redo chain without breaking it.
+    #[must_use]
+    pub fn redo(self, fx: Effects) -> (Self, Effects) {
+        let mut ed = self.boundary();
+        let id = ed.window().buffer;
+        let groups = ed.buffer_by_id(id).undo().groups().len();
+        let target = match ed.prev {
+            LastCommand::Undo { redo_count, .. } if redo_count > 0 => {
+                groups.checked_sub(1).map(|t| (t, redo_count))
+            }
+            LastCommand::Redo { next, remaining } if remaining > 0 => Some((next, remaining)),
+            _ => None,
+        };
+        let Some((target, prev_rem)) = target else {
+            "No further redo information".clone_into(&mut ed.message);
+            return (ed.preserve_undo_chain(), fx);
+        };
+        let (ed, dropped) = ed.apply_undo_group(id, target);
+        let Some(dropped) = dropped else {
+            return (ed.preserve_undo_chain(), fx);
+        };
+        let mut ed = ed;
+        let (next, remaining) = match target.checked_sub(1 + dropped) {
+            Some(next) => (next, (prev_rem - 1).min(next + 1)),
+            None => (0, 0),
+        };
+        ed.last = LastCommand::Redo { next, remaining };
         (ed, fx)
     }
 }
@@ -660,5 +716,135 @@ mod tests {
         assert_eq!(text(&ed), "\t");
         let ed = type_char(soft_tabs(""), 'x');
         assert_eq!(text(&ed), "x");
+    }
+
+    fn redo(ed: Editor) -> Editor {
+        run_command(ed, Editor::redo)
+    }
+
+    #[test]
+    fn redo_restores_consecutive_undos_in_order_and_stops_at_limit() {
+        let ed = editor_with("");
+        let ed = type_char(ed, 'a');
+        let ed = run_command(ed, |e, fx| (e, fx));
+        let ed = type_char(ed, 'b');
+        let ed = run_command(ed, |e, fx| (e, fx));
+        let ed = type_char(ed, 'c');
+
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "ab");
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "a");
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "");
+        // Extra undo at bottom keeps the redo chain alive.
+        let ed = undo(ed);
+        assert_eq!(ed.message(), "No further undo information");
+
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "a");
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "ab");
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "abc");
+
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "abc");
+        assert_eq!(ed.message(), "No further redo information");
+    }
+
+    #[test]
+    fn undo_after_redo_reverses_last_redo_and_broken_chain_rejects_redo() {
+        let ed = editor_with("");
+        let ed = type_char(ed, 'a');
+        let ed = run_command(ed, |e, fx| (e, fx));
+        let ed = type_char(ed, 'b');
+
+        let ed = undo(undo(ed));
+        assert_eq!(text(&ed), "");
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "a");
+
+        // Undo immediately after redo reverses that redo.
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "");
+
+        // An intervening non-undo/redo command breaks the redo chain.
+        let ed = run_command(ed, |e, fx| (e.move_point(0), fx));
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "");
+        assert_eq!(ed.message(), "No further redo information");
+    }
+
+    #[test]
+    fn redo_marks_clean_buffer_modified_and_undo_restores_clean() {
+        let ed = type_char(saved(""), 'a');
+        assert!(ed.buffer().modified());
+
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "");
+        assert!(!ed.buffer().modified());
+
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "a");
+        assert!(ed.buffer().modified());
+
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "");
+        assert!(!ed.buffer().modified());
+    }
+
+    #[test]
+    fn redo_handles_undo_limit_trimming_without_panic() {
+        let ed = Editor::new(Config {
+            undo_limit: 4,
+            ..Config::default()
+        })
+        .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"")));
+        let ed = type_char(ed, 'a');
+        let ed = run_command(ed, |e, fx| (e, fx));
+        let ed = type_char(ed, 'b');
+        let ed = run_command(ed, |e, fx| (e, fx));
+        let ed = type_char(ed, 'c');
+
+        let ed = undo(undo(undo(ed)));
+        let ed = redo(redo(redo(ed)));
+        assert!(!ed.buffer().text().total_bytes().eq(&usize::MAX));
+    }
+
+    #[test]
+    fn undo_and_redo_refuse_view_only_buffer_without_advancing_chain() {
+        let ed = type_char(editor_with(""), 'a');
+        let ed = ed.with_current_buffer(|b| b.set_view_only(true));
+        let ed = undo(ed);
+        assert_eq!(text(&ed), "a");
+        assert_eq!(ed.message(), "Buffer is read-only");
+        assert_eq!(ed.last(), LastCommand::Other);
+
+        let ed = ed.with_current_buffer(|b| b.set_view_only(false));
+        let ed = undo(ed);
+        let prev_last = ed.last();
+        let ed = ed.with_current_buffer(|b| b.set_view_only(true));
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "");
+        assert_eq!(ed.message(), "Buffer is read-only");
+        assert_eq!(ed.last(), prev_last);
+
+        let ed = ed.with_current_buffer(|b| b.set_view_only(false));
+        let ed = redo(ed);
+        assert_eq!(text(&ed), "a");
+    }
+
+    #[test]
+    fn failed_undo_or_redo_does_not_preserve_yank_or_kill_chain() {
+        let ed = editor_with("").set_last(LastCommand::Yank { start: 0, end: 0 });
+        let ed = redo(ed);
+        assert_eq!(ed.message(), "No further redo information");
+        assert_eq!(ed.last(), LastCommand::Other);
+
+        let ed = editor_with("").set_last(LastCommand::Kill);
+        let ed = undo(ed);
+        assert_eq!(ed.message(), "No further undo information");
+        assert_eq!(ed.last(), LastCommand::Other);
     }
 }
