@@ -28,7 +28,7 @@ The system partitions strictly into a pure functional core and an imperative she
   - Scripting: embedded Lua 5.4 runtime and bundled script evaluation (`lua/`).
   - Startup orchestration: command-line flag parsing and initial editor construction (`startup/`).
 - **Effect & Event contracts**:
-  - `Effect`: `StatDisk`, `WriteFile`, `ReadFile`, `RunShell`, `RunLua`, `ReloadInit`.
+  - `Effect`: `StatDisk`, `WriteFile`, `ReadFile`, `RunShell`, `RunLua`, `ReloadInit`, `Suspend`.
   - `Event`: `Key`, `Run`, `Disk`, `Written`, `FileRead`, `ShellDone`, `LuaDone`, `InitLoaded`.
 - **`Editor` internal state** (`crates/neonemacs-core/src/editor/`, private to `editor`, I-32):
   - Document & interaction fields directly on `Editor`: `BufferPool`, `WindowManager`, `KillRing`, `Mode`, `last`/`prev` `LastCommand`, echo-area message buffer, `quit` flag.
@@ -202,7 +202,7 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-12** | Key binding syntax strictly accepts single keys or `C-x` two-key sequences. | Parser boundary (`parse_key_sequence`) |
 | **I-13** | *Retired*: Merged into I-04 and I-06. | - |
 | **I-14** | `neonemacs-core` never imports I/O crates (`crossterm`, `mlua`); usage of `std::fs` and `std::process` is strictly forbidden. | Crate graph (`Cargo.toml`) + text scan (`tests/purity.rs`) |
-| **I-15** | Every `Effect` is answered by at most one `Event` (interactive `RunShell` and `ReloadInit` are handed to `ShellSession`; concurrent `RunShell` rejection yields no event). | Type (`shell::perform`) + Runtime (`handle_interactive`) |
+| **I-15** | Every `Effect` is answered by at most one `Event` (interactive `RunShell`, `ReloadInit`, and `Suspend` are handed to `ShellSession`; concurrent `RunShell` rejection yields no event). | Type (`shell::perform`) + Runtime (`handle_interactive`) |
 | **I-16** | *Retired*: Removed along with persistent undo. | - |
 | **I-17** | *Retired*: Renumbered as I-21. | - |
 | **I-18** | Zero `&mut` references in any `neonemacs-core` function signatures, return types, or struct fields. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
