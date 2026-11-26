@@ -1,9 +1,6 @@
 //! RFC 3629 UTF-8 unit decoding, local boundary queries, and seam-merge logic (D-01).
 
-use alloc::vec::Vec;
-use triomphe::{AllocError, Arc};
-
-use crate::{ByteSlice, CHUNK_CAP, MAX_SLICE_BYTES, Summary, Unit};
+use crate::Unit;
 
 /// Returns `true` if `b` is a UTF-8 continuation byte (`10xxxxxx`).
 pub(crate) const fn is_utf8_cont(b: u8) -> bool {
@@ -15,7 +12,7 @@ pub(crate) const fn is_utf8_cont(b: u8) -> bool {
 /// Only RFC 3629 UTF-8 sequences (no overlongs, no surrogates `U+D800..=U+DFFF`,
 /// `<= U+10FFFF`) are decoded as `Unit::Char`; everything else yields `Unit::Raw`.
 #[must_use]
-pub fn decode_unit_raw(bytes: &[u8], pos: usize) -> Option<(Unit, usize)> {
+pub(crate) fn decode_unit_raw(bytes: &[u8], pos: usize) -> Option<(Unit, usize)> {
     let b0 = *bytes.get(pos)?;
     if b0 < 0x80 {
         return Some((Unit::Char(b0 as char), 1));
@@ -56,7 +53,7 @@ pub(crate) fn is_boundary_in_slice(slice: &[u8], pos: usize) -> bool {
 /// Decodes the `Unit` starting at `pos` within `slice`, returning `None` if `pos`
 /// is out of range or not a valid `Unit` boundary.
 #[must_use]
-pub fn decode_in_slice(slice: &[u8], pos: usize) -> Option<(Unit, usize)> {
+pub(crate) fn decode_in_slice(slice: &[u8], pos: usize) -> Option<(Unit, usize)> {
     if pos >= slice.len() || !is_boundary_in_slice(slice, pos) {
         return None;
     }
@@ -82,7 +79,7 @@ pub(crate) fn ceil_in_slice(slice: &[u8], pos: usize) -> usize {
 }
 
 #[must_use]
-pub fn prev_in_slice(slice: &[u8], pos: usize) -> usize {
+pub(crate) fn prev_in_slice(slice: &[u8], pos: usize) -> usize {
     let p = pos.min(slice.len());
     if p == 0 {
         return 0;
@@ -99,36 +96,66 @@ pub(crate) fn next_in_slice(slice: &[u8], pos: usize) -> usize {
     ceil_in_slice(slice, p + 1)
 }
 
-pub(crate) fn try_append_slices<S: Summary>(
-    mut slices: Vec<ByteSlice<S>>,
-    bytes: &[u8],
-) -> Result<Vec<ByteSlice<S>>, AllocError> {
-    let mut start = 0;
-    while start < bytes.len() {
-        let max_end = (start + MAX_SLICE_BYTES).min(bytes.len());
-        let end = if max_end == bytes.len() {
-            max_end
-        } else {
-            let local_end = floor_in_slice(&bytes[start..], max_end - start);
-            // A single Unit is at most 4 bytes and MAX_SLICE_BYTES >= 4, so local_end > 0.
-            start + local_end.max(1)
-        };
-        let chunk = &bytes[start..end];
-        slices.try_reserve(1).map_err(|_| AllocError)?;
-        let mut v = Vec::new();
-        let cap = if chunk.len() < CHUNK_CAP {
-            (chunk.len() + 128).min(MAX_SLICE_BYTES)
-        } else {
-            chunk.len()
-        };
-        v.try_reserve_exact(cap).map_err(|_| AllocError)?;
-        v.extend_from_slice(chunk);
-        let buf = Arc::try_new(v)?;
-        let summary = S::from_slice(chunk);
-        slices.push(ByteSlice::new(buf, 0..chunk.len(), summary));
-        start = end;
+/// Returns the length (`0..=3`) of an incomplete UTF-8 sequence at the end of `bytes`.
+#[must_use]
+pub(crate) fn trailing_utf8_prefix_len(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    let mut cont = 0usize;
+    while cont < 3 && cont < len && is_utf8_cont(bytes[len - 1 - cont]) {
+        cont += 1;
     }
-    Ok(slices)
+    if cont == len || cont == 3 {
+        return 0;
+    }
+    let expected = match bytes[len - 1 - cont] {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return 0,
+    };
+    let prefix_len = cont + 1;
+    if prefix_len < expected { prefix_len } else { 0 }
+}
+
+/// Extracts up to 3 trailing `Unit::Raw` bytes at the end of `win` in forward order.
+#[must_use]
+pub(crate) fn extract_trailing_raw3(win: &[u8]) -> ([u8; 3], usize) {
+    let mut rev = [0u8; 3];
+    let mut len = 0usize;
+    let mut cur = win.len();
+    while len < 3 && cur > 0 {
+        let prev = prev_in_slice(win, cur);
+        if cur - prev != 1 {
+            break;
+        }
+        match decode_unit_raw(win, prev) {
+            Some((Unit::Raw(b), 1)) => {
+                rev[len] = b;
+                len += 1;
+                cur = prev;
+            }
+            _ => break,
+        }
+    }
+    rev[..len].reverse();
+    (rev, len)
+}
+
+/// Extracts up to 3 leading `Unit::Raw` bytes at the start of `win`.
+#[must_use]
+pub(crate) fn extract_leading_raw3(win: &[u8]) -> ([u8; 3], usize) {
+    let mut bytes = [0u8; 3];
+    let mut len = 0usize;
+    while len < 3 && len < win.len() {
+        match decode_unit_raw(win, len) {
+            Some((Unit::Raw(b), 1)) => {
+                bytes[len] = b;
+                len += 1;
+            }
+            _ => break,
+        }
+    }
+    (bytes, len)
 }
 
 /// Result of pre-mutation UTF-8 seam analysis around an edit site (D-01).

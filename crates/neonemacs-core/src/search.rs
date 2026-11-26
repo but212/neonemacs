@@ -8,7 +8,6 @@ use alloc::vec::Vec;
 use core::ops::{ControlFlow, Range};
 
 use crate::{CHUNK_CAP, Doc, unit_char};
-use weave_tree::utf8::{decode_in_slice, decode_unit_raw, prev_in_slice};
 
 // Edited documents can have slices as small as a byte. Bound the overlap copied at
 // each seam by the edit chunk size, not by the maximum size of a loaded slice.
@@ -196,15 +195,11 @@ fn run(nodes: &[Node], text: &Doc, pos: usize, fold: bool) -> Option<usize> {
             // Scan once, then walk unit boundaries back only as far as needed.
             let mut end = pos;
             let _ = text
-                .try_for_each_slice(pos..text.total_bytes(), |chunk| {
-                    let mut i = 0;
-                    while let Some((unit, n)) = decode_in_slice(chunk, i) {
-                        if !class.matches(unit_char(unit), fold) {
-                            return ControlFlow::Break(());
-                        }
-                        i += n;
-                        end += n;
+                .try_for_each_unit(pos..text.total_bytes(), |_, unit, n| {
+                    if !class.matches(unit_char(unit), fold) {
+                        return ControlFlow::Break(());
                     }
+                    end += n;
                     ControlFlow::Continue(())
                 })
                 .expect("regex starts at a unit boundary");
@@ -517,38 +512,30 @@ fn find_by_unit(
     fold: bool,
     reverse: bool,
 ) -> Option<(usize, usize)> {
-    let mut cursor = if reverse { range.end } else { range.start };
-    let scan = |chunk: &[u8]| {
-        let base = if reverse {
-            cursor - chunk.len()
-        } else {
-            cursor
+    let step = |pos, unit, len| {
+        let end = match pat.nodes.split_first() {
+            Some((Node::Atom { class, star: false }, rest)) => class
+                .matches(unit_char(unit), fold)
+                .then(|| run(rest, text, pos + len, fold))
+                .flatten(),
+            _ => run(&pat.nodes, text, pos, fold),
         };
-        cursor = if reverse { base } else { base + chunk.len() };
-        let mut i = if reverse { chunk.len() } else { 0 };
-        while if reverse { i > 0 } else { i < chunk.len() } {
-            if reverse {
-                i = prev_in_slice(chunk, i);
-            }
-            let (unit, len) = decode_unit_raw(chunk, i).expect("candidate is within slice");
-            let pos = base + i;
-            let end = match pat.nodes.split_first() {
-                Some((Node::Atom { class, star: false }, rest)) => class
-                    .matches(unit_char(unit), fold)
-                    .then(|| run(rest, text, pos + len, fold))
-                    .flatten(),
-                _ => run(&pat.nodes, text, pos, fold),
-            };
-            if let Some(end) = end {
-                return ControlFlow::Break((pos, end));
-            }
-            if !reverse {
-                i += len;
-            }
+        if let Some(end) = end {
+            ControlFlow::Break((pos, end))
+        } else {
+            ControlFlow::Continue(())
         }
-        ControlFlow::Continue(())
     };
-    scan_doc(text, range, reverse, scan).expect("search range is aligned")
+    let flow = if reverse {
+        text.try_for_each_unit_rev(range, step)
+    } else {
+        text.try_for_each_unit(range, step)
+    }
+    .expect("search range is aligned");
+    match flow {
+        ControlFlow::Break(hit) => Some(hit),
+        ControlFlow::Continue(()) => None,
+    }
 }
 
 /// Replacement text for a regex match: `&` is the matched text, `\&` is a literal `&`.
