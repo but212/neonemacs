@@ -54,6 +54,7 @@ fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
     let keywords = parse_string_list(spec, "keywords")?;
     let types = parse_string_list(spec, "types")?;
     let case_insensitive: bool = spec.get("case_insensitive").unwrap_or(false);
+    let single_quote_char_only: bool = spec.get("single_quote_char_only").unwrap_or(false);
     let heading_prefix: Option<String> = spec
         .get("heading")
         .map_err(|_| mlua::Error::RuntimeError("heading must be a string".to_string()))?;
@@ -72,7 +73,8 @@ fn parse_syntax_def(name: String, spec: &Table) -> mlua::Result<SyntaxDef> {
         types,
         case_insensitive,
     )
-    .with_heading_prefix(heading_prefix))
+    .with_heading_prefix(heading_prefix)
+    .with_single_quote_char_only(single_quote_char_only))
 }
 
 #[cfg(test)]
@@ -195,5 +197,13 @@ mod tests {
         assert!(keyword_in(reg, "query.sql", "SELECT"));
         assert!(type_in(reg, "query.sql", "VARCHAR"));
         assert!(keyword_in(reg, "build.sh", "if"));
+        assert!(
+            reg.find_by_filename("main.rs")
+                .is_some_and(|d| d.single_quote_char_only)
+        );
+        assert!(
+            reg.find_by_filename("script.py")
+                .is_some_and(|d| !d.single_quote_char_only)
+        );
     }
 }

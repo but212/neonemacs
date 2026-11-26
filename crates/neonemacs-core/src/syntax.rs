@@ -28,6 +28,9 @@ pub struct SyntaxDef {
     /// A line starting with this prefix is a heading, drawn whole as a keyword. A definition with
     /// a heading prefix does no other highlighting (I-49).
     pub heading_prefix: Option<String>,
+    /// When true, `'` only highlights single-character literals (`'a'`, `'\n'`) as strings so
+    /// lifetimes and labels (`'a`, `'static`) are not tokenized as strings.
+    pub single_quote_char_only: bool,
 }
 
 impl SyntaxDef {
@@ -73,12 +76,19 @@ impl SyntaxDef {
             types,
             case_insensitive,
             heading_prefix: None,
+            single_quote_char_only: false,
         }
     }
 
     #[must_use]
     pub fn with_heading_prefix(mut self, prefix: Option<String>) -> Self {
         self.heading_prefix = prefix;
+        self
+    }
+
+    #[must_use]
+    pub fn with_single_quote_char_only(mut self, enabled: bool) -> Self {
+        self.single_quote_char_only = enabled;
         self
     }
 
@@ -291,6 +301,9 @@ impl<'a> LineLexer<'a> {
         if b != b'"' && b != b'\'' && b != b'`' {
             return (self, false);
         }
+        if b == b'\'' && self.syntax.single_quote_char_only {
+            return self.consume_single_quote_char_or_lifetime();
+        }
         let quote = b;
         let mut j = self.pos + 1;
         let n = self.bytes.len();
@@ -310,6 +323,57 @@ impl<'a> LineLexer<'a> {
         self.out[self.pos..j].fill(TokenKind::String);
         self.pos = j;
         (self, true)
+    }
+
+    fn consume_single_quote_char_or_lifetime(mut self) -> (Self, bool) {
+        if let Some(end) = self.char_literal_end() {
+            self.out[self.pos..end].fill(TokenKind::String);
+            self.pos = end;
+            return (self, true);
+        }
+        // Not a char literal: consume `'` and any attached lifetime/label identifier as Normal
+        // so `'static` is not highlighted as a keyword.
+        self.pos += 1;
+        let n = self.bytes.len();
+        while self.pos < n && is_ident_byte(self.bytes[self.pos]) {
+            self.pos += 1;
+        }
+        (self, true)
+    }
+
+    fn char_literal_end(&self) -> Option<usize> {
+        let rest = &self.bytes[self.pos + 1..];
+        let &first = rest.first()?;
+        if first == b'\\' {
+            let &esc = rest.get(1)?;
+            return match esc {
+                b'x' => {
+                    let hex_ok =
+                        rest.get(2)?.is_ascii_hexdigit() && rest.get(3)?.is_ascii_hexdigit();
+                    (hex_ok && rest.get(4) == Some(&b'\'')).then_some(self.pos + 6)
+                }
+                b'u' if rest.get(2) == Some(&b'{') => {
+                    let mut k = 3;
+                    while k < rest.len() && (rest[k].is_ascii_hexdigit() || rest[k] == b'_') {
+                        k += 1;
+                    }
+                    (rest.get(k) == Some(&b'}') && rest.get(k + 1) == Some(&b'\''))
+                        .then_some(self.pos + 1 + k + 2)
+                }
+                _ => (rest.get(2) == Some(&b'\'')).then_some(self.pos + 4),
+            };
+        }
+        if first == b'\'' {
+            return None;
+        }
+        let prefix = &rest[..rest.len().min(4)];
+        let valid = match core::str::from_utf8(prefix) {
+            Ok(s) => s,
+            Err(e) => core::str::from_utf8(&prefix[..e.valid_up_to()]).ok()?,
+        };
+        let ch = valid.chars().next()?;
+        let ch_len = ch.len_utf8();
+        (rest.get(ch_len) == Some(&b'\'')).then_some(self.pos + 1 + ch_len + 1)
     }
 
     fn consume_number(mut self) -> (Self, bool) {
@@ -662,6 +726,64 @@ mod tests {
             Vec::new(),
             Vec::new(),
             false,
+        );
+    }
+
+    #[test]
+    fn single_quote_char_only_preserves_lifetimes_and_char_literals() {
+        let def = SyntaxDef::new(
+            "rust",
+            vec!["rs".to_string()],
+            Vec::new(),
+            Some("//".to_string()),
+            vec!["fn".to_string(), "static".to_string(), "loop".to_string()],
+            vec!["Vec".to_string()],
+            false,
+        )
+        .with_single_quote_char_only(true);
+
+        let line = "fn f<'a, 'static>(x: &'a Vec<u8>, c: char) { 'outer: loop {} }";
+        let tokens = highlight_line(Some(&def), &Doc::from_bytes(line.as_bytes()), 0..line.len());
+
+        let vec_pos = line.find("Vec").unwrap();
+        assert_eq!(&tokens[vec_pos..vec_pos + 3], &[TokenKind::Type; 3]);
+
+        let static_pos = line.find("'static").unwrap();
+        assert_eq!(&tokens[static_pos..static_pos + 7], &[TokenKind::Normal; 7]);
+
+        let loop_pos = line.find("loop").unwrap();
+        assert_eq!(&tokens[loop_pos..loop_pos + 4], &[TokenKind::Keyword; 4]);
+
+        let chars = "'a' '가' '\\n' '\\'' '\\x7f' '\\u{10FFFF}'";
+        let char_tokens = highlight_line(
+            Some(&def),
+            &Doc::from_bytes(chars.as_bytes()),
+            0..chars.len(),
+        );
+        for (i, &b) in chars.as_bytes().iter().enumerate() {
+            let expected = if b == b' ' {
+                TokenKind::Normal
+            } else {
+                TokenKind::String
+            };
+            assert_eq!(char_tokens[i], expected, "mismatch at byte {i} ({b:?})");
+        }
+
+        let with_invalid_tail = b"'a' \xff";
+        let invalid_tail_tokens = highlight_line(
+            Some(&def),
+            &Doc::from_bytes(with_invalid_tail),
+            0..with_invalid_tail.len(),
+        );
+        assert_eq!(
+            invalid_tail_tokens,
+            [
+                TokenKind::String,
+                TokenKind::String,
+                TokenKind::String,
+                TokenKind::Normal,
+                TokenKind::Normal,
+            ]
         );
     }
 }

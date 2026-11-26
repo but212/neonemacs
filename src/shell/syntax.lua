@@ -3,6 +3,7 @@
 syntax.register("rust", {
     extensions = { "rs" },
     line_comment = "//",
+    single_quote_char_only = true,
     keywords = {
         "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
         "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
