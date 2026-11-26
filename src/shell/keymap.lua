@@ -14,6 +14,8 @@ bind("C-x C-q", "view-mode")
 bind("C-x h", "mark-whole-buffer")
 
 -- Editing & Killing
+bind("C-SPC", "set-mark-command")
+bind("C-@", "set-mark-command")
 bind("C-k", "kill-line")
 bind("C-x u", "undo")
 bind("C-M-_", "redo")
