@@ -42,7 +42,8 @@ impl TerminalGuard {
     #[cfg(unix)]
     pub fn suspend(&mut self) -> io::Result<()> {
         restore_terminal();
-        let res = nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from);
+        let res =
+            nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from);
         enter_terminal()?;
         res
     }

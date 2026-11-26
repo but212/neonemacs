@@ -341,29 +341,41 @@ mod tests {
 
         let lua = new_state().unwrap();
         let ed = bootstrap(Editor::new(Config::default()), &lua);
-        let ed = ed
-            .with_current_buffer(|b| b.with_text(Doc::from_bytes("  café BAR baz".as_bytes())));
+        let ed =
+            ed.with_current_buffer(|b| b.with_text(Doc::from_bytes("  café BAR baz".as_bytes())));
         let ed = ed.with_window(|w| crate::core::Window { point: 0, ..w });
 
         // M-u: skips leading spaces, upcases "café" -> "CAFÉ", moves point to end of word
         let ed = handle(ed, Some(&lua), Event::Run("upcase-word".to_owned()));
-        assert_eq!(*ed.buffer().text(), Doc::from_bytes("  CAFÉ BAR baz".as_bytes()));
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  CAFÉ BAR baz".as_bytes())
+        );
         assert_eq!(ed.window().point, 7);
 
         // Single undo restores the entire word in one step
         let (ed, _) = ed.undo(Vec::new());
-        assert_eq!(*ed.buffer().text(), Doc::from_bytes("  café BAR baz".as_bytes()));
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  café BAR baz".as_bytes())
+        );
 
         // M-l on "BAR"
         let ed = ed.with_window(|w| crate::core::Window { point: 8, ..w });
         let ed = handle(ed, Some(&lua), Event::Run("downcase-word".to_owned()));
-        assert_eq!(*ed.buffer().text(), Doc::from_bytes("  café bar baz".as_bytes()));
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  café bar baz".as_bytes())
+        );
         assert_eq!(ed.window().point, 11);
 
         // M-c from middle of "baz" (at 'a')
         let ed = ed.with_window(|w| crate::core::Window { point: 13, ..w });
         let ed = handle(ed, Some(&lua), Event::Run("capitalize-word".to_owned()));
-        assert_eq!(*ed.buffer().text(), Doc::from_bytes("  café bar bAz".as_bytes()));
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  café bar bAz".as_bytes())
+        );
         assert_eq!(ed.window().point, 15);
     }
 

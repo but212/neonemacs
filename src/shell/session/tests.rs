@@ -501,7 +501,10 @@ fn suspend_key_and_full_redraw_behavior() {
     session.prev_rows.clear();
     out.clear();
     session.render_sized(&mut out, 20, 4).unwrap();
-    assert!(!out.is_empty(), "clearing prev_rows must trigger a full redraw");
+    assert!(
+        !out.is_empty(),
+        "clearing prev_rows must trigger a full redraw"
+    );
 
     session.handle_event(&press(KeyCode::Char('z'), KeyModifiers::CONTROL));
     #[cfg(unix)]
