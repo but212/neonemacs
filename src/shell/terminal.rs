@@ -8,6 +8,13 @@ use crossterm::{cursor, execute};
 use std::io;
 use std::sync::Once;
 
+/// Enters raw mode and the alternate screen.
+fn enter_terminal() -> io::Result<()> {
+    terminal::enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    Ok(())
+}
+
 /// Puts the terminal back as it was. Safe to call more than once.
 fn restore_terminal() {
     let _ = execute!(io::stdout(), cursor::Show, LeaveAlternateScreen);
@@ -24,23 +31,19 @@ impl TerminalGuard {
     /// Returns `io::Error` if enabling raw mode or entering alternate screen fails.
     pub fn enter() -> io::Result<Self> {
         Self::install_panic_hook();
-        terminal::enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        enter_terminal()?;
         Ok(Self)
     }
 
-    /// Temporarily leaves raw mode and the alternate screen to run `f`, then re-enters.
+    /// Temporarily leaves raw mode and the alternate screen to suspend (`SIGTSTP`), then re-enters.
     ///
     /// # Errors
-    /// Returns `io::Error` if `f` or re-entering raw mode / the alternate screen fails.
-    pub fn suspend_with<F>(&mut self, f: F) -> io::Result<()>
-    where
-        F: FnOnce() -> io::Result<()>,
-    {
+    /// Returns `io::Error` if raising `SIGTSTP` or re-entering raw mode / the alternate screen fails.
+    #[cfg(unix)]
+    pub fn suspend(&mut self) -> io::Result<()> {
         restore_terminal();
-        let res = f();
-        terminal::enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        let res = nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from);
+        enter_terminal()?;
         res
     }
 

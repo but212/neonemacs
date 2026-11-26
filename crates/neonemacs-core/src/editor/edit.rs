@@ -77,14 +77,7 @@ impl Editor {
     /// Deletes `start..end` without returning a copy of the removed bytes.
     #[must_use]
     pub fn delete_only(self, start: usize, end: usize) -> Self {
-        let text = self.buffer().text();
-        let start = text.floor_boundary(start);
-        let end = text.ceil_boundary(end);
-        if start >= end {
-            return self;
-        }
-        let (ed, _) = self.apply(Edit::delete(start, end - start));
-        ed
+        self.replace_range(start, end, b"").0
     }
 
     /// Deletes `start..end` and pushes the removed `Doc` slice to the kill ring.

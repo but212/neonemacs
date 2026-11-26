@@ -8,12 +8,6 @@ use crossterm::{cursor, queue, terminal};
 use std::io::{self, Write};
 
 impl ShellSession {
-    /// Forces the next render to redraw every row.
-    #[cfg_attr(not(any(unix, test)), allow(dead_code))]
-    pub(super) fn invalidate_all(&mut self) {
-        self.prev_rows.clear();
-    }
-
     /// Draws changed rows to the terminal.
     ///
     /// # Errors

@@ -6,42 +6,54 @@ use mlua::{Lua, Scope, Table};
 use neonemacs_core::{line_end, line_start};
 use std::cell::RefCell;
 
-fn push_chars(out: &mut Vec<u8>, chars: impl Iterator<Item = char>) {
-    let mut buf = [0u8; 4];
-    for ch in chars {
-        out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+#[derive(Clone, Copy)]
+enum CaseMode {
+    Up,
+    Down,
+    Cap,
+}
+
+impl CaseMode {
+    fn parse(mode: &str) -> mlua::Result<Self> {
+        match mode {
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            "cap" => Ok(Self::Cap),
+            _ => Err(mlua::Error::RuntimeError(format!(
+                "invalid case mode: {mode}"
+            ))),
+        }
     }
 }
 
-/// Converts valid UTF-8 chunks according to `mode` (`"up"`, `"down"`, `"cap"`), preserving raw non-UTF-8 bytes.
-fn convert_utf8_case(mode: &str, bytes: &[u8]) -> mlua::Result<Vec<u8>> {
-    if !matches!(mode, "up" | "down" | "cap") {
-        return Err(mlua::Error::RuntimeError(format!(
-            "invalid case mode: {mode}"
-        )));
-    }
+/// Converts valid UTF-8 chunks according to `mode`, preserving raw non-UTF-8 bytes.
+fn convert_utf8_case(mode: CaseMode, bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut first_char = true;
+    let mut buf = [0u8; 4];
     for chunk in bytes.utf8_chunks() {
         let valid = chunk.valid();
         match mode {
-            "up" => out.extend_from_slice(valid.to_uppercase().as_bytes()),
-            "down" => out.extend_from_slice(valid.to_lowercase().as_bytes()),
-            "cap" => {
+            CaseMode::Up => out.extend_from_slice(valid.to_uppercase().as_bytes()),
+            CaseMode::Down => out.extend_from_slice(valid.to_lowercase().as_bytes()),
+            CaseMode::Cap => {
                 for ch in valid.chars() {
                     if first_char {
                         first_char = false;
-                        push_chars(&mut out, ch.to_uppercase());
+                        for u in ch.to_uppercase() {
+                            out.extend_from_slice(u.encode_utf8(&mut buf).as_bytes());
+                        }
                     } else {
-                        push_chars(&mut out, ch.to_lowercase());
+                        for l in ch.to_lowercase() {
+                            out.extend_from_slice(l.encode_utf8(&mut buf).as_bytes());
+                        }
                     }
                 }
             }
-            _ => unreachable!(),
         }
         out.extend_from_slice(chunk.invalid());
     }
-    Ok(out)
+    out
 }
 
 #[allow(clippy::too_many_lines)]
@@ -133,8 +145,9 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
     buffer_table.set(
         "case_convert",
         scope.create_function(|lua, (mode, text): (String, mlua::LuaString)| {
+            let mode = CaseMode::parse(&mode)?;
             let bytes = text.as_bytes();
-            let out = convert_utf8_case(&mode, &bytes)?;
+            let out = convert_utf8_case(mode, &bytes);
             lua.create_string(&out)
         })?,
     )?;

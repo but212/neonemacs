@@ -85,6 +85,7 @@ pub struct ShellSession {
     active_shell: Option<ActiveShell>,
     prev_rows: Vec<Vec<Cell>>,
     screen_size: (usize, usize),
+    #[cfg(unix)]
     pending_suspend: bool,
 }
 
@@ -103,6 +104,7 @@ impl ShellSession {
             active_shell: None,
             prev_rows: Vec::new(),
             screen_size: (0, 0),
+            #[cfg(unix)]
             pending_suspend: false,
         }
     }
@@ -198,15 +200,8 @@ impl ShellSession {
 
     #[cfg(unix)]
     fn suspend(&mut self, guard: &mut TerminalGuard) -> io::Result<()> {
-        guard.suspend_with(|| {
-            nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from)
-        })?;
-        self.invalidate_all();
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn suspend(&mut self, _guard: &mut TerminalGuard) -> io::Result<()> {
+        guard.suspend()?;
+        self.prev_rows.clear();
         Ok(())
     }
 
@@ -214,8 +209,13 @@ impl ShellSession {
     ///
     /// # Errors
     /// Returns `io::Error` if terminal rendering, event polling, or reading fails.
-    pub fn run(mut self, out: &mut impl Write, guard: &mut TerminalGuard) -> io::Result<()> {
+    pub fn run(
+        mut self,
+        out: &mut impl Write,
+        #[cfg_attr(not(unix), allow(unused_variables))] guard: &mut TerminalGuard,
+    ) -> io::Result<()> {
         loop {
+            #[cfg(unix)]
             if self.pending_suspend {
                 self.pending_suspend = false;
                 self.suspend(guard)?;

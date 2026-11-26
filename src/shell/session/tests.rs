@@ -492,24 +492,20 @@ fn reload_init_from_lua_is_refused() {
 }
 
 #[test]
-fn suspend_key_and_invalidate_all_behavior() {
+fn suspend_key_and_full_redraw_behavior() {
     let mut session = make_session();
     let mut out = Vec::new();
     session.render_sized(&mut out, 20, 4).unwrap();
     assert!(!session.prev_rows.is_empty());
 
-    session.invalidate_all();
-    assert!(session.prev_rows.is_empty());
-
+    session.prev_rows.clear();
     out.clear();
     session.render_sized(&mut out, 20, 4).unwrap();
-    assert!(!out.is_empty(), "invalidate_all must trigger a full redraw");
+    assert!(!out.is_empty(), "clearing prev_rows must trigger a full redraw");
 
     session.handle_event(&press(KeyCode::Char('z'), KeyModifiers::CONTROL));
-    if cfg!(unix) {
-        assert!(session.pending_suspend);
-    } else {
-        assert!(!session.pending_suspend);
-        assert_eq!(session.ed.message(), "Suspend is only supported on Unix");
-    }
+    #[cfg(unix)]
+    assert!(session.pending_suspend);
+    #[cfg(not(unix))]
+    assert_eq!(session.ed.message(), "Suspend is only supported on Unix");
 }
