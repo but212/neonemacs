@@ -31,13 +31,24 @@ pub(crate) fn persist_with(
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "target directory is missing"))?
         .to_string_lossy();
     let pid = std::process::id();
-    let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = parent.join(format!(".{name}.{pid}_{seq}.tmp"));
-
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp_path)?;
+    let (tmp_path, file) = {
+        let mut attempts = 0usize;
+        loop {
+            let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(".{name}.{pid}_{seq}.tmp"));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(f) => break (candidate, f),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempts < 64 => {
+                    attempts += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    };
     let mut w = BufWriter::with_capacity(64 * 1024, file);
 
     let result = (|| -> io::Result<()> {
@@ -140,5 +151,23 @@ mod tests {
             .collect();
         assert!(leftover_tmps.is_empty());
         assert!(target_dir.is_dir());
+    }
+
+    #[test]
+    fn skips_stale_tmp_file_on_seq_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.txt");
+        let pid = std::process::id();
+        let base_seq = ATOMIC_WRITE_SEQ.load(Ordering::Relaxed);
+        for seq in base_seq..base_seq + 8 {
+            let stale_tmp = dir.path().join(format!(".note.txt.{pid}_{seq}.tmp"));
+            fs::write(&stale_tmp, b"stale orphan bytes").unwrap();
+        }
+
+        let doc = Doc::from_bytes(b"fresh content\n");
+        persist_with(&path, &doc, Eol::Lf, None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"fresh content\n");
+        let first_stale = dir.path().join(format!(".note.txt.{pid}_{base_seq}.tmp"));
+        assert_eq!(fs::read(&first_stale).unwrap(), b"stale orphan bytes");
     }
 }
