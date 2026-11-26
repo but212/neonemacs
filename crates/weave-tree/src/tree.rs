@@ -1,12 +1,113 @@
-//! Structural B-Tree operations (`from_slices`, `split_at`, `join`) preserving D-02 and D-03.
+//! Structural B-Tree operations and encapsulated node storage preserving D-02 and D-03.
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::ops::{ControlFlow, Range};
 use triomphe::{AllocError, Arc};
 
-use crate::{
-    ByteSlice, CHUNK_CAP, ChildEntry, MAX_FANOUT, MAX_SLICE_BYTES, MIN_FANOUT, SliceNode, Summary,
-};
+use crate::utf8::floor_in_slice;
+use crate::{CHUNK_CAP, MAX_SLICE_BYTES, Summary};
+
+/// B-Tree node fanout bounds.
+const MAX_FANOUT: usize = 32;
+const MIN_FANOUT: usize = MAX_FANOUT / 2;
+
+#[derive(Clone, Debug)]
+pub(crate) struct ByteSlice<S: Summary> {
+    buf: Arc<Vec<u8>>,
+    summary: S,
+    start: u16,
+    end: u16,
+}
+
+const _: () = assert!(core::mem::size_of::<ByteSlice<crate::LineBreaks>>() <= 24);
+
+impl<S: Summary> ByteSlice<S> {
+    fn new(buf: Arc<Vec<u8>>, range: Range<usize>, summary: S) -> Self {
+        Self {
+            buf,
+            summary,
+            start: u16::try_from(range.start).expect("slice start fits in u16"),
+            end: u16::try_from(range.end).expect("slice end fits in u16"),
+        }
+    }
+
+    fn range(&self) -> Range<usize> {
+        usize::from(self.start)..usize::from(self.end)
+    }
+
+    fn len(&self) -> usize {
+        usize::from(self.end - self.start)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.buf[self.range()]
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChildEntry<S: Summary> {
+    node: Arc<SliceNode<S>>,
+    bytes: usize,
+    backing_bytes: usize,
+    summary: S,
+}
+
+impl<S: Summary> ChildEntry<S> {
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub(crate) fn backing_bytes(&self) -> usize {
+        self.backing_bytes
+    }
+
+    pub(crate) fn summary_measure(&self) -> usize {
+        self.summary.measure()
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.node, &other.node)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum SliceNode<S: Summary> {
+    Internal { children: Vec<ChildEntry<S>> },
+    Leaf { slices: Vec<ByteSlice<S>> },
+}
+
+pub(crate) fn try_append_slices<S: Summary>(
+    mut slices: Vec<ByteSlice<S>>,
+    bytes: &[u8],
+) -> Result<Vec<ByteSlice<S>>, AllocError> {
+    let mut start = 0;
+    while start < bytes.len() {
+        let max_end = (start + MAX_SLICE_BYTES).min(bytes.len());
+        let end = if max_end == bytes.len() {
+            max_end
+        } else {
+            let local_end = floor_in_slice(&bytes[start..], max_end - start);
+            // A single Unit is at most 4 bytes and MAX_SLICE_BYTES >= 4, so local_end > 0.
+            start + local_end.max(1)
+        };
+        let chunk = &bytes[start..end];
+        slices.try_reserve(1).map_err(|_| AllocError)?;
+        let mut v = Vec::new();
+        let cap = if chunk.len() < CHUNK_CAP {
+            (chunk.len() + 128).min(MAX_SLICE_BYTES)
+        } else {
+            chunk.len()
+        };
+        v.try_reserve_exact(cap).map_err(|_| AllocError)?;
+        v.extend_from_slice(chunk);
+        let buf = Arc::try_new(v)?;
+        let summary = S::from_slice(chunk);
+        slices.push(ByteSlice::new(buf, 0..chunk.len(), summary));
+        start = end;
+    }
+    Ok(slices)
+}
 
 fn try_summarize_node<T, S: Summary>(
     items: Vec<T>,
@@ -658,4 +759,409 @@ pub(crate) fn try_delete_in_place<S: Summary>(
         acc += len;
     }
     Err(entry)
+}
+
+fn descend_to_byte<S: Summary>(
+    root: &ChildEntry<S>,
+    offset: usize,
+) -> (&ByteSlice<S>, usize, usize) {
+    let mut cur = root;
+    let mut rem = offset;
+    let mut base = 0usize;
+    let mut metric_acc = 0usize;
+    loop {
+        match cur.node.as_ref() {
+            SliceNode::Internal { children } => {
+                for child in children {
+                    if rem < child.bytes {
+                        cur = child;
+                        break;
+                    }
+                    rem -= child.bytes;
+                    base += child.bytes;
+                    metric_acc += child.summary.measure();
+                }
+            }
+            SliceNode::Leaf { slices } => {
+                for slice in slices {
+                    let len = slice.len();
+                    if rem < len {
+                        return (slice, base, metric_acc);
+                    }
+                    rem -= len;
+                    base += len;
+                    metric_acc += slice.summary.measure();
+                }
+                unreachable!("offset < total_bytes");
+            }
+        }
+    }
+}
+
+pub(crate) fn locate_slice_bytes<S: Summary>(
+    root: &ChildEntry<S>,
+    offset: usize,
+) -> (&[u8], usize) {
+    let (slice, base, _) = descend_to_byte(root, offset);
+    (slice.bytes(), base)
+}
+
+pub(crate) fn metric_to_byte<S: Summary>(root: &ChildEntry<S>, pos: usize) -> usize {
+    let mut cur = root;
+    let mut rem = pos;
+    let mut byte_acc = 0usize;
+    loop {
+        match cur.node.as_ref() {
+            SliceNode::Internal { children } => {
+                for child in children {
+                    let cm = child.summary.measure();
+                    if rem <= cm {
+                        cur = child;
+                        break;
+                    }
+                    rem -= cm;
+                    byte_acc += child.bytes;
+                }
+            }
+            SliceNode::Leaf { slices } => {
+                for slice in slices {
+                    let sm = slice.summary.measure();
+                    if rem <= sm {
+                        return byte_acc + S::to_byte_offset(slice.bytes(), rem);
+                    }
+                    rem -= sm;
+                    byte_acc += slice.len();
+                }
+                unreachable!("Summary invariant guarantees match");
+            }
+        }
+    }
+}
+
+pub(crate) fn byte_to_metric<S: Summary>(root: &ChildEntry<S>, offset: usize) -> usize {
+    let (slice, slice_start, metric_acc) = descend_to_byte(root, offset);
+    metric_acc + S::from_byte_offset(slice.bytes(), offset - slice_start)
+}
+
+pub(crate) fn visit_slices<const REV: bool, B, S: Summary, F: FnMut(&[u8]) -> ControlFlow<B>>(
+    entry: &ChildEntry<S>,
+    base: usize,
+    range: &Range<usize>,
+    mut f: F,
+) -> (ControlFlow<B>, F) {
+    match entry.node.as_ref() {
+        SliceNode::Internal { children } => {
+            if REV {
+                let mut cur_end = base + entry.bytes;
+                for child in children.iter().rev() {
+                    let child_start = cur_end - child.bytes;
+                    if cur_end > range.start && child_start < range.end {
+                        let (flow, next_f) =
+                            visit_slices::<true, B, S, F>(child, child_start, range, f);
+                        f = next_f;
+                        if let ControlFlow::Break(b) = flow {
+                            return (ControlFlow::Break(b), f);
+                        }
+                    }
+                    cur_end = child_start;
+                    if cur_end <= range.start {
+                        break;
+                    }
+                }
+            } else {
+                let mut cur_base = base;
+                for child in children {
+                    let child_end = cur_base + child.bytes;
+                    if child_end > range.start && cur_base < range.end {
+                        let (flow, next_f) =
+                            visit_slices::<false, B, S, F>(child, cur_base, range, f);
+                        f = next_f;
+                        if let ControlFlow::Break(b) = flow {
+                            return (ControlFlow::Break(b), f);
+                        }
+                    }
+                    cur_base = child_end;
+                    if cur_base >= range.end {
+                        break;
+                    }
+                }
+            }
+            (ControlFlow::Continue(()), f)
+        }
+        SliceNode::Leaf { slices } => {
+            if REV {
+                let mut cur_end = base + entry.bytes;
+                for slice in slices.iter().rev() {
+                    let len = slice.len();
+                    let slice_start = cur_end - len;
+                    if cur_end > range.start && slice_start < range.end {
+                        let lo = range.start.saturating_sub(slice_start);
+                        let hi = (range.end - slice_start).min(len);
+                        let sub = &slice.bytes()[lo..hi];
+                        if let ControlFlow::Break(b) = f(sub) {
+                            return (ControlFlow::Break(b), f);
+                        }
+                    }
+                    cur_end = slice_start;
+                    if cur_end <= range.start {
+                        break;
+                    }
+                }
+            } else {
+                let mut cur_base = base;
+                for slice in slices {
+                    let len = slice.len();
+                    let slice_end = cur_base + len;
+                    if slice_end > range.start && cur_base < range.end {
+                        let lo = range.start.saturating_sub(cur_base);
+                        let hi = (range.end - cur_base).min(len);
+                        let sub = &slice.bytes()[lo..hi];
+                        if let ControlFlow::Break(b) = f(sub) {
+                            return (ControlFlow::Break(b), f);
+                        }
+                    }
+                    cur_base = slice_end;
+                    if cur_base >= range.end {
+                        break;
+                    }
+                }
+            }
+            (ControlFlow::Continue(()), f)
+        }
+    }
+}
+
+fn assert_entry_totals<S: Summary>(
+    entry: &ChildEntry<S>,
+    bytes: usize,
+    backing: usize,
+    summary: S,
+) {
+    assert_eq!(entry.bytes, bytes);
+    assert_eq!(entry.backing_bytes, backing);
+    assert!(entry.summary == summary);
+}
+
+pub(crate) fn check_entry<S: Summary>(entry: &ChildEntry<S>, is_root: bool) -> usize {
+    let min_fanout = if is_root { 1 } else { MIN_FANOUT };
+    match entry.node.as_ref() {
+        SliceNode::Leaf { slices } => {
+            assert!((min_fanout..=MAX_FANOUT).contains(&slices.len()));
+            let mut sum_bytes = 0usize;
+            let mut sum_backing = 0usize;
+            let mut sum_summary = S::default();
+            for slice in slices {
+                let len = slice.len();
+                assert!(len > 0);
+                assert!(len <= MAX_SLICE_BYTES);
+                let raw = slice.bytes();
+                assert!(slice.summary == S::from_slice(raw));
+                sum_bytes += len;
+                sum_backing = sum_backing.saturating_add(slice.buf.len());
+                sum_summary = sum_summary.combine(&slice.summary);
+            }
+            assert_entry_totals(entry, sum_bytes, sum_backing, sum_summary);
+            1
+        }
+        SliceNode::Internal { children } => {
+            let min_internal = if is_root { 2 } else { MIN_FANOUT };
+            assert!((min_internal..=MAX_FANOUT).contains(&children.len()));
+            let mut expected_depth = None;
+            let mut sum_bytes = 0usize;
+            let mut sum_backing = 0usize;
+            let mut sum_summary = S::default();
+            for child in children {
+                let d = check_entry(child, false);
+                match expected_depth {
+                    None => expected_depth = Some(d),
+                    Some(ed) => assert_eq!(d, ed, "D-02 uniform leaf depth violated"),
+                }
+                sum_bytes += child.bytes;
+                sum_backing = sum_backing.saturating_add(child.backing_bytes);
+                sum_summary = sum_summary.combine(&child.summary);
+            }
+            assert_entry_totals(entry, sum_bytes, sum_backing, sum_summary);
+            expected_depth.expect("non-empty internal") + 1
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum CursorFrame<'a, S: Summary> {
+    Internal {
+        children: &'a [ChildEntry<S>],
+        idx: usize,
+        base: usize,
+    },
+    Leaf {
+        slices: &'a [ByteSlice<S>],
+        idx: usize,
+        in_slice: usize,
+    },
+}
+
+fn push_leftmost<'a, S: Summary>(
+    mut stack: Vec<CursorFrame<'a, S>>,
+    entry: &'a ChildEntry<S>,
+    base: usize,
+) -> Vec<CursorFrame<'a, S>> {
+    let mut cur = entry;
+    loop {
+        match cur.node.as_ref() {
+            SliceNode::Internal { children } => {
+                stack.push(CursorFrame::Internal {
+                    children,
+                    idx: 0,
+                    base,
+                });
+                cur = &children[0];
+            }
+            SliceNode::Leaf { slices } => {
+                stack.push(CursorFrame::Leaf {
+                    slices,
+                    idx: 0,
+                    in_slice: 0,
+                });
+                return stack;
+            }
+        }
+    }
+}
+
+fn advance_internal_past<S: Summary>(
+    mut stack: Vec<CursorFrame<'_, S>>,
+) -> Vec<CursorFrame<'_, S>> {
+    while let Some(CursorFrame::Internal {
+        children,
+        idx,
+        base,
+    }) = stack.last_mut()
+    {
+        let b = children[*idx].bytes;
+        *idx += 1;
+        *base += b;
+        if *idx < children.len() {
+            let next = &children[*idx];
+            let nb = *base;
+            return push_leftmost(stack, next, nb);
+        }
+        stack.pop();
+    }
+    stack
+}
+
+fn advance_eq_cursor<S: Summary>(
+    mut stack: Vec<CursorFrame<'_, S>>,
+    bytes_consumed: usize,
+) -> Vec<CursorFrame<'_, S>> {
+    let Some(CursorFrame::Leaf {
+        slices,
+        idx,
+        in_slice,
+        ..
+    }) = stack.last_mut()
+    else {
+        return stack;
+    };
+    *in_slice += bytes_consumed;
+    if *in_slice < slices[*idx].len() {
+        return stack;
+    }
+    *idx += 1;
+    *in_slice = 0;
+    if *idx < slices.len() {
+        return stack;
+    }
+    stack.pop();
+    advance_internal_past(stack)
+}
+
+fn can_skip_shared_subtree<S: Summary>(
+    sa: &[CursorFrame<'_, S>],
+    sb: &[CursorFrame<'_, S>],
+) -> bool {
+    let (Some(top_a), Some(top_b)) = (sa.len().checked_sub(2), sb.len().checked_sub(2)) else {
+        return false;
+    };
+    let (
+        CursorFrame::Internal {
+            children: ca,
+            idx: ia,
+            base: ba,
+        },
+        CursorFrame::Internal {
+            children: cb,
+            idx: ib,
+            base: bb,
+        },
+        CursorFrame::Leaf {
+            idx: la_idx,
+            in_slice: la_off,
+            ..
+        },
+        CursorFrame::Leaf {
+            idx: lb_idx,
+            in_slice: lb_off,
+            ..
+        },
+    ) = (&sa[top_a], &sb[top_b], &sa[top_a + 1], &sb[top_b + 1])
+    else {
+        return false;
+    };
+    *ba == *bb
+        && *la_idx == 0
+        && *la_off == 0
+        && *lb_idx == 0
+        && *lb_off == 0
+        && Arc::ptr_eq(&ca[*ia].node, &cb[*ib].node)
+}
+
+pub(crate) fn entries_eq<S: Summary>(a: &ChildEntry<S>, b: &ChildEntry<S>) -> bool {
+    let mut sa = push_leftmost(Vec::new(), a, 0);
+    let mut sb = push_leftmost(Vec::new(), b, 0);
+
+    loop {
+        if sa.is_empty() && sb.is_empty() {
+            return true;
+        }
+        if sa.is_empty() || sb.is_empty() {
+            return false;
+        }
+        if can_skip_shared_subtree(&sa, &sb) {
+            sa.pop();
+            sb.pop();
+            sa = advance_internal_past(sa);
+            sb = advance_internal_past(sb);
+            continue;
+        }
+        let (
+            Some(CursorFrame::Leaf {
+                slices: la,
+                idx: ia,
+                in_slice: oa,
+                ..
+            }),
+            Some(CursorFrame::Leaf {
+                slices: lb,
+                idx: ib,
+                in_slice: ob,
+                ..
+            }),
+        ) = (sa.last(), sb.last())
+        else {
+            return false;
+        };
+        let sa_slice = &la[*ia];
+        let sb_slice = &lb[*ib];
+        let rem_a = sa_slice.len() - *oa;
+        let rem_b = sb_slice.len() - *ob;
+        let take = rem_a.min(rem_b);
+        let bytes_a = &sa_slice.bytes()[*oa..*oa + take];
+        let bytes_b = &sb_slice.bytes()[*ob..*ob + take];
+        if bytes_a != bytes_b {
+            return false;
+        }
+        sa = advance_eq_cursor(sa, take);
+        sb = advance_eq_cursor(sb, take);
+    }
 }

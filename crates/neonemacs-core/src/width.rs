@@ -5,7 +5,6 @@ use core::ops::ControlFlow;
 
 use crate::{Doc, Unit, line_end, line_start};
 use unicode_width::UnicodeWidthChar;
-use weave_tree::utf8::decode_in_slice;
 
 /// How wide the terminal draws things: the tab stop distance and whether East Asian ambiguous
 /// characters take two columns.
@@ -65,7 +64,7 @@ fn advance_width(bytes: &[u8], mut col: usize, m: Metrics) -> usize {
             i += run;
             continue;
         }
-        let Some((unit, n)) = decode_in_slice(bytes, i) else {
+        let Some((unit, n)) = Unit::decode_prefix(&bytes[i..]) else {
             break;
         };
         col += unit_width(unit, col, m);
@@ -106,7 +105,7 @@ pub(crate) fn pos_and_column(text: &Doc, line: usize, col: usize, tab: Metrics) 
                     continue;
                 }
             }
-            let Some((unit, n)) = decode_in_slice(chunk, i) else {
+            let Some((unit, n)) = Unit::decode_prefix(&chunk[i..]) else {
                 return ControlFlow::Break(());
             };
             let w = unit_width(unit, c, tab);
@@ -137,7 +136,12 @@ pub fn unit_width(unit: Unit, col: usize, m: Metrics) -> usize {
 /// Display columns occupied by string `s`, starting at column 0.
 #[must_use]
 pub fn str_width(s: &str, m: Metrics) -> usize {
-    advance_width(s.as_bytes(), 0, m)
+    let ascii = ascii_printable_run(s.as_bytes());
+    let mut col = ascii;
+    for ch in s[ascii..].chars() {
+        col += unit_width(Unit::Char(ch), col, m);
+    }
+    col
 }
 
 #[cfg(test)]
