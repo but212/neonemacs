@@ -2,11 +2,8 @@
 //! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15), except that an interactive session answers
 //! `RunShell` and `ReloadInit` itself: a `RunShell` refused while another runs gets no `Event`.
 
-use crate::Doc;
 use crate::buffer::BufferId;
-pub use crate::buffer::RecoveredDelta;
 use crate::config::ShellSpec;
-use crate::eol::Eol;
 use crate::file::{DiskState, RawFile};
 use crate::keymap::Key;
 use alloc::string::String;
@@ -32,22 +29,6 @@ pub enum Effect {
         path: String,
         max_size: u64,
     },
-    /// Removes a WAL. A missing one is not an error.
-    RemoveWal {
-        target: WalTarget,
-    },
-    /// Writes the unsaved text of every entry to its WAL, in order. Answered by one `WalFlushed`
-    /// with one result per entry. Never empty.
-    FlushWal {
-        entries: Vec<WalEntry>,
-    },
-    /// Looks for the WAL of the file at `path` just opened with `disk` (I-44, I-45). An unusable
-    /// WAL is moved aside, never overwritten. `line` is the `+n` of a start-up file.
-    ProbeWal {
-        path: String,
-        disk: DiskState,
-        line: Option<usize>,
-    },
     RunShell {
         command: String,
         shell: ShellSpec,
@@ -57,42 +38,6 @@ pub enum Effect {
     },
     /// Reads `init.lua` again and replaces the settings and the Lua state with the result (I-58).
     ReloadInit,
-}
-
-/// Where a WAL lives.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WalTarget {
-    /// The WAL beside the file at this path (`.<name>.wal`).
-    Sibling(String),
-    /// This path is the WAL itself: the scratch slot (I-43).
-    Slot(String),
-}
-
-impl WalTarget {
-    /// The file path or the slot path: what a message names.
-    #[must_use]
-    pub fn path(&self) -> &str {
-        match self {
-            Self::Sibling(path) | Self::Slot(path) => path,
-        }
-    }
-}
-
-/// Metadata for the unsaved text of buffer `id` recorded in its WAL header.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WalEntry {
-    pub id: BufferId,
-    pub target: WalTarget,
-    pub disk: DiskState,
-    pub eol: Eol,
-}
-
-/// The outcome of one `WalEntry`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WalWrite {
-    pub id: BufferId,
-    pub target: WalTarget,
-    pub result: Result<(), String>,
 }
 
 /// Why a disk state was read (I-04).
@@ -120,23 +65,6 @@ pub enum ReadTarget {
     Open { line: Option<usize>, show: bool },
     /// Reload the buffer `id` from its file.
     Revert(BufferId),
-}
-
-/// Unsaved document and its line-ending mode, recovered from a matching WAL.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Recovered {
-    pub eol: Eol,
-    pub doc: Doc,
-}
-
-/// What the shell found when it looked for a WAL (I-44).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WalProbe {
-    Absent,
-    Valid(Recovered),
-    ValidDelta(RecoveredDelta),
-    /// The WAL does not match the file. It was moved to the given path, or the error says why not.
-    Stale(Result<String, String>),
 }
 
 /// How `init.lua` was applied. The settings never hold part of it (I-54).
@@ -171,14 +99,6 @@ pub enum Event {
         target: ReadTarget,
         path: String,
         result: Result<Option<RawFile>, String>,
-    },
-    /// The shell saw no input for one second after an edit (I-23).
-    Idle,
-    WalFlushed(Vec<WalWrite>),
-    WalProbed {
-        path: String,
-        line: Option<usize>,
-        probe: WalProbe,
     },
     /// Raw stdout and stderr of a shell command, or the reason it did not start.
     ShellDone(Result<String, String>),

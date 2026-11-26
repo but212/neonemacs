@@ -21,8 +21,6 @@ neobit! {
         const ECHO_PREFIX = 1 << 4;
         /// East Asian ambiguous characters take 2 columns (Lua `ambiguous-width` 2) instead of 1.
         const CJK_AMBIGUOUS = 1 << 5;
-        /// Permit delta WAL writes where a replayable baseline is available.
-        const WAL_DELTAS = 1 << 6;
     }
 }
 
@@ -119,7 +117,6 @@ pub enum Setting {
     ShellFileName,
     ShellCommandSwitch,
     AmbiguousWidth,
-    WalDeltas,
 }
 
 impl Setting {
@@ -131,7 +128,6 @@ impl Setting {
             Self::SyntaxHighlight => Some(Toggles::SYNTAX_HIGHLIGHT),
             Self::IsearchWrap => Some(Toggles::ISEARCH_WRAP),
             Self::EchoPrefix => Some(Toggles::ECHO_PREFIX),
-            Self::WalDeltas => Some(Toggles::WAL_DELTAS),
             _ => None,
         }
     }
@@ -152,7 +148,6 @@ impl Setting {
         Self::ShellFileName,
         Self::ShellCommandSwitch,
         Self::AmbiguousWidth,
-        Self::WalDeltas,
     ];
 
     /// Parses a setting name coming from Lua.
@@ -185,7 +180,6 @@ impl Setting {
             Self::ShellFileName => "shell-file-name",
             Self::ShellCommandSwitch => "shell-command-switch",
             Self::AmbiguousWidth => "ambiguous-width",
-            Self::WalDeltas => "wal-deltas",
         }
     }
 }
@@ -422,10 +416,9 @@ mod tests {
                 Setting::ShellFileName => 12,
                 Setting::ShellCommandSwitch => 13,
                 Setting::AmbiguousWidth => 14,
-                Setting::WalDeltas => 15,
             }
         }
         let indexes: Vec<usize> = Setting::ALL.iter().map(|&s| index(s)).collect();
-        assert_eq!(indexes, (0..16).collect::<Vec<_>>());
+        assert_eq!(indexes, (0..15).collect::<Vec<_>>());
     }
 }

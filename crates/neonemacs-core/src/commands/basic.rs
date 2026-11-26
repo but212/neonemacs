@@ -238,8 +238,7 @@ pub fn switch_to(ed: Editor, id: BufferId) -> Editor {
     })
 }
 
-pub(crate) fn kill_buffer_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, Effects) {
-    fx.extend(ed.remove_wal_effect(id));
+pub(crate) fn kill_buffer_now(ed: Editor, id: BufferId, fx: Effects) -> (Editor, Effects) {
     (ed.kill_buffer_id(id), fx)
 }
 
@@ -425,11 +424,9 @@ mod tests {
             let ed = run_command(ed, yank);
             assert_eq!(text(&ed), "é");
             let yank_point = point(&ed);
-            let seq = ed.edit_seq();
             let ed = run_command(ed, yank_pop);
             assert_eq!(text(&ed), "é");
             assert_eq!(point(&ed), yank_point);
-            assert_eq!(ed.edit_seq(), seq);
             assert_eq!(ed.kill_ring().entries(), &entries);
             assert_eq!(ed.message(), "Yank merged with neighboring UTF-8 bytes");
         }

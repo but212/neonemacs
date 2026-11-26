@@ -8,7 +8,7 @@ This document establishes the conceptual architecture, domain models, boundary c
 
 ## 1. Architecture Boundaries & Core Identity
 
-`neonemacs` is a lightweight terminal text editor with Emacs key feel, functional purity, zero input latency, exact Unicode/CJK width handling, and WAL-based crash recovery. Emacs conventions are adopted strictly for key bindings and command names without emulating Elisp, macros, or internal buffer architectures.
+`neonemacs` is a lightweight terminal text editor with Emacs key feel, functional purity, zero input latency, exact Unicode/CJK width handling, and single-pass atomic file persistence. Emacs conventions are adopted strictly for key bindings and command names without emulating Elisp, macros, or internal buffer architectures.
 
 ### 1.1 Functional Core / Imperative Shell
 
@@ -23,16 +23,15 @@ The system partitions strictly into a pure functional core and an imperative she
 - **Shell (`src/shell`)**:
   - Owns `Editor` within `RefCell<Option<Editor>>` and extracts it during `step` (I-21).
   - Terminal I/O: raw mode, alternate screen buffer, differential ANSI rendering (`session/screen.rs`).
-  - Storage I/O: atomic temp-file saves, lexical path resolution, external modification detection (`file.rs`).
-  - WAL persistence: asynchronous debounced idle flushes and crash recovery probe (`wal.rs`).
+  - Storage I/O: single-pass atomic temp-file saves (`registore.rs`), lexical path resolution, external modification detection (`file.rs`).
   - Process execution: background worker threads for non-blocking shell commands (`process.rs`).
   - Scripting: embedded Lua 5.4 runtime and bundled script evaluation (`lua/`).
   - Startup orchestration: command-line flag parsing and initial editor construction (`startup/`).
 - **Effect & Event contracts**:
-  - `Effect`: `StatDisk`, `WriteFile`, `ReadFile`, `RemoveWal`, `FlushWal`, `ProbeWal`, `RunShell`, `RunLua`, `ReloadInit`.
-  - `Event`: `Key`, `Run`, `Disk`, `Written`, `FileRead`, `Idle`, `WalFlushed`, `WalProbed`, `ShellDone`, `LuaDone`, `InitLoaded`.
+  - `Effect`: `StatDisk`, `WriteFile`, `ReadFile`, `RunShell`, `RunLua`, `ReloadInit`.
+  - `Event`: `Key`, `Run`, `Disk`, `Written`, `FileRead`, `ShellDone`, `LuaDone`, `InitLoaded`.
 - **`Editor` internal state** (`crates/neonemacs-core/src/editor/`, private to `editor`, I-32):
-  - Document & interaction fields directly on `Editor`: `BufferPool`, `WindowManager`, `KillRing`, `edit_seq`, `scratch_slot`, `Mode`, `last`/`prev` `LastCommand`, echo-area message buffer, `quit` flag.
+  - Document & interaction fields directly on `Editor`: `BufferPool`, `WindowManager`, `KillRing`, `Mode`, `last`/`prev` `LastCommand`, echo-area message buffer, `quit` flag.
   - `Settings`: `Config`, `Keymap`, `KeyAliases`, `SyntaxRegistry`, `commands` (`BTreeSet<String>`), `cwd`.
 
 ### 1.2 Platform & Runtime Environment
@@ -53,7 +52,7 @@ The system partitions strictly into a pure functional core and an imperative she
   - `Mark`: Optional anchor byte offset. Active mark forms the active region; inactive mark is preserved for position swapping (I-47).
   - `Eol`: Buffer line termination convention (`Lf` or `Crlf`).
   - `UndoLog`: Transactional edit history stack bounded by `Config.undo_limit`.
-  - `Backing`: Storage binding: `None` (ephemeral), `Scratch { wal_dirty }` (persisted to state directory, I-42), or `File { path, disk, wal_dirty }` (bound to absolute canonical path).
+  - `Backing`: Storage binding: `None` (ephemeral), `Scratch` (`*scratch*`, I-42), or `File { path, disk }` (bound to absolute canonical path).
   - `modified`: Unpersisted modifications against disk baseline (I-03).
   - `view_only`: Read-only flag rejecting edits, `toggle-eol`, and `query-replace` (I-06).
   - `epoch`: Generation counter incremented on baseline changes (`record_saved`, `replace_from_disk`, `mark_clean`, `with_text`).
@@ -63,13 +62,13 @@ The system partitions strictly into a pure functional core and an imperative she
   - Closing any visited buffer retargets viewing windows to a surviving buffer (I-08).
   - Multiple windows can observe the same buffer with independent view cursors (`point`) and scroll tops (`top`).
 - **`Unit::Raw`**: Non-UTF-8 (overlong, surrogate, or incomplete) byte preserved byte-exact across open, edit, and save cycles (`D-01`).
-- **`DiskState`**: File metadata checkpoint: `Known { mtime: Duration, size: u64 }` (Unix epoch elapsed duration recorded on read/write) or `Unknown` (unopened file, scratch slot).
+- **`DiskState`**: File metadata checkpoint: `Known { mtime: Duration, size: u64 }` (Unix epoch elapsed duration recorded on read/write) or `Unknown` (unopened file, `*scratch*`).
 - **`FilePath`**: UTF-8 absolute, lexically folded path constructed exclusively through `FilePath::resolve(cwd, input)`. Normalizes `/` and `\` separators while preserving drive/UNC prefixes, drops `.`, folds `..`, rejects symlink traversal. Non-UTF-8 paths are rejected at the shell boundary. Strictly one buffer per path (I-37).
 - **`StatTarget`**: Purpose of disk inspection: `Save(id)` (conflict check before write) or `SaveAs(id)` (overwrite check on existing target).
 - **`ReadTarget`**: Purpose of file load: `Open { line, show }` (new buffer creation) or `Revert(id)` (reloading existing buffer).
 - **Oversized file rejection**: Boundary error when file size exceeds `max-file-size`; `loaded_from` returns `Err(String)` and aborts buffer creation without partial reads (I-04).
 - **`Confirm`**: Modal yes/no confirmation prompt: `SaveExternal`, `OverwriteFile`, `QuitUnsaved`, `KillModified`, `RevertModified`.
-- **`Eol`**: Line termination convention (`Lf` `\n` or `Crlf` `\r\n`), determined by majority vote upon reading. Normalized in memory to `\n` (isolated `\r` preserved); CRLF restored upon writing. `toggle-eol` records undoable `Edit::SetEol`, marks buffer modified, and sets `wal_dirty`.
+- **`Eol`**: Line termination convention (`Lf` `\n` or `Crlf` `\r\n`), determined by majority vote upon reading. Normalized in memory to `\n` (isolated `\r` preserved); CRLF restored upon writing. `toggle-eol` records undoable `Edit::SetEol` and marks the buffer modified.
 
 ### 2.2 Edit History and Anchors
 
@@ -78,24 +77,16 @@ The system partitions strictly into a pure functional core and an imperative she
 - **`UndoLog` & `Group`**:
   - In-memory Emacs-style undo (`C-/`, `C-_`) recording inverse edit transactions (`Doc::apply` returns `(next_doc, inverse_replace)` directly with CoW structural sharing); no redo tree.
   - Consecutive `self-insert` insertions amalgamate into a single group up to `amalgamating-undo-limit` (default 20 characters). Non-insert commands immediately seal the group.
-  - Clean state restoration (I-41): undo groups opened while clean record save epoch. Undoing the full group restores clean status (`modified = false`) and removes WAL iff epoch matches.
-  - Whole-buffer replacements (`Buffer::with_text`: revert, WAL restore, shell output) wipe undo history to prevent stale offset replay (I-34).
+  - Clean state restoration (I-41): undo groups opened while clean record save epoch. Undoing the full group restores clean status (`modified = false`) iff epoch matches.
+  - Whole-buffer replacements (`Buffer::with_text`: revert, shell output) wipe undo history to prevent stale offset replay (I-34).
   - `Config.undo_limit` governs the undo byte budget (I-35). Undo compacts inverse inserts of at most `CHUNK_CAP` (4 KiB) when they would retain more than `CHUNK_CAP` backing bytes. Each text edit then charges the greater of its logical edit size and the full backing byte lengths retained by its inverse slices, conservatively counting shared allocations more than once. Closed groups exceeding a positive limit are evicted immediately on boundary.
 - **`KillRing`**: Ring buffer of CoW `Doc` slices (`Vec<Doc>`) capped at `kill-ring-max` entries (default 120) per `push` (I-26). `kill_range` and `kill_ring_save` extract slices in $O(\log^2 P)$ worst-case time via `Doc::slice`, consecutive kills (`kill-line`, `kill-word`, `C-w`) merge via `Doc::apply` (I-09), and `yank` / `yank-pop` insert `Doc` directly without UTF-8 re-parsing. `yank-pop` cycles entries strictly immediately after `LastCommand::Yank` (I-38). If the yank joined neighboring bytes into a UTF-8 unit, `yank-pop` leaves the text and ring unchanged.
 
-### 2.3 Persistence and Crash Recovery (WAL)
+### 2.3 Zero-Overhead Atomic Persistence (Registore)
 
-- **Write-Ahead Log (WAL)**: Sibling file `.<name>.wal` holding unsaved edits, flushed after 1.0s user idle delay. Both `Effect::FlushWal` and `Effect::WriteFile` stream `Doc::try_for_each_slice` directly from the shell (`file::save_doc`, `wal::write_wal_deltas`, `wal::write_wal_doc`, `wal::write_scratch_doc`) without whole-buffer heap copies.
-- **`wal_dirty`**: Set on edit, cleared on flush. Managed only for `Backing::File` and `Backing::Scratch`; unbacked buffers never trigger disk writes.
-- **WAL wire formats (`NEONWAL2` & `NEONWALD`)**:
-  - Shared 30-byte header: 8-byte magic (`NEONWAL2` or `NEONWALD`), EOL mode byte (`0` LF, `1` CRLF), `DiskState` tag (`0` `Unknown`, `1` `Known`), modification timestamp (`mtime`), and target file size.
-  - **`NEONWAL2` (full snapshot)**: Default write format, readable by older builds. After validating the header, recovery streams the payload verbatim into a `Doc`, without another pass of EOL normalization or an intermediate whole-payload buffer. Snapshots remain the fallback for `*scratch*`, unknown or non-replayable baselines, and over-budget delta logs.
-  - **`NEONWALD` (delta log)**: Tracking and writes require `set("wal-deltas", true)` in Lua; recovery accepts both formats regardless of this setting. Disabling tracking drops in-memory logs. Enabling it starts tracking only on the next open, save, or revert that establishes a replayable baseline. The shared header is followed by a 32-byte SHA-256 fingerprint of the normalized disk baseline and a 4-byte little-endian record count. Exactly that many `Replace` records (`offset`, `delete_len`, `insert_len`, insert bytes) must follow, then a 32-byte SHA-256 checksum of all preceding WAL bytes. No other trailing bytes are allowed. Zero records can carry an EOL-only change. The wire limits are 4,096 records and 4 MiB of record bytes. In memory, the editor charges each record header plus the insert's retained backing bytes, compacting small slices as in undo. Small documents may fall back to snapshots sooner.
-  - **Rollback after opting in**: Recover and save drafts with a delta-aware build before downgrading. If an older build has already renamed a delta WAL to `.stale`, close the old editor and move it back to the active WAL path without overwriting another draft. Reopen with a delta-aware build and the unchanged base file.
-  - Legacy headers (`NEONWAL1`), `NEONWALD` without a valid checksum or verifiable known disk baseline, and malformed or unapplicable logs are treated as stale.
-- **Stale WAL (`.stale`)**: WAL with a checksum mismatch, invalid header or EOL, mismatched disk metadata or baseline fingerprint, or failing delta replay against the loaded disk `Doc` is renamed to `.<name>.wal.stale` (overwriting existing `.stale`) and never deleted automatically (I-44).
-- **Scratch slot**: Persistent state slot at `$XDG_STATE_HOME/neonemacs/scratch.wal` (fallback `~/.local/state/neonemacs/scratch.wal`) for `*scratch*` (I-42, I-43). Cleared on clean undo, buffer kill, or confirmed quit.
-- **Unified recovery path (I-45)**: Buffer creation via file reading (`Effect::ReadFile { Open }`) is the sole path triggering `Effect::ProbeWal`. Valid `NEONWAL2` snapshots (`WalProbe::Valid`) restore atomically via `Editor::restore_buffer_content`, and `NEONWALD` delta logs are validated and replayed once against the loaded baseline. `WalProbe::ValidDelta` carries the resulting `Doc` and original records; `Editor::restore_buffer_deltas` installs the `Doc` and retains the records only when tracking is enabled and they fit the budget. Both paths restore the saved EOL mode and snap view anchors.
+- **Single-Pass Atomic Rename Swap (`src/shell/registore.rs`)**: Replaces WAL and recovery replay with `registore::persist_with`. Writes stream `Doc::try_for_each_slice` directly to a PID- and sequence-isolated sibling `.filename.<pid>_<seq>.tmp` file (`OpenOptions::create_new(true)`) without intermediate heap copies or double-writes (`WAF = 1.0`), call `file.sync_data()` (`fdatasync`), atomically replace the target via `fs::rename`, and best-effort `sync_all()` the parent directory.
+- **Explicit Save Only**: Persistence occurs strictly on explicit `Effect::WriteFile` (`C-x C-s`, `write-file`), delegated from `file::save_doc` (which preserves symlink canonicalization, permissions, and `Eol::Crlf` encoding). `*scratch*` is ephemeral in memory.
+- **Zero-Code Recovery**: Reading loads the canonical target file directly; failed writes clean up their isolated `.tmp` file while preserving the original target.
 
 ### 2.4 Keys, Input, and Modal Interaction
 
@@ -115,7 +106,7 @@ The system partitions strictly into a pure functional core and an imperative she
 ### 2.6 Configuration, Lua Runtime, and CLI
 
 - **Closed Configuration Model (`Setting`, I-52)**: Settings operate on a closed domain enum rather than arbitrary key-value tables. `Config::get` is total over all variants, and `Config::set` parses incoming values into strongly-typed domain primitives (`Eol`, `Metrics`, bounded numeric ranges) at ingress (I-11), making invalid editor configurations unrepresentable.
-- **Panic Room Safeguards (I-53)**: Safety invariants that remain permanently active and cannot be muted, disabled, or unmapped by configuration settings, Lua extensions, or key rebinding (terminal raw mode restoration, WAL persistence and recovery, external modification validation, modal confirmations, and `C-g`/`Esc` cancellation).
+- **Panic Room Safeguards (I-53)**: Safety invariants that remain permanently active and cannot be muted, disabled, or unmapped by configuration settings, Lua extensions, or key rebinding (terminal raw mode restoration, external modification validation, modal confirmations, and `C-g`/`Esc` cancellation).
 - **Lua Extensibility & Sandbox Boundary (I-57)**: Lua 5.4 provides a lightweight, embedded scripting environment operating under strict least-privilege sandboxing. Standard libraries providing filesystem or process access (`io`, `os`, `package`, dynamic loading) are eliminated. Extensions interact with the editor solely via safe exposed APIs: pure buffer inspection and character-snapped mutation, declarative syntax registration, key binding manipulation, and command execution.
 - **Transactional Configuration Lifecycle (I-54, I-58)**: Configuration evaluation follows a double-buffered candidate evaluation pattern. The script runs against an isolated candidate editor; successful execution atomically swaps settings and the Lua state while preserving active buffers, windows, and edit histories, whereas errors discard the candidate state and log full diagnostics to `*init-log*`.
 - **Deterministic CLI Invocation Model (I-39)**: Command-line arguments follow a single-pass classification separating immediate headless queries (version and usage help) from interactive editor bootstrapping and target file parsing.
@@ -128,35 +119,27 @@ The system partitions strictly into a pure functional core and an imperative she
 
 - **Optimistic Concurrency & Validation**: The persistence lifecycle implements an optimistic concurrency protocol. Core emits disk inspection effects (`StatDisk`) to verify baseline filesystem timestamps and sizes against `DiskState` recorded at read/write time.
 - **Conflict Resolution**: External modification detection routes to modal confirmation (`Confirm::SaveExternal`, I-04); destination conflicts in target-switching writes enforce uniqueness (I-37) or prompt overwrite confirmation (`Confirm::OverwriteFile`).
-- **Atomic Staging & Commit**: Approved writes execute via atomic filesystem semantics (PID-isolated temporary file creation, full sync, and atomic rename).
-- **Metadata Reconciliation**: Successful disk writes update recorded metadata (`DiskState::Known`, I-05), advance save epoch, and emit sibling WAL deletion (`Effect::RemoveWal`, I-25, I-36). Write failures preserve dirty buffer state and protective WAL files.
+- **Atomic Staging & Commit**: Approved writes execute via atomic filesystem semantics (PID- and sequence-isolated temporary file creation, `sync_data`, and atomic rename).
+- **Metadata Reconciliation**: Successful disk writes update recorded metadata (`DiskState::Known`, I-05) and advance save epoch (I-36). Write failures preserve dirty buffer state.
 
-### 3.2 Ingress, Buffer Creation, and Crash Recovery
+### 3.2 Ingress and Buffer Creation
 
 - **Lexical Ingress**: Path resolution normalizes input lexically (`FilePath::resolve`, I-37), focusing existing buffers if the canonical path is already open.
 - **Boundary Validation**: File size boundaries enforce upfront rejection (I-04) when exceeding configured thresholds, preventing partial allocations or truncated writebacks.
-- **Recovery Ingress (I-45)**: Successful file reads construct the pure `Buffer`, normalize line endings, and issue an atomic WAL discovery effect (`Effect::ProbeWal`).
-- **State Reconciliation**: WAL discovery resolves valid recovery logs into restored unpersisted text with snapped view anchors and reset undo history (I-34), while corrupted or mismatched logs are safely quarantined as `.stale` without data destruction (I-44).
-- **Buffer Reversion**: Reverting a buffer atomically discards unpersisted modifications and synchronizes state with disk baseline, resetting undo history and removing sibling WALs.
+- **Buffer Reversion**: Reverting a buffer atomically discards unpersisted modifications and synchronizes state with disk baseline, resetting undo history.
 
-### 3.3 Asynchronous WAL Debounce & Persistence
-
-- **Idle Debounce Boundary**: The idle flush lifecycle eliminates per-keystroke I/O overhead while bounding crash vulnerability to a 1.0s window.
-- **Batched Flush Dispatch**: User activity marks buffers with `wal_dirty`. An uninterrupted 1.0s idle delay triggers `Event::Idle`, prompting the core to dispatch a batched `Effect::FlushWal` covering all dirty file-backed and scratch buffers.
-- **Atomic Persistence & Quorum**: The shell writes WAL state atomically to sibling files (`.<name>.wal`) or the scratch slot. Successful writes clear dirty flags (`Event::WalFlushed`), while transient I/O failures retain dirty flags for subsequent passes without interrupting foreground editing.
-
-### 3.4 Interactive Search & Transactional Replacement
+### 3.3 Interactive Search & Transactional Replacement
 
 - **Incremental Match Projection**: Incremental search dynamically maintains match coordinates across the text model, projecting highlighted matches on the selected window (I-47).
 - **Transactional Replacement**: Query replacement operates as an atomic multi-step interactive transaction. Modality enforces total key resolution (I-46) across confirmation, rejection, batch substitution, and cancellation. The entire session compiles into a single undo group, enabling single-stroke reversibility. Read-only buffers strictly reject interactive mutation (I-06).
 
-### 3.5 Asynchronous Background Execution
+### 3.4 Asynchronous Background Execution
 
 - **Worker Thread Isolation**: Background shell commands execute on isolated OS worker threads, eliminating UI latency or terminal freeze (I-24).
 - **Non-Blocking Feedback**: The interactive event loop monitors background completion via non-blocking channel polling (50ms interval) with animated visual feedback in the echo area, automatically suppressing animation updates during modal prompts to prevent visual conflict.
 - **Resource Caps**: Concurrent background executions are refused to preserve single-session determinism. Stream outputs are strictly bounded (4 MiB per stream cap), directing captured stdout/stderr into dedicated unbacked output buffers.
 
-### 3.6 Configuration Lifecycle & Atomic Hot-Reload
+### 3.5 Configuration Lifecycle & Atomic Hot-Reload
 
 - **Bundled Bootstrap**: The initialization pipeline executes bundled declarative syntax and keymap definitions in fixed sequence prior to user configuration evaluation.
 - **Transactional Sandboxing (I-54)**: User configuration (`init.lua`) executes within an isolated candidate sandbox. Entire script success commits configuration; syntax or runtime failures discard candidate changes, log full diagnostics to `*init-log*`, and surface error summaries without partial state corruption (I-55).
@@ -168,24 +151,21 @@ The system partitions strictly into a pure functional core and an imperative she
 
 ### 4.1 Core, Shell, and Output
 
-- **Pure state machine with value semantics**: Core state has zero `&mut` signatures (I-18); transitions move ownership via `step(Editor, Event) -> (Editor, Effects)`. The shell owns `Editor` in `RefCell<Option<Editor>>` and extracts it during steps (I-21). Eliminates mutable borrow conflicts across Lua re-entrancy and workers; enables 100% in-memory deterministic testing of file saves, conflicts, and WAL recovery. *Rejected*: In-place interior mutability; persistent undo files (`.<name>.undo`).
+- **Pure state machine with value semantics**: Core state has zero `&mut` signatures (I-18); transitions move ownership via `step(Editor, Event) -> (Editor, Effects)`. The shell owns `Editor` in `RefCell<Option<Editor>>` and extracts it during steps (I-21). Eliminates mutable borrow conflicts across Lua re-entrancy and workers; enables 100% in-memory deterministic testing of file saves and conflicts. *Rejected*: In-place interior mutability; persistent undo files (`.<name>.undo`).
 - **Crate isolation**: Core is isolated in `crates/neonemacs-core`. Purity test (`tests/purity.rs`) forbids dependencies on I/O crates (`crossterm`, `mlua`) and std I/O (`std::fs`, `std::process`) (I-14). Prevents side-effect leakage into domain logic at compile time.
 - **Terminal escape isolation**: `Frame` cells store pure characters and stylistic token tags. ANSI escape generation is deferred entirely to terminal rendering (`session/screen.rs`) (I-22), preventing escapes from corrupting width calculations, cursor placement, and differential diffs.
 - **Synchronous background threads over async runtimes**: Background tasks use dedicated OS threads with standard channels (`mpsc`) polled at 50ms (I-24). Avoids async runtime bloat (Tokio/async-std) to meet the <= 5MB binary budget while keeping zero-latency UI.
 
 ### 4.2 Files and Persistence
 
-- **1-second WAL debounce**: WAL writes occur after 1.0s continuous idle delay. Eliminates per-keystroke I/O bottlenecks and SSD wear, eliminating editing latency while capping crash data loss at 1 second.
-- **Stale WAL preservation**: Conflicting, outdated, or corrupted WALs are renamed to `.stale` and never automatically pruned (I-44). Prevents data destruction when external processes modify the base file, retaining manual forensic recovery.
-- **Scratch slot durability**: Unbacked `*scratch*` buffer has a dedicated state file slot (`Editor.scratch_slot`, I-42, I-43) persisting unsaved text across crashes with the same guarantees as file-backed buffers.
 - **Oversized file rejection upfront**: Files exceeding `max-file-size` (default 512 MiB) are rejected during read targets without loading partial bytes (I-04). Avoids opening truncated prefixes that risk destroying unread data on save. For accepted files, streaming document allocation failures return an I/O error without publishing a partial buffer.
 - **Lexical path canonicalization**: Paths normalize strictly via lexical folding (`.` dropped, `..` folded) against working directory without resolving symlinks (I-37), ensuring deterministic buffer mapping without symlink loops or blocking.
 
 ### 4.3 Editing and Text Model
 
 - **Immutable CoW slice B-Tree (`Weave Tree`)**: `Doc` (`weave_tree::WeaveTree<LineBreaks>` in `crates/weave-tree/`, with line/offset and compaction helpers in `crates/neonemacs-core/src/lib.rs`) replaces the gap buffer (`text.rs`). Keeps strict RFC 3629 `Unit` boundaries (`D-01`), one-pass O(log P) split-based edits and O(log P) line-index queries (`D-02`, `D-03`), CoW sharing for `UndoLog` inverse `Replace` patches (`D-04`), and zero `&mut` signatures (`D-05`, I-18); `H1` (`Arc<Vec<u8>>` + `Arc::get_mut` in-place append) and `H2` (`criterion` sweeps in `crates/weave-tree/benches/weave_tree_bench.rs`) are active and benchmarked.
-- **Safe edit pipeline**: All text modifications and EOL conversions pass through `Editor::apply(Edit)` (I-31). Centralizes undo recording, modified flags, WAL dirtying, and view-only checks.
-- **Save epoch clean tracking**: Undo groups record save epoch if opened while clean. Undoing restores clean status and removes WAL iff current epoch matches (I-03, I-41), accurately clearing dirty flags without diffing.
+- **Safe edit pipeline**: All text modifications and EOL conversions pass through `Editor::apply(Edit)` (I-31). Centralizes undo recording, modified flags, and view-only checks.
+- **Save epoch clean tracking**: Undo groups record save epoch if opened while clean. Undoing restores clean status iff current epoch matches (I-03, I-41), accurately clearing dirty flags without diffing.
 - **Undo log wiping on external replacement**: Wholesale buffer text replacements (`Buffer::with_text`) invalidate and wipe the undo log (I-34). Prevents replaying historical relative offsets against replaced content.
 - **Pareto editing commands via Lua**: Frequent editing operations (`kill-line`, `forward-word`, `fill-paragraph`, etc.) reside in bundled `text.lua` (~270 lines) over character-snapped buffer APIs. Keeps core Rust minimal while enabling user extensibility.
 
@@ -222,35 +202,33 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-12** | Key binding syntax strictly accepts single keys or `C-x` two-key sequences. | Parser boundary (`parse_key_sequence`) |
 | **I-13** | *Retired*: Merged into I-04 and I-06. | - |
 | **I-14** | `neonemacs-core` never imports I/O crates (`crossterm`, `mlua`); usage of `std::fs` and `std::process` is strictly forbidden. | Crate graph (`Cargo.toml`) + text scan (`tests/purity.rs`) |
-| **I-15** | Every `Effect` is answered by at most one `Event` (`RemoveWal` is fire-and-forget; interactive `RunShell` and `ReloadInit` are handed to `ShellSession`; concurrent `RunShell` rejection yields no event). | Type (`shell::perform`) + Runtime (`handle_interactive`) |
+| **I-15** | Every `Effect` is answered by at most one `Event` (interactive `RunShell` and `ReloadInit` are handed to `ShellSession`; concurrent `RunShell` rejection yields no event). | Type (`shell::perform`) + Runtime (`handle_interactive`) |
 | **I-16** | *Retired*: Removed along with persistent undo. | - |
 | **I-17** | *Retired*: Renumbered as I-21. | - |
 | **I-18** | Zero `&mut` references in any `neonemacs-core` function signatures, return types, or struct fields. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
 | **I-19** | Selected window index is strictly bounded: `selected < layout.leaf_count()`. | Runtime (`WindowTree`) |
 | **I-20** | Any buffer ID passed to `with_buffer` exists within the buffer pool. | Runtime (`BufferPool::with_buffer`) |
-| **I-21** | The shell's `RefCell<Option<Editor>>` is `None` strictly during `step`, and no borrow is held across Lua invocations; effect execution only holds a short immutable borrow scoped strictly to slice reads during `WriteFile` and `FlushWal`, or cloning the baseline `Doc` during `ProbeWal`. | Runtime (`shell::with_editor_cell`, `perform_in`, `perform`, Lua `run`) |
+| **I-21** | Effect execution only holds a short immutable borrow scoped strictly to slice reads during `WriteFile`, and no borrow is held across Lua invocations. | Runtime (`shell::perform`, Lua `run`) |
 | **I-22** | Terminal ANSI escape sequences do not affect character display widths, coordinate mapping, or differential screen updates. | Type + Output render queue (`session/screen.rs`) |
-| **I-23** | WAL persistence is an asynchronous shell concern; core transitions remain pure. Header records EOL mode (`NEONWAL2` snapshot or `NEONWALD` delta log). | Runtime (`wal.rs`) |
+| **I-23** | *Retired*: WAL persistence replaced by Registore single-pass atomic rename swap (`src/shell/registore.rs`). | - |
 | **I-24** | Background shell execution is non-blocking with spinner animation; concurrent execution requests are rejected with busy notices. | Runtime + Worker thread channel (`mpsc`) |
-| **I-25** | Clean saves, reverts, buffer closes, and confirmed quits delete sibling WAL. `write-file` deletes old WAL strictly upon write success. | Runtime (`wal.rs`) |
+| **I-25** | *Retired*: Replaced by Registore pre-commit isolation and atomic rename swap. | - |
 | **I-26** | `KillRing` is encapsulated, maintaining at most `kill-ring-max` entries per `push`. `from_entries` is test-only. | Data structure (`KillRing`) |
 | **I-27** | Syntax highlighting definitions are purely declarative in `SyntaxRegistry`. | Data structure (`SyntaxRegistry`) |
 | **I-28..30** | *Retired*: Pruned with low-frequency text commands migrated to Lua. | - |
-| **I-31** | Text and EOL mutate strictly through `Editor::apply(Edit)` (updating undo, `modified`, and `wal_dirty`) or whole-text replacements that reset undo (I-34). `edit_seq` is owned and modified strictly by `Editor`. | Runtime (`Editor::apply`, `Buffer::with_text`) |
+| **I-31** | Text and EOL mutate strictly through `Editor::apply(Edit)` (updating undo and `modified`) or whole-text replacements that reset undo (I-34). | Runtime (`Editor::apply`, `Buffer::with_text`) |
 | **I-32** | `Editor` internal state (`Settings` and private `Editor` fields) is private to `editor`; cross-cutting transitions compose exclusively in `Editor` methods. | Module privacy (`crates/neonemacs-core/src/editor/`) |
 | **I-33** | *Retired*: Renumbered as I-31. | - |
 | **I-34** | Whole-buffer text replacements (`Buffer::with_text`) wipe undo history to prevent replaying stale offsets against replaced content. | Runtime (`Buffer::with_text`) |
 | **I-35** | The undo byte budget, including inverse backing bytes, is governed strictly by `Config.undo_limit`; `UndoLog` maintains no internal limit state, and `close_with_limit` evicts oversized closed groups when `limit > 0`. | Type (`UndoLog::record(edit, limit)`, `UndoLog::close_with_limit(limit)`) |
-| **I-36** | `write-file` updates buffer path, name, and old WAL strictly upon `Event::Written` success. | Type (`Event::Written { id, path, result }`) |
+| **I-36** | `write-file` updates buffer path and name strictly upon `Event::Written` success. | Type (`Event::Written { id, path, result }`) |
 | **I-37** | `FilePath` is constructed exclusively through `FilePath::resolve` (lexical folding of `.` and `..`); strictly one buffer visits a given path. | Type (`FilePath`) + Runtime (`commands/file.rs`) |
 | **I-38** | `LastCommand::Yank` remains valid strictly until the immediately following command or edit. | Runtime (`Editor::apply`) |
 | **I-39** | Command-line parsing is deterministic via single-pass `parse_args`. `-v` and `-h` exit 0 without initializing subsystems. `--` treats remaining flags as files. Unknown flags exit 2. | Type (`Invocation`) + Boundary (`parse_args`) |
 | **I-40** | *Retired*: Renumbered as I-39. | - |
-| **I-41** | An undo group opened on clean text records the save epoch. Undoing the entire group clears `modified` and removes WAL iff the epoch matches. | Runtime (`Editor::undo`) |
+| **I-41** | An undo group opened on clean text records the save epoch. Undoing the entire group clears `modified` iff the epoch matches. | Runtime (`Editor::undo`) |
 | **I-42** | `Backing::Scratch` is instantiated strictly for the unique buffer named `*scratch*`. | Runtime (`BufferPool`, `switch-to-buffer`) |
-| **I-43** | Dedicated scratch WAL slot exists strictly while `*scratch*` contains unpersisted edits. Deleted on clean undo, buffer kill, or confirmed quit. | Runtime (`ShellSession`) |
-| **I-44** | Mismatched, obsolete, or corrupted WALs are preserved as `<wal>.stale` and never deleted automatically. | Boundary (`wal::probe_file`) |
-| **I-45** | File reading creating a new buffer (`Effect::ReadFile { Open }`) is the sole trigger for WAL discovery (`Effect::ProbeWal`). | Type (`Effect::ProbeWal` emitted strictly in `file_read(Open)`) |
+| **I-43..45** | *Retired*: Scratch WAL slot, stale WAL quarantine, and WAL probe removed in favor of Registore. | - |
 | **I-46** | Modal confirmations (`Confirm`, `query-replace`) handle ASCII case folding (`y`/`n`/`q`), Korean aliases (I-48), and `Esc`/`C-g` cancellations. Unrecognized keys reprompt without state mutation. | Runtime (`answer`, `query_key`) |
 | **I-47** | Active mark forms the active region; selected window inverts active region and current search/replace match; pending prefix keys echo `C-x-` or `ESC-`. | Type (`Mark`) + Runtime (`render::frame`) |
 | **I-48** | Key aliases map a single character to an ASCII graphic character. Applied strictly to modal confirmation prompts and fallback prefix/modifier lookups; never to regular text insertion, prompts, or search queries. | Type (`AliasTarget`) + Runtime (`answer_char`, `lookup_binding`) |
@@ -258,10 +236,10 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-50** | `SyntaxDef` maintains keyword and type token lists sorted and deduplicated for binary search lookup. | Runtime (`SyntaxDef::new`) |
 | **I-51** | Line lexer is stateless and operates strictly on one line at a time. | Runtime (`LineLexer`) |
 | **I-52** | Configuration settings are members of the closed `Setting` enum. `get` is total, `set` is exhaustive, and `set(s, get(s))` preserves state equality. | Type (`Setting`) + Runtime round-trip tests |
-| **I-53** | Panic room invariants (terminal restoration, WAL persistence/recovery, save conflict checks, confirmations, `C-g`/`Esc` cancel) cannot be disabled by configuration, Lua code, or key unbinding. | Type (`Setting` closed set) + Runtime (`C-g` priority) |
+| **I-53** | Panic room invariants (terminal restoration, save conflict checks, confirmations, `C-g`/`Esc` cancel) cannot be disabled by configuration, Lua code, or key unbinding. | Type (`Setting` closed set) + Runtime (`C-g` priority) |
 | **I-54** | Starting configuration and Lua state is either bundled scripts plus entire `init.lua`, or bundled scripts alone. `reload-init` results in either entire new state or existing state. Partial execution is never observed. | Runtime (`configure`, `ShellSession::reload_init`) |
 | **I-55** | An unapplied `init.lua` is never silent: rejection logs full source to `*init-log*` and the first error line to the echo area. | Type (`InitSource`, `InitLoad`) + Boundary (`read_init`) |
-| **I-56** | Startup notices never overwrite earlier notices: init error, scratch recovery, and file notices are concatenated with `; `. | Runtime (`Editor::append_message`) |
+| **I-56** | Startup notices never overwrite earlier notices: init error and file notices are concatenated with `; `. | Runtime (`Editor::append_message`) |
 | **I-57** | Lua runtime accesses host filesystem and processes strictly via exposed editor APIs; sandbox restricts access to base, `string`, `table`, `math`, and `utf8` without `dofile` or `loadfile`. | Boundary (`lua::new_state`) |
 | **I-58** | Successful `reload-init` swaps configuration and Lua runtime while preserving buffers, windows, and kill ring. Rejected or Lua-invoked reloads preserve existing state. | Type (`Editor::adopt_settings`) + Runtime (`reload_init`) |
 | **I-59** | Core top-level crate module references are strictly acyclic, except the documented cycle between `commands` and `dispatch`. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |

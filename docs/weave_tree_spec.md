@@ -8,11 +8,11 @@
 
 ## 1. 개요 (Overview)
 
-호스트 입력(`&[u8]` 또는 `Replace`)은 단위 경계 정합과 `split`/`join`을 거쳐 새 `Doc`(`SliceTree`)과 역연산 `Replace { insert: Doc }`(Undo 스택 저장)로 전이하며, 파일 저장과 WAL·스냅샷 직렬화는 `Doc`의 `try_for_each_slice` 제로카피 스트리밍으로 출력한다.
+호스트 입력(`&[u8]` 또는 `Replace`)은 단위 경계 정합과 `split`/`join`을 거쳐 새 `Doc`(`SliceTree`)과 역연산 `Replace { insert: Doc }`(Undo 스택 저장)로 전이하며, 파일 저장 직렬화는 `Doc`의 `try_for_each_slice` 제로카피 스트리밍으로 출력한다.
 
 ### 1.1. 호스트 에디터 통합 경계 (Host vs `Doc`)
 
-`Doc`은 바이트·라인 요약과 단위 경계 무결성만 책임진다. 줄바꿈(`Lf`/`Crlf`), Undo 스택, 커서/마크/뷰포트(`point`, `mark`, `top`), 더티/에폭(epoch), 디스크·WAL I/O는 **호스트**가 소유한다.
+`Doc`은 바이트·라인 요약과 단위 경계 무결성만 책임진다. 줄바꿈(`Lf`/`Crlf`), Undo 스택, 커서/마크/뷰포트(`point`, `mark`, `top`), 더티/에폭(epoch), 디스크 I/O는 **호스트**가 소유한다.
 
 * **경계 스냅 및 앵커 재정렬:** 무오류(infallible) 편집을 원하면 호스트가 `Doc::replace`/`Doc::apply` 전 `floor_boundary`/`ceil_boundary`로 `offset`·`offset + delete_len`을 `0..=total_bytes()` 유효 `Unit` 경계에 스냅한다(유효 경계면 불변). 코어 검증 위임 시 실패하면 `(Self, DocError)`로 원본 `Doc` 소유권을 회수한다. `D-01` 재병합(`k_left > 0 || k_right > 0`) 시 앵커가 새 UTF-8 문자 내부에 놓일 수 있으므로 전이 직후 커서·마크·뷰포트를 `floor_boundary`/`ceil_boundary`로 재정렬한다(문자 단위 이동은 엄격 `<`/`>`인 `prev_boundary`/`next_boundary` 사용).
 * **UTF-8·라인 경계:** ① `D-01`은 RFC 3629 UTF-8만 `Unit::Char`, overlong·서로게이트·불완전 바이트는 `Unit::Raw`로 보존한다. ② `prev_boundary(0)`·`floor_boundary(0)`은 `0`을 반환한다. ③ `line_to_offset`은 `OutOfBounds`를 반환하므로 1-based `goto-line` 클램핑은 `D-03`(`doc.total_lines() >= 1`) 아래 `n.saturating_sub(1).min(doc.total_lines() - 1)`을 사용한다.
@@ -144,13 +144,13 @@ pub enum DocError {
 
 ### 4.3. 양방향 제로카피 스트리밍 순회 (`try_for_each_slice`, `try_for_each_slice_rev`)
 
-`range.start > range.end || range.end > doc.total_bytes()`면 `OutOfBounds`, 양 끝이 `Unit` 경계가 아니면 `InvalidBoundary`. 빈 범위(`offset..offset`)는 `f` 0회 호출 후 `Ok(ControlFlow::Continue(()))`. `D-05` 준수를 위해 `Iterator` 대신 `ControlFlow<B>` 기반 내부 순회로 `&buf.slice[sub_range]`를 제로카피 전달하며 `ControlFlow::Break(b)` 시 즉시 중단한다. 저장·WAL 직렬화, 뷰포트 렌더링·폭 계산, 정·역방향 검색(경계 걸침은 최소 오버랩 버퍼 유지) 모두 이 메커니즘을 사용한다.
+`range.start > range.end || range.end > doc.total_bytes()`면 `OutOfBounds`, 양 끝이 `Unit` 경계가 아니면 `InvalidBoundary`. 빈 범위(`offset..offset`)는 `f` 0회 호출 후 `Ok(ControlFlow::Continue(()))`. `D-05` 준수를 위해 `Iterator` 대신 `ControlFlow<B>` 기반 내부 순회로 `&buf.slice[sub_range]`를 제로카피 전달하며 `ControlFlow::Break(b)` 시 즉시 중단한다. 파일 저장 직렬화, 뷰포트 렌더링·폭 계산, 정·역방향 검색(경계 걸침은 최소 오버랩 버퍼 유지) 모두 이 메커니즘을 사용한다.
 
 ---
 
 ## 5. 입·출력 경계 직렬화 및 내부 단편화 상한
 
-파일·WAL 저장은 `try_for_each_slice(doc, 0..total_bytes, ...)`로 제로카피 스트리밍한다.
+파일 저장은 `try_for_each_slice(doc, 0..total_bytes, ...)`로 제로카피 스트리밍한다.
 
 * **일괄 로드 (`Doc::from_bytes(bytes: &[u8]) -> Self`):** 정규화된 바이트에 대해 빈 입력은 `root: None`, 비어 있지 않으면 `MAX_SLICE_BYTES` 이하 유효 `Unit` 경계로 분할·할당 후 `MAX_FANOUT` 상향식 빌더로 $O(N)$ 구성한다(2개 이상 노드 중 마지막 노드가 `MIN_FANOUT` 미만이면 직전 형제와 `[MIN_FANOUT, MAX_FANOUT]` 범위로 재분배).
 * **스트리밍 로드:** `EolStreamDecoder::try_push_chunk`와 `try_finish`로 CRLF 정규화 및 문서 구성을 수행한다. 버퍼·슬라이스·노드 할당 실패는 셸의 파일 읽기 오류로 전달되며 부분 문서는 노출하지 않는다.
@@ -224,6 +224,6 @@ impl<S: Summary> WeaveTree<S> {
 ## 8. 구현 현황 (Implementation Status)
 
 * **구현 위치:** `crates/weave-tree/src/` (`lib.rs`, `summary.rs`, `utf8.rs`, `tree.rs`), `crates/neonemacs-core/src/lib.rs`에서 `Doc`, `DocBuilder`, `Replace`, `Unit`, `DocError` 및 자유 함수(`total_lines`, `line_to_offset`, `offset_to_line`, `line_start`, `line_end`, `goto_line_offset`, `compact_small`) 노출.
-* **통합 상태:** 기존 갭버퍼(`text.rs`) 및 호환 심(`len`, `is_empty`, `snap_point`, `bytes`, `to_bytes`, `line_start`, `line_end`, `nth_line_start`, `count_lines`, `Editor::delete_range`, `Eol::encode`) 완전 제거. `Buffer`, `UndoLog`(`Edit::Replace(Replace)` 역패치 CoW 저장), `KillRing`(`Vec<Doc>` + `Doc::slice`), `Editor::apply`, `syntax::highlight_line(&Doc, Range)`(단일 슬라이스 무복사), `render`, `commands`, `search`, `width`, 및 `src/shell/`(`file::save_doc`, `wal::write_wal_doc`, `wal::write_scratch_doc`)이 모두 네이티브 `weave_tree::WeaveTree` 기반 `Doc`·`Replace` 및 `try_for_each_slice` 스트리밍으로 전환됨(`assert_invariants()`는 핫패스 `O(N)` 방지를 위해 `weave_tree_proptest.rs`에서 명시 호출).
+* **통합 상태:** 기존 갭버퍼(`text.rs`) 및 호환 심(`len`, `is_empty`, `snap_point`, `bytes`, `to_bytes`, `line_start`, `line_end`, `nth_line_start`, `count_lines`, `Editor::delete_range`, `Eol::encode`) 완전 제거. `Buffer`, `UndoLog`(`Edit::Replace(Replace)` 역패치 CoW 저장), `KillRing`(`Vec<Doc>` + `Doc::slice`), `Editor::apply`, `syntax::highlight_line(&Doc, Range)`(단일 슬라이스 무복사), `render`, `commands`, `search`, `width`, 및 `src/shell/`(`file::save_doc`, `registore::persist_with`)이 모두 네이티브 `weave_tree::WeaveTree` 기반 `Doc`·`Replace` 및 `try_for_each_slice` 스트리밍으로 전환됨(`assert_invariants()`는 핫패스 `O(N)` 방지를 위해 `weave_tree_proptest.rs`에서 명시 호출).
 * **구현 상태:** 순수 CoW 기준선 위에 단일 패스 $O(\log P)$ `split_at`, `H1` `Arc<Vec<u8>>` 기반 `Arc::get_mut` 제자리 확장(`<= CHUNK_CAP.min(1024)` 무이음새 순수 삽입), 스택 기반 이음새 검사가 적용됨(`criterion` 벤치마크 스위트 `crates/weave-tree/benches/weave_tree_bench.rs` 포함). `MAX_SLICE_BYTES = 16 KiB` + SIMD `memchr` 기반 `line_to_offset`/`offset_to_line`은 실측 수십 ns 수준이므로 별도 라인 인덱스 테이블 없이 유지(`H2`).
 * **검증:** `#![forbid(unsafe_code)]`, `I-14`·`I-18`(`crates/neonemacs-core/tests/purity.rs`), `D-01`~`D-05` 단위·`proptest` 스위트(`crates/neonemacs-core/tests/weave_tree_proptest.rs`), 워크스페이스 전체 테스트(`cargo test --workspace`) 및 `cargo clippy --workspace --all-targets -- -D warnings` 통과.

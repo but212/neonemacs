@@ -31,10 +31,7 @@ mod undo;
 mod width;
 mod window;
 
-pub use buffer::{
-    Buffer, BufferId, MAX_WAL_DELTA_BYTES, MAX_WAL_DELTA_RECORDS, WAL_DELTA_RECORD_BYTES,
-    WalBaseDigest, wal_base_digest,
-};
+pub use buffer::{Buffer, BufferId};
 pub use commands::{confirmed, is_builtin, record_init_error, request_open, switch_to};
 pub use config::{Config, Setting, ShellSpec, Toggles, Value};
 pub use dispatch::command;
@@ -164,9 +161,6 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
             path,
             result,
         } => commands::file_read(ed, target, path, result, fx),
-        Event::Idle => commands::idle(ed, fx),
-        Event::WalFlushed(writes) => (commands::wal_flushed(ed, writes), fx),
-        Event::WalProbed { path, line, probe } => commands::wal_probed(ed, &path, line, probe, fx),
         Event::ShellDone(result) => (commands::shell_done(ed, result), fx),
         Event::LuaDone(result) => (commands::lua_done(ed, result), fx),
         Event::InitLoaded(load) => (commands::init_loaded(ed, load), fx),

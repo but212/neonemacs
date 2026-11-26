@@ -1,6 +1,5 @@
-use crate::{Doc, DocBuilder, total_lines};
+use crate::{Doc, DocBuilder};
 use alloc::vec::Vec;
-use core::ops::ControlFlow;
 use memchr::memchr_iter;
 use triomphe::AllocError;
 
@@ -19,26 +18,6 @@ impl Eol {
             Self::Lf => "LF",
             Self::Crlf => "CRLF",
         }
-    }
-
-    /// Whether normalizing these bytes after saving leaves the document unchanged.
-    pub(crate) fn preserves_saved_doc(self, doc: &Doc) -> bool {
-        if self == Self::Crlf || total_lines(doc) == 1 {
-            return true;
-        }
-        // LF saves verbatim, but reopening strips CRs immediately before LF, even across slices.
-        let mut trailing_cr = false;
-        doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
-            if (trailing_cr && chunk.first() == Some(&b'\n'))
-                || memchr::memmem::find(chunk, b"\r\n").is_some()
-            {
-                return ControlFlow::Break(());
-            }
-            trailing_cr = chunk.last() == Some(&b'\r');
-            ControlFlow::Continue(())
-        })
-        .expect("full range is valid")
-        .is_continue()
     }
 
     #[must_use]
@@ -192,17 +171,6 @@ mod tests {
     fn labels_name_each_mode() {
         assert_eq!(Eol::Lf.label(), "LF");
         assert_eq!(Eol::Crlf.label(), "CRLF");
-    }
-
-    #[test]
-    fn saved_doc_round_trip_detects_crlf_across_slices() {
-        let doc = DocBuilder::new()
-            .push_bytes(b"a\r")
-            .push_bytes(b"\nb\n")
-            .finish();
-        assert!(!Eol::Lf.preserves_saved_doc(&doc));
-        assert!(Eol::Crlf.preserves_saved_doc(&doc));
-        assert!(Eol::Lf.preserves_saved_doc(&Doc::from_bytes(b"a\rb\n")));
     }
 
     #[test]

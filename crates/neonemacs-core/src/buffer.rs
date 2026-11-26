@@ -5,15 +5,13 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ops::ControlFlow;
-use sha2::{Digest, Sha256};
 
+use crate::Doc;
 use crate::eol::Eol;
 use crate::file::{Backing, DiskState};
 use crate::undo::{Edit, RecordedEdit, UndoLog};
-use crate::{Doc, Replace, compact_small, goto_line_offset};
 
-/// The name of the buffer that always exists and whose unsaved text survives a crash (I-42).
+/// The name of the buffer that always exists (I-08, I-42).
 pub const SCRATCH_NAME: &str = "*scratch*";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,87 +51,6 @@ impl Mark {
     }
 }
 
-const WAL_DELTA_MIN_CAP: usize = 64 * 1024;
-pub const WAL_DELTA_RECORD_BYTES: usize = 24;
-pub const MAX_WAL_DELTA_RECORDS: usize = 4096;
-pub const MAX_WAL_DELTA_BYTES: usize = 4 * 1024 * 1024;
-pub type WalBaseDigest = [u8; 32];
-
-/// SHA-256 of the normalized document bytes, independent of tree layout.
-#[must_use]
-pub fn wal_base_digest(doc: &Doc) -> WalBaseDigest {
-    let mut digest = Sha256::new();
-    let _ = doc.try_for_each_slice(0..doc.total_bytes(), |chunk| {
-        digest.update(chunk);
-        ControlFlow::<()>::Continue(())
-    });
-    digest.finalize().into()
-}
-
-/// A delta WAL successfully replayed against its baseline. Records are kept for later WAL writes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoveredDelta {
-    doc: Doc,
-    eol: Eol,
-    deltas: Vec<Replace>,
-    base_len: usize,
-}
-
-impl RecoveredDelta {
-    /// Returns `None` if any record cannot be applied; no partial document escapes.
-    #[must_use]
-    pub fn replay(base: Doc, eol: Eol, deltas: Vec<Replace>) -> Option<Self> {
-        let base_len = base.total_bytes();
-        let doc = deltas.iter().try_fold(base, |doc, delta| {
-            doc.apply(delta.clone()).ok().map(|(next, _)| next)
-        })?;
-        Some(Self {
-            doc,
-            eol,
-            deltas,
-            base_len,
-        })
-    }
-
-    #[must_use]
-    pub fn into_content(self) -> (Doc, Eol) {
-        (self.doc, self.eol)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WalDeltaLog {
-    base: WalBaseDigest,
-    edits: Vec<Replace>,
-    bytes: usize,
-}
-
-impl WalDeltaLog {
-    const fn empty(base: WalBaseDigest) -> Self {
-        Self {
-            base,
-            edits: Vec::new(),
-            bytes: 0,
-        }
-    }
-
-    fn push(mut self, mut edit: Replace, doc_len: usize) -> Option<Self> {
-        edit.insert = compact_small(edit.insert);
-        // The retained allocation charge also bounds the serialized insert length.
-        let cost = edit
-            .insert
-            .backing_bytes()
-            .saturating_add(WAL_DELTA_RECORD_BYTES);
-        let cap = doc_len.clamp(WAL_DELTA_MIN_CAP, MAX_WAL_DELTA_BYTES);
-        if self.edits.len() >= MAX_WAL_DELTA_RECORDS || self.bytes.saturating_add(cost) > cap {
-            return None;
-        }
-        self.bytes += cost;
-        self.edits.push(edit);
-        Some(self)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
     id: BufferId,
@@ -149,7 +66,6 @@ pub struct Buffer {
     /// Point when this buffer was last left by its window (anchor, I-01).
     saved_point: usize,
     eol: Eol,
-    wal_deltas: Option<WalDeltaLog>,
 }
 
 impl Buffer {
@@ -167,23 +83,7 @@ impl Buffer {
             mark: Mark::Unset,
             saved_point: 0,
             eol: Eol::default(),
-            wal_deltas: None,
         }
-    }
-
-    /// Starts delta tracking from the current, verified disk baseline when requested.
-    #[must_use]
-    pub(crate) fn track_wal_baseline(mut self, enabled: bool) -> Self {
-        self.wal_deltas = (enabled
-            && matches!(
-                self.backing,
-                Backing::File {
-                    disk: DiskState::Known { .. },
-                    ..
-                }
-            ))
-        .then(|| WalDeltaLog::empty(wal_base_digest(&self.text)));
-        self
     }
 
     #[must_use]
@@ -199,13 +99,6 @@ impl Buffer {
     #[must_use]
     pub const fn text(&self) -> &Doc {
         &self.text
-    }
-
-    #[must_use]
-    pub fn wal_deltas(&self) -> Option<(WalBaseDigest, &[Replace])> {
-        self.wal_deltas
-            .as_ref()
-            .map(|log| (log.base, log.edits.as_slice()))
     }
 
     #[must_use]
@@ -261,11 +154,6 @@ impl Buffer {
         self.backing.path()
     }
 
-    #[must_use]
-    pub const fn is_wal_dirty(&self) -> bool {
-        self.backing.is_wal_dirty()
-    }
-
     /// Sets `mark`, snapped to a valid unit boundary in `0..=text.total_bytes()` (I-01).
     #[must_use]
     pub fn set_mark(mut self, mark: Option<usize>) -> Self {
@@ -302,14 +190,10 @@ impl Buffer {
         self
     }
 
-    /// Clears `modified` and `wal_dirty` together, so `wal_dirty` never outlives `modified` (I-31).
     #[must_use]
     pub fn mark_clean(mut self) -> Self {
         self.modified = false;
         self.epoch = self.epoch.wrapping_add(1);
-        self.backing = self.backing.set_wal_dirty(false);
-        // Marking clean alone does not establish a replayable disk baseline.
-        self.wal_deltas = None;
         self
     }
 
@@ -318,8 +202,6 @@ impl Buffer {
     #[must_use]
     pub fn restore_clean(mut self) -> Self {
         self.modified = false;
-        self.backing = self.backing.set_wal_dirty(false);
-        self.wal_deltas = self.wal_deltas.map(|log| WalDeltaLog::empty(log.base));
         self
     }
 
@@ -338,7 +220,6 @@ impl Buffer {
     #[must_use]
     pub fn set_backing(mut self, backing: Backing) -> Self {
         self.backing = backing;
-        self.wal_deltas = None;
         self
     }
 
@@ -349,7 +230,6 @@ impl Buffer {
         self.text = text;
         self.undo = UndoLog::new();
         self.epoch = self.epoch.wrapping_add(1);
-        self.wal_deltas = None;
         self.saved_point = self.text.floor_boundary(self.saved_point);
         self.mark = self.mark.map(|m| self.text.floor_boundary(m));
         self
@@ -362,18 +242,11 @@ impl Buffer {
     }
 
     #[must_use]
-    pub fn clear_wal_dirty(mut self) -> Self {
-        self.backing = self.backing.set_wal_dirty(false);
-        self
-    }
-
-    #[must_use]
     pub fn record_saved(mut self, new_disk: DiskState) -> Self {
-        self.backing = self.backing.with_disk(new_disk).set_wal_dirty(false);
+        self.backing = self.backing.with_disk(new_disk);
         self.modified = false;
         self.epoch = self.epoch.wrapping_add(1);
         self.undo = self.undo.close();
-        self.wal_deltas = None;
         self
     }
 
@@ -397,18 +270,11 @@ impl Buffer {
 
     fn apply_text_edit(
         mut self,
-        forward: Option<crate::Replace>,
         f: impl FnOnce(Doc) -> Result<(Doc, crate::Replace), (Doc, crate::DocError)>,
     ) -> (Self, Option<Edit>) {
         match f(self.text) {
             Ok((next, inv)) => {
                 self.text = next;
-                if let Some(f) = forward {
-                    self.wal_deltas = self
-                        .wal_deltas
-                        .take()
-                        .and_then(|log| log.push(f, self.text.total_bytes()));
-                }
                 (self, Some(Edit::Replace(inv)))
             }
             Err((doc, _err)) => {
@@ -426,8 +292,7 @@ impl Buffer {
     ) -> (Self, Option<usize>) {
         let inverse = match edit {
             Edit::Replace(r) => {
-                let forward = self.wal_deltas.is_some().then(|| r.clone());
-                let (next_self, inv) = self.apply_text_edit(forward, |doc| doc.apply(r));
+                let (next_self, inv) = self.apply_text_edit(|doc| doc.apply(r));
                 let Some(inv) = inv else {
                     return (next_self, None);
                 };
@@ -435,13 +300,8 @@ impl Buffer {
                 inv
             }
             Edit::InsertInline { offset, data } => {
-                let forward = self.wal_deltas.is_some().then(|| crate::Replace {
-                    offset,
-                    delete_len: 0,
-                    insert: crate::Doc::from_bytes(data.as_slice()),
-                });
                 let (next_self, inv) =
-                    self.apply_text_edit(forward, |doc| doc.replace(offset, 0, data.as_slice()));
+                    self.apply_text_edit(|doc| doc.replace(offset, 0, data.as_slice()));
                 let Some(inv) = inv else {
                     return (next_self, None);
                 };
@@ -455,7 +315,6 @@ impl Buffer {
         };
         let clean_epoch = (!self.modified).then_some(self.epoch);
         self.modified = true;
-        self.backing = self.backing.set_wal_dirty(true);
         let anchor = |a| self.text.floor_boundary(remap_fn(a));
         self.mark = self.mark.deactivated().map(anchor);
         self.saved_point = anchor(self.saved_point);
@@ -568,66 +427,6 @@ impl BufferPool {
         self
     }
 
-    pub(crate) fn clear_wal_deltas(mut self) -> Self {
-        self.buffers
-            .iter_mut()
-            .for_each(|buffer| buffer.wal_deltas = None);
-        self
-    }
-
-    pub(crate) fn install_recovered(
-        self,
-        path: &str,
-        doc: Doc,
-        eol: Eol,
-        line: Option<usize>,
-        log: Option<WalDeltaLog>,
-    ) -> (Self, Option<BufferId>) {
-        let found = self.find_by_path(path).map(|b| b.id);
-        if let Some(id) = found {
-            let pool = self.with_buffer(id, |buf| {
-                let mut buf = buf
-                    .with_text(doc)
-                    .set_eol(eol)
-                    .mark_modified()
-                    .clear_wal_dirty();
-                buf.wal_deltas = log;
-                if let Some(n) = line {
-                    let pos = goto_line_offset(&buf.text, n);
-                    buf = buf.set_saved_point(pos);
-                }
-                buf
-            });
-            (pool, Some(id))
-        } else {
-            (self, None)
-        }
-    }
-
-    /// Installs a replayed delta WAL, retaining the records if they fit the tracking budget.
-    #[must_use]
-    pub(crate) fn restore_deltas(
-        self,
-        path: &str,
-        delta: RecoveredDelta,
-        line: Option<usize>,
-    ) -> (Self, Option<BufferId>) {
-        let log = self
-            .find_by_path(path)
-            .filter(|buffer| !buffer.modified)
-            .and_then(|buffer| buffer.wal_deltas.as_ref())
-            .map(|log| WalDeltaLog::empty(log.base));
-        let mut len = delta.base_len;
-        let log = log.and_then(|log| {
-            delta.deltas.into_iter().try_fold(log, |log, edit| {
-                // Replay already validated these lengths; charging needs no tree edits.
-                len = len - edit.delete_len + edit.insert.total_bytes();
-                log.push(edit, len)
-            })
-        });
-        self.install_recovered(path, delta.doc, delta.eol, line, log)
-    }
-
     /// Removes buffer `id`. If `id` was the only buffer, an empty `*scratch*` buffer is created first.
     ///
     /// Returns the new pool and the `BufferId` of the replacement buffer that windows should switch to (I-08).
@@ -695,156 +494,5 @@ mod tests {
         assert_eq!(id1, BufferId(1));
         assert_eq!(id2, BufferId(2));
         assert_eq!(pool.len(), 3);
-    }
-
-    #[test]
-    fn backing_none_never_wal_dirty() {
-        let buf = Buffer::new(BufferId(0), "*scratch*", Doc::default(), Backing::None);
-        let (buf, _) = buf.apply_edit(Edit::insert(0, b"a".as_slice()), |a| a, 1 << 20);
-        assert!(buf.modified());
-        assert!(!buf.is_wal_dirty());
-    }
-
-    #[test]
-    fn mark_clean_clears_wal_dirty() {
-        use crate::file::{DiskState, FilePath};
-        let backing = Backing::file(FilePath::resolve("/w", "a.txt"), DiskState::Unknown);
-        let buf = Buffer::new(BufferId(0), "a.txt", Doc::default(), backing);
-        let (buf, _) = buf.apply_edit(Edit::insert(0, b"a".as_slice()), |a| a, 1 << 20);
-        assert!(buf.modified() && buf.is_wal_dirty());
-        let buf = buf.mark_clean();
-        assert!(!buf.modified());
-        assert!(!buf.is_wal_dirty());
-    }
-
-    #[test]
-    fn with_text_and_restore_content_invalidate_wal_deltas() {
-        use crate::file::{DiskState, FilePath};
-        use core::time::Duration;
-
-        let path = FilePath::resolve("/w", "a.txt");
-        let known = DiskState::Known {
-            mtime: Duration::ZERO,
-            size: 4,
-        };
-        let buf = Buffer::new(
-            BufferId(1),
-            "a.txt",
-            Doc::from_bytes(b"disk"),
-            Backing::file(path.clone(), known),
-        )
-        .track_wal_baseline(true);
-        assert_eq!(
-            buf.wal_deltas(),
-            Some((wal_base_digest(buf.text()), &[][..]))
-        );
-
-        let buf = buf.with_text(Doc::from_bytes(b"replaced"));
-        assert_eq!(buf.wal_deltas(), None);
-        let (buf, _) = buf.apply_edit(Edit::insert(0, b"X".as_slice()), |a| a, 1 << 20);
-        assert_eq!(buf.wal_deltas(), None);
-
-        let (pool, id) = BufferPool::new().add(
-            "a.txt",
-            Doc::from_bytes(b"disk"),
-            Backing::file(path.clone(), known),
-        );
-        let pool = pool.with_buffer(id, |b| b.track_wal_baseline(true));
-        assert_eq!(
-            pool.get_by_id(id).wal_deltas().map(|(_, edits)| edits),
-            Some(&[][..])
-        );
-        let (pool, restored) = pool.install_recovered(
-            path.as_str(),
-            Doc::from_bytes(b"recovered draft"),
-            Eol::Lf,
-            None,
-            None,
-        );
-        assert_eq!(restored, Some(id));
-        assert_eq!(pool.get_by_id(id).wal_deltas(), None);
-        let pool = pool.with_buffer(id, |b| {
-            b.apply_edit(Edit::insert(15, b"!".as_slice()), |a| a, 1 << 20)
-                .0
-        });
-        assert_eq!(pool.get_by_id(id).wal_deltas(), None);
-    }
-
-    #[test]
-    fn wal_deltas_degrade_to_none_when_byte_cap_exceeded() {
-        use crate::file::{DiskState, FilePath};
-        use core::time::Duration;
-
-        let backing = Backing::file(
-            FilePath::resolve("/w", "big.txt"),
-            DiskState::Known {
-                mtime: Duration::ZERO,
-                size: 0,
-            },
-        );
-        let mut buf =
-            Buffer::new(BufferId(1), "big.txt", Doc::default(), backing).track_wal_baseline(true);
-        let block = vec![b'a'; 32 * 1024];
-        // Insert and delete 32 KiB three times: doc stays empty (cap = 64 KiB),
-        // while accumulated delta bytes exceed 64 KiB.
-        for _ in 0..3 {
-            buf = buf
-                .apply_edit(Edit::insert(0, block.as_slice()), |a| a, 1 << 20)
-                .0;
-            buf = buf
-                .apply_edit(Edit::delete(0, block.len()), |a| a, 1 << 20)
-                .0;
-        }
-        assert_eq!(buf.text().total_bytes(), 0);
-        assert_eq!(buf.wal_deltas(), None);
-    }
-
-    #[test]
-    fn wal_delta_budget_compacts_tiny_slices_and_charges_backing_for_larger_slices() {
-        use crate::{CHUNK_CAP, MAX_SLICE_BYTES};
-
-        let source = Doc::from_bytes(&vec![b'a'; MAX_SLICE_BYTES]);
-        let record = |len| Replace {
-            offset: 0,
-            delete_len: 0,
-            insert: source.slice(0..len).unwrap(),
-        };
-        let mut log = WalDeltaLog::empty([0; 32]);
-        log = log.push(record(1), WAL_DELTA_MIN_CAP).unwrap();
-        assert_eq!(log.bytes, WAL_DELTA_RECORD_BYTES + 1);
-        assert_eq!(log.edits[0].insert.backing_bytes(), 1);
-
-        // Four slightly larger inserts fit by wire length, but pin >64 KiB of backing.
-        for _ in 0..3 {
-            log = log.push(record(CHUNK_CAP + 1), WAL_DELTA_MIN_CAP).unwrap();
-        }
-        assert!(log.push(record(CHUNK_CAP + 1), WAL_DELTA_MIN_CAP).is_none());
-    }
-
-    #[test]
-    fn invalid_delta_never_produces_recovered_content() {
-        let base = Doc::from_bytes("é".as_bytes());
-        // Delta 1 succeeds ("Aé"), but delta 2 splits 'é'.
-        let partial = vec![
-            Replace {
-                offset: 0,
-                delete_len: 0,
-                insert: Doc::from_bytes(b"A"),
-            },
-            Replace {
-                offset: 2,
-                delete_len: 1,
-                insert: Doc::default(),
-            },
-        ];
-        assert!(RecoveredDelta::replay(base.clone(), Eol::Crlf, partial).is_none());
-
-        // The first record can also fail.
-        let oob = vec![Replace {
-            offset: 100,
-            delete_len: 0,
-            insert: Doc::from_bytes(b"x"),
-        }];
-        assert!(RecoveredDelta::replay(base, Eol::Crlf, oob).is_none());
     }
 }

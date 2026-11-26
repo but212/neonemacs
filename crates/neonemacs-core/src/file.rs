@@ -142,44 +142,37 @@ impl RawFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backing {
     None,
-    /// The `*scratch*` buffer: it has no file, but its unsaved text is kept in a WAL slot (I-42).
-    Scratch {
-        wal_dirty: bool,
-    },
+    /// The `*scratch*` buffer (I-42).
+    Scratch,
     File {
         path: FilePath,
         disk: DiskState,
-        wal_dirty: bool,
     },
 }
 
 impl Backing {
     #[must_use]
     pub const fn file(path: FilePath, disk: DiskState) -> Self {
-        Self::File {
-            path,
-            disk,
-            wal_dirty: false,
-        }
+        Self::File { path, disk }
     }
 
     /// The backing of the `*scratch*` buffer. Only the buffer pool and `switch-to-buffer` make it,
     /// and only for a buffer named `*scratch*` (I-42).
     #[must_use]
     pub(crate) const fn scratch() -> Self {
-        Self::Scratch { wal_dirty: false }
+        Self::Scratch
     }
 
     #[must_use]
     pub const fn is_scratch(&self) -> bool {
-        matches!(self, Self::Scratch { .. })
+        matches!(self, Self::Scratch)
     }
 
     #[must_use]
     pub fn path(&self) -> Option<&str> {
         match self {
             Self::File { path, .. } => Some(path.as_str()),
-            Self::None | Self::Scratch { .. } => None,
+            Self::None | Self::Scratch => None,
         }
     }
 
@@ -187,42 +180,15 @@ impl Backing {
     pub const fn disk(&self) -> DiskState {
         match self {
             Self::File { disk, .. } => *disk,
-            Self::None | Self::Scratch { .. } => DiskState::Unknown,
-        }
-    }
-
-    #[must_use]
-    pub const fn is_wal_dirty(&self) -> bool {
-        match self {
-            Self::File { wal_dirty, .. } | Self::Scratch { wal_dirty } => *wal_dirty,
-            Self::None => false,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn set_wal_dirty(self, dirty: bool) -> Self {
-        match self {
-            Self::File { path, disk, .. } => Self::File {
-                path,
-                disk,
-                wal_dirty: dirty,
-            },
-            Self::Scratch { .. } => Self::Scratch { wal_dirty: dirty },
-            Self::None => Self::None,
+            Self::None | Self::Scratch => DiskState::Unknown,
         }
     }
 
     #[must_use]
     pub fn with_disk(self, disk: DiskState) -> Self {
         match self {
-            Self::File {
-                path, wal_dirty, ..
-            } => Self::File {
-                path,
-                disk,
-                wal_dirty,
-            },
-            other @ (Self::None | Self::Scratch { .. }) => other,
+            Self::File { path, .. } => Self::File { path, disk },
+            other @ (Self::None | Self::Scratch) => other,
         }
     }
 }
@@ -282,16 +248,12 @@ mod tests {
     }
 
     #[test]
-    fn scratch_backing_has_no_file_but_tracks_its_wal() {
+    fn scratch_backing_has_no_file() {
         let b = Backing::scratch();
         assert!(b.is_scratch());
         assert_eq!(b.path(), None);
         assert_eq!(b.disk(), DiskState::Unknown);
-        assert!(!b.is_wal_dirty());
-        let b = b.set_wal_dirty(true);
-        assert!(b.is_wal_dirty());
         assert_eq!(b.clone().with_disk(DiskState::Unknown), b);
-        assert!(!b.set_wal_dirty(false).is_wal_dirty());
         assert!(!Backing::None.is_scratch());
     }
 

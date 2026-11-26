@@ -156,7 +156,6 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
     let ed = Editor::new(Config::default());
     let lua = lua::new_state().unwrap();
     let mut session = ShellSession::new(lua::bootstrap(ed, &lua), lua);
-    let t0 = Instant::now();
 
     let press = |code: KeyCode, modifiers: KeyModifiers| {
         TermEvent::Key(KeyEvent {
@@ -169,35 +168,35 @@ fn shell_session_end_to_end_async_lifecycle_and_isearch_protection() {
 
     // Type buffer content, then launch `M-x shell-command RET echo session_async_ok RET`
     for c in "hello world".chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event(&press(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::ALT));
     for c in "shell-command".chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event(&press(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event(&press(KeyCode::Enter, KeyModifiers::NONE));
     for c in "echo session_async_ok".chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event(&press(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event(&press(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(session.ed.message(), "[Running...]");
 
     // Move to beginning of buffer (`C-a`) and start I-search (`C-s`) while shell is running;
     // tick must not overwrite I-search echo even if the background command completes mid-search.
-    session.handle_event_at(&press(KeyCode::Char('a'), KeyModifiers::CONTROL), t0);
-    session.handle_event_at(&press(KeyCode::Char('s'), KeyModifiers::CONTROL), t0);
-    session.handle_event_at(&press(KeyCode::Char('w'), KeyModifiers::NONE), t0);
+    session.handle_event(&press(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    session.handle_event(&press(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    session.handle_event(&press(KeyCode::Char('w'), KeyModifiers::NONE));
     assert_eq!(session.ed.message(), "I-search: w");
-    session.tick_at(t0 + Duration::from_millis(50));
+    session.tick();
     assert_eq!(session.ed.message(), "I-search: w");
 
     // Exit I-search with Enter -> back to Normal mode
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event(&press(KeyCode::Enter, KeyModifiers::NONE));
 
     // Poll tick until background command completes
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        session.tick_at(Instant::now());
+        session.tick();
         if session.ed.message() == "session_async_ok" {
             break;
         }

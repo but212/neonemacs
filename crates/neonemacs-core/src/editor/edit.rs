@@ -40,7 +40,6 @@ impl Editor {
         if matches!(self.last, LastCommand::Yank { .. }) {
             self.last = LastCommand::Other;
         }
-        self.edit_seq = self.edit_seq.wrapping_add(1);
 
         let text = self.buffers.get_by_id(id).text();
         let anchor = |a| text.floor_boundary(span.remap(a));
@@ -178,7 +177,7 @@ impl Editor {
     /// Emacs-style undo. Consecutive undos walk back through the log; any other
     /// command starts the next undo from the newest group, which undoes the last undo.
     #[must_use]
-    pub fn undo(self, mut fx: Effects) -> (Self, Effects) {
+    pub fn undo(self, fx: Effects) -> (Self, Effects) {
         let mut ed = self.boundary();
         let id = ed.window().buffer;
         let groups = ed.buffer_by_id(id).undo().groups().len();
@@ -210,7 +209,6 @@ impl Editor {
         let mut ed = ed.boundary();
         // The group opened on text equal to the saved one, so undoing all of it restores that text (I-41).
         if complete && clean_epoch == Some(ed.buffer_by_id(id).epoch()) {
-            fx.extend(ed.remove_wal_effect(id));
             ed = ed.with_buffer(id, Buffer::restore_clean);
         }
         ed.last = LastCommand::Undo {
@@ -362,16 +360,11 @@ mod tests {
 
     #[test]
     fn undoing_an_undo_returns_to_clean_through_the_original_group() {
-        // Undoing to clean text drops the WAL of the file-backed buffer (I-41).
-        let wal = crate::effect::Effect::RemoveWal {
-            target: crate::effect::WalTarget::Sibling("f.txt".to_owned()),
-        };
         let ed = type_char(saved(""), 'a');
         assert!(ed.buffer().modified());
         let (ed, fx) = undo_fx(ed);
-        assert_eq!(fx, core::slice::from_ref(&wal));
+        assert!(fx.is_empty());
         assert!(!ed.buffer().modified());
-        assert!(!ed.buffer().is_wal_dirty());
         // A command in between breaks the undo chain, so this undo redoes "a".
         let ed = run_command(ed, |e, fx| (e.move_point(0), fx));
         let (ed, fx) = undo_fx(ed);
@@ -380,7 +373,7 @@ mod tests {
         assert!(ed.buffer().modified());
         // The chained undo removes "a" through the group opened on the clean text.
         let (ed, fx) = undo_fx(ed);
-        assert_eq!(fx, [wal]);
+        assert!(fx.is_empty());
         assert_eq!(text(&ed), "");
         assert!(!ed.buffer().modified());
     }
@@ -445,12 +438,10 @@ mod tests {
         let ed = editor_with("é")
             .move_point(2)
             .set_last(LastCommand::Yank { start: 0, end: 2 });
-        let seq = ed.edit_seq();
         let (ed, applied) = ed.apply(Edit::delete(1, 1));
         assert_eq!(applied, None);
         assert_eq!(text(&ed), "é");
         assert_eq!(ed.window().point, 2);
-        assert_eq!(ed.edit_seq(), seq);
         assert_eq!(ed.last, LastCommand::Yank { start: 0, end: 2 });
         assert!(!ed.buffer().modified());
         assert!(ed.buffer().undo().groups().is_empty());

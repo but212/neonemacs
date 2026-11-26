@@ -5,7 +5,6 @@ use neonemacs::core::Backing;
 use neonemacs::core::BufferId;
 use neonemacs::core::Config;
 use neonemacs::core::Doc;
-use neonemacs::core::Edit;
 use neonemacs::core::{Code, Key};
 use neonemacs::core::{Confirm, Editor, LastCommand, Mode, Prefix, Window};
 use neonemacs::test_support::{editor, keys, press, run_command, text, typ};
@@ -21,7 +20,6 @@ struct Snapshot {
     last: LastCommand,
     prev: LastCommand,
     quit: bool,
-    edit_seq: u64,
     config: Config,
 }
 
@@ -40,7 +38,6 @@ fn snapshot(ed: &Editor) -> Snapshot {
         last: ed.last(),
         prev: ed.prev(),
         quit: ed.quit(),
-        edit_seq: ed.edit_seq(),
         config: ed.config().clone(),
     }
 }
@@ -59,21 +56,14 @@ fn mixed_session_snapshot() {
     assert_eq!(text(&ed), "hello world");
     assert_eq!(s.current.point, 11);
     assert_eq!(s.mode, normal());
-    assert_eq!(s.edit_seq, 11);
 
     let ed = keys(ed, "C-x C-g");
     let s = snapshot(&ed);
     assert_eq!(s.mode, normal());
     assert_eq!(s.message, "Quit");
-    assert_eq!(s.edit_seq, 11, "a quit is not an edit");
 
     let ed = keys(ed, "C-/");
     assert_eq!(text(&ed), "");
-    assert_eq!(
-        snapshot(&ed).edit_seq,
-        22,
-        "each undone insert is one applied edit"
-    );
 
     let ed = typ(ed, "ab");
     let s = snapshot(&ed);
@@ -106,18 +96,6 @@ fn kill_chain_across_commands() {
         Some(&neonemacs::core::Doc::from_bytes(b"ccc"))
     );
     assert_eq!(text(&ed), "x");
-}
-
-#[test]
-fn edit_seq_counts_accepted_edits() {
-    // C-03: every accepted edit adds exactly one; a refused edit adds none.
-    let (ed, _) = editor().apply(Edit::insert(0, b"a".as_slice()));
-    assert_eq!(ed.edit_seq(), 1);
-
-    let ed = ed.with_current_buffer(|b| b.set_view_only(true));
-    let (ed, applied) = ed.apply(Edit::insert(0, b"b".as_slice()));
-    assert!(applied.is_none());
-    assert_eq!(ed.edit_seq(), 1);
 }
 
 #[test]

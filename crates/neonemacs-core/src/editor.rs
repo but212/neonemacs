@@ -4,7 +4,6 @@
 //! flag (I-06), records undo (§7), and moves every anchor to a boundary (I-01).
 //! Every transition takes the editor by value and returns the new one.
 
-use alloc::borrow::ToOwned;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
 mod documents;
@@ -13,10 +12,8 @@ mod interaction;
 mod settings;
 
 use crate::Doc;
-use crate::buffer::{BufferPool, RecoveredDelta};
-use crate::config::{Config, Toggles};
-use crate::effect::{Effect, WalTarget};
-use crate::eol::Eol;
+use crate::buffer::BufferPool;
+use crate::config::Config;
 use crate::file::{Backing, FilePath};
 use crate::keymap::{KeyAliases, Keymap};
 use crate::syntax::SyntaxRegistry;
@@ -40,9 +37,6 @@ pub struct Editor {
     buffers: BufferPool,
     windows: WindowManager,
     kill_ring: KillRing,
-    edit_seq: u64,
-    /// Where the unsaved text of the scratch buffer is kept. `None` keeps it in memory only (I-43).
-    scratch_slot: Option<String>,
     mode: Mode,
     /// Kind of the command that just ran. The running command sets it.
     last: LastCommand,
@@ -73,8 +67,6 @@ impl Editor {
             buffers: BufferPool::new(),
             windows: WindowManager::new(initial_window),
             kill_ring: KillRing::new(),
-            edit_seq: 0,
-            scratch_slot: None,
             mode: Mode::normal(),
             last: LastCommand::Other,
             prev: LastCommand::Other,
@@ -82,40 +74,6 @@ impl Editor {
             quit: false,
             settings: Settings::new(config),
         }
-    }
-
-    #[must_use]
-    pub const fn edit_seq(&self) -> u64 {
-        self.edit_seq
-    }
-
-    /// Keeps the unsaved text of the scratch buffer in `slot`. `None` keeps it in memory only (I-43).
-    #[must_use]
-    pub fn with_scratch_slot(mut self, slot: Option<String>) -> Self {
-        self.scratch_slot = slot;
-        self
-    }
-
-    #[must_use]
-    pub fn scratch_slot(&self) -> Option<&str> {
-        self.scratch_slot.as_deref()
-    }
-
-    /// Where the WAL of buffer `id` lives, if it can have one: beside its file, or the scratch slot.
-    #[must_use]
-    pub fn wal_target(&self, id: BufferId) -> Option<WalTarget> {
-        match self.buffer_by_id(id).backing() {
-            Backing::File { path, .. } => Some(WalTarget::Sibling(path.as_str().to_owned())),
-            Backing::Scratch { .. } => self.scratch_slot().map(|s| WalTarget::Slot(s.to_owned())),
-            Backing::None => None,
-        }
-    }
-
-    /// The effect that removes the WAL of buffer `id`, if it can have one.
-    #[must_use]
-    pub fn remove_wal_effect(&self, id: BufferId) -> Option<Effect> {
-        self.wal_target(id)
-            .map(|target| Effect::RemoveWal { target })
     }
 
     #[must_use]
@@ -196,16 +154,8 @@ impl Editor {
         self.update_settings(|settings| Settings { config, ..settings })
     }
 
-    pub(crate) fn tracks_wal_deltas(&self) -> bool {
-        self.config().toggles.contains(Toggles::WAL_DELTAS)
-    }
-
     fn update_settings(mut self, f: impl FnOnce(Settings) -> Settings) -> Self {
-        let tracked = self.tracks_wal_deltas();
         self.settings = f(self.settings);
-        if tracked && !self.tracks_wal_deltas() {
-            self.buffers = self.buffers.clear_wal_deltas();
-        }
         self
     }
 
@@ -405,78 +355,13 @@ impl Editor {
         self
     }
 
-    /// Restores the content of the buffer visiting `path` from a WAL snapshot (I-23).
-    #[must_use]
-    pub fn restore_buffer_content(
-        self,
-        path: &str,
-        doc: Doc,
-        eol: Eol,
-        line: Option<usize>,
-    ) -> Self {
-        self.restore_with(line, |b| b.install_recovered(path, doc, eol, line, None))
-    }
-
-    /// Installs the replayed delta WAL for a buffer visiting `path` (I-23).
-    #[must_use]
-    pub(crate) fn restore_buffer_deltas(
-        self,
-        path: &str,
-        delta: RecoveredDelta,
-        line: Option<usize>,
-    ) -> Self {
-        self.restore_with(line, |b| b.restore_deltas(path, delta, line))
-    }
-
-    fn restore_with(
-        mut self,
-        line: Option<usize>,
-        f: impl FnOnce(crate::buffer::BufferPool) -> (crate::buffer::BufferPool, Option<BufferId>),
-    ) -> Self {
-        let (buffers, id) = f(self.buffers);
-        self.buffers = buffers;
-        self.snap_recovered_windows(id, line)
-    }
-
-    fn snap_recovered_windows(self, id: Option<BufferId>, line: Option<usize>) -> Self {
-        match id {
-            Some(id) if line.is_some() => {
-                let target = self.buffers.get_by_id(id).saved_point();
-                self.reset_windows_for_buffer(id, |_| target)
-            }
-            Some(id) => self.snap_windows_for_buffer(id),
-            None => self,
-        }
-    }
-
-    /// Puts the text of a recovered scratch WAL into the scratch buffer, as unsaved text (I-23).
-    #[must_use]
-    pub fn restore_scratch(self, doc: Doc, eol: Eol) -> Self {
-        let Some(id) = self
-            .buffers
-            .iter()
-            .find(|b| b.backing().is_scratch())
-            .map(Buffer::id)
-        else {
-            return self;
-        };
-        self.with_buffer(id, |b| {
-            b.with_text(doc)
-                .set_eol(eol)
-                .mark_modified()
-                .clear_wal_dirty()
-        })
-        .snap_windows_for_buffer(id)
-    }
-
     /// Adds a buffer and returns its id. Ids are never reused.
     #[must_use]
     pub fn add_buffer(mut self, name: &str, text: Doc, backing: Backing) -> (Self, BufferId) {
         let (buffers, id) = self.buffers.add(name, text, backing);
         self.buffers = buffers;
         let eol = self.settings.config.default_eol;
-        let track = self.tracks_wal_deltas();
-        let ed = self.with_buffer(id, |b| b.set_eol(eol).track_wal_baseline(track));
+        let ed = self.with_buffer(id, |b| b.set_eol(eol));
         (ed, id)
     }
 
@@ -495,8 +380,10 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Eol;
     use crate::keymap::Key;
     use crate::test_support::{press, text};
+    use alloc::borrow::ToOwned;
 
     fn editor_with(s: &str) -> Editor {
         Editor::new(Config::default())
