@@ -183,7 +183,11 @@ impl Editor {
         ed
     }
 
-    fn apply_undo_group(mut self, id: crate::buffer::BufferId, idx: usize) -> (Self, Option<usize>) {
+    fn apply_undo_group(
+        mut self,
+        id: crate::buffer::BufferId,
+        idx: usize,
+    ) -> (Self, Option<usize>) {
         let (clean_epoch, inverses) = {
             let group = &self.buffer_by_id(id).undo().groups()[idx];
             let inverses: Vec<_> = group.edits().iter().rev().cloned().collect();
