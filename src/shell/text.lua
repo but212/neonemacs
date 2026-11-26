@@ -214,6 +214,29 @@ command("kill-line", function()
     end
 end)
 
+local function transform_word_case(mode)
+    local p = buffer.point()
+    local w_start, w_end = scan_word_forward(p)
+    if not w_start then return end
+    local text = buffer.get_text(w_start, w_end)
+    local converted = buffer.case_convert(mode, text)
+    if converted ~= text then
+        if not buffer.replace(w_start, w_end, converted) then
+            return
+        end
+    end
+    buffer.set_point(w_start + #converted)
+end
+
+-- upcase-word: convert from point to end of word to upper case (M-u)
+command("upcase-word", function() transform_word_case("up") end)
+
+-- downcase-word: convert from point to end of word to lower case (M-l)
+command("downcase-word", function() transform_word_case("down") end)
+
+-- capitalize-word: capitalize first char and lowercase rest of word (M-c)
+command("capitalize-word", function() transform_word_case("cap") end)
+
 --------------------------------------------------------------------------------
 -- 3. Paragraph Formatting (fill-paragraph, M-q)
 --------------------------------------------------------------------------------

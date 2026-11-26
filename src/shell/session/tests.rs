@@ -490,3 +490,26 @@ fn reload_init_from_lua_is_refused() {
     assert_eq!(session.ed.message(), "reload-init: not available from Lua");
     assert_eq!(bound(&session, "C-x 9").as_deref(), Some("again"));
 }
+
+#[test]
+fn suspend_key_and_invalidate_all_behavior() {
+    let mut session = make_session();
+    let mut out = Vec::new();
+    session.render_sized(&mut out, 20, 4).unwrap();
+    assert!(!session.prev_rows.is_empty());
+
+    session.invalidate_all();
+    assert!(session.prev_rows.is_empty());
+
+    out.clear();
+    session.render_sized(&mut out, 20, 4).unwrap();
+    assert!(!out.is_empty(), "invalidate_all must trigger a full redraw");
+
+    session.handle_event(&press(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    if cfg!(unix) {
+        assert!(session.pending_suspend);
+    } else {
+        assert!(!session.pending_suspend);
+        assert_eq!(session.ed.message(), "Suspend is only supported on Unix");
+    }
+}

@@ -68,6 +68,8 @@ pub enum ShellOutcome {
     BusyRejected,
     /// The caller must reload `init.lua`: only it can replace the Lua state.
     ReloadInit,
+    /// The caller must suspend the terminal session (`SIGTSTP` on Unix).
+    Suspend,
 }
 
 /// Runs `command` in a background thread without blocking the editor UI (I-24).
@@ -97,10 +99,13 @@ pub fn handle_interactive(
     let mut outcome = ShellOutcome::None;
     let mut sync_effects = Vec::new();
     for effect in effects {
-        if matches!(effect, Effect::RunShell { .. } | Effect::ReloadInit) {
+        if matches!(
+            effect,
+            Effect::RunShell { .. } | Effect::ReloadInit | Effect::Suspend
+        ) {
             debug_assert!(
                 matches!(outcome, ShellOutcome::None),
-                "one step yields at most one RunShell or ReloadInit (I-15)"
+                "one step yields at most one RunShell, ReloadInit, or Suspend (I-15)"
             );
         }
         match effect {
@@ -109,6 +114,7 @@ pub fn handle_interactive(
                 outcome = ShellOutcome::Spawned(spawn_shell(command, shell));
             }
             Effect::ReloadInit => outcome = ShellOutcome::ReloadInit,
+            Effect::Suspend => outcome = ShellOutcome::Suspend,
             effect => sync_effects.push(effect),
         }
     }
@@ -116,7 +122,7 @@ pub fn handle_interactive(
     let ed = match &outcome {
         ShellOutcome::Spawned(_) => ed.set_message(RUNNING),
         ShellOutcome::BusyRejected => ed.set_message(BUSY_MESSAGE),
-        ShellOutcome::None | ShellOutcome::ReloadInit => ed,
+        ShellOutcome::None | ShellOutcome::ReloadInit | ShellOutcome::Suspend => ed,
     };
     (ed, outcome)
 }
@@ -231,6 +237,12 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
         )),
         // Reached from a Lua command, which runs inside the state that a reload would replace.
         Effect::ReloadInit => Event::InitLoaded(crate::core::effect::InitLoad::Ignored),
+        Effect::Suspend => {
+            with_editor_cell(cell, |ed| {
+                (ed.set_message("suspend-emacs: not available from Lua"), ())
+            });
+            return None;
+        }
     };
     Some(event)
 }
@@ -399,5 +411,18 @@ mod tests {
 
         let ed = handle(ed, None, Event::Run("reload-init".to_owned()));
         assert_eq!(ed.message(), "reload-init: not available from Lua");
+    }
+
+    #[test]
+    fn suspend_emacs_is_handed_to_the_session() {
+        use crate::core::Config;
+        let ed = Editor::new(Config::default());
+        let (ed, outcome) =
+            handle_interactive(ed, None, Event::Run("suspend-emacs".to_owned()), false);
+        assert!(matches!(outcome, ShellOutcome::Suspend));
+        assert_eq!(ed.message(), "");
+
+        let ed = handle(ed, None, Event::Run("suspend-emacs".to_owned()));
+        assert_eq!(ed.message(), "suspend-emacs: not available from Lua");
     }
 }

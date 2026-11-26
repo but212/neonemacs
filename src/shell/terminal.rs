@@ -29,6 +29,21 @@ impl TerminalGuard {
         Ok(Self)
     }
 
+    /// Temporarily leaves raw mode and the alternate screen to run `f`, then re-enters.
+    ///
+    /// # Errors
+    /// Returns `io::Error` if `f` or re-entering raw mode / the alternate screen fails.
+    pub fn suspend_with<F>(&mut self, f: F) -> io::Result<()>
+    where
+        F: FnOnce() -> io::Result<()>,
+    {
+        restore_terminal();
+        let res = f();
+        terminal::enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        res
+    }
+
     fn install_panic_hook() {
         static PANIC_HOOK: Once = Once::new();
         PANIC_HOOK.call_once(|| {

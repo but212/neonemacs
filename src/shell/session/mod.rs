@@ -10,7 +10,7 @@ use crate::core::render::Cell;
 use crate::core::step;
 use crate::core::{Editor, Mode};
 use crate::shell::startup::{InitSource, configure, init_source};
-use crate::shell::terminal::from_terminal;
+use crate::shell::terminal::{TerminalGuard, from_terminal};
 use crate::shell::{BUSY_NOTICE, RUNNING, ShellOutcome, handle, handle_interactive, perform_all};
 use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use mlua::Lua;
@@ -85,6 +85,7 @@ pub struct ShellSession {
     active_shell: Option<ActiveShell>,
     prev_rows: Vec<Vec<Cell>>,
     screen_size: (usize, usize),
+    pending_suspend: bool,
 }
 
 pub(super) fn update_editor(slot: &mut Editor, f: impl FnOnce(Editor) -> Editor) {
@@ -102,6 +103,7 @@ impl ShellSession {
             active_shell: None,
             prev_rows: Vec::new(),
             screen_size: (0, 0),
+            pending_suspend: false,
         }
     }
 
@@ -156,6 +158,7 @@ impl ShellSession {
                     }
                 }
                 ShellOutcome::ReloadInit => self.reload_init(init_source()),
+                ShellOutcome::Suspend => self.request_suspend(),
                 ShellOutcome::None => {}
             }
         }
@@ -182,12 +185,41 @@ impl ShellSession {
         }
     }
 
+    fn request_suspend(&mut self) {
+        #[cfg(unix)]
+        {
+            self.pending_suspend = true;
+        }
+        #[cfg(not(unix))]
+        {
+            self.update_ed(|ed, _| ed.set_message("Suspend is only supported on Unix"));
+        }
+    }
+
+    #[cfg(unix)]
+    fn suspend(&mut self, guard: &mut TerminalGuard) -> io::Result<()> {
+        guard.suspend_with(|| {
+            nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP).map_err(io::Error::from)
+        })?;
+        self.invalidate_all();
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn suspend(&mut self, _guard: &mut TerminalGuard) -> io::Result<()> {
+        Ok(())
+    }
+
     /// Draws, then handles waiting events and background tasks in a loop (I-22, I-24).
     ///
     /// # Errors
     /// Returns `io::Error` if terminal rendering, event polling, or reading fails.
-    pub fn run(mut self, out: &mut impl Write) -> io::Result<()> {
+    pub fn run(mut self, out: &mut impl Write, guard: &mut TerminalGuard) -> io::Result<()> {
         loop {
+            if self.pending_suspend {
+                self.pending_suspend = false;
+                self.suspend(guard)?;
+            }
             self.render(out)?;
             if self.is_quit() {
                 return Ok(());

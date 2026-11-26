@@ -20,6 +20,9 @@ bind("M-y", "yank-pop")
 bind("M-q", "fill-paragraph")
 bind("M-d", "kill-word")
 bind("M-DEL", "backward-kill-word")
+bind("M-u", "upcase-word")
+bind("M-l", "downcase-word")
+bind("M-c", "capitalize-word")
 bind("M-;", "comment-dwim")
 
 -- Search & Navigation
@@ -32,6 +35,7 @@ bind("C-l", "recenter")
 
 -- Shell execution
 bind("M-!", "shell-command")
+bind("C-z", "suspend-emacs")
 
 -- Korean two-set (두벌식) jamo stand for the QWERTY key they share (I-46, I-48)
 local function alias_row(jamo, ascii)
