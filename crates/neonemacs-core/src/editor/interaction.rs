@@ -18,6 +18,11 @@ pub enum LastCommand {
     },
     Undo {
         next: usize,
+        redo_count: usize,
+    },
+    Redo {
+        next: usize,
+        remaining: usize,
     },
     Kill,
     /// Goal display column for consecutive next-line and previous-line.

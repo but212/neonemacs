@@ -16,6 +16,7 @@ bind("C-x h", "mark-whole-buffer")
 -- Editing & Killing
 bind("C-k", "kill-line")
 bind("C-x u", "undo")
+bind("C-M-_", "redo")
 bind("M-y", "yank-pop")
 bind("M-q", "fill-paragraph")
 bind("M-d", "kill-word")

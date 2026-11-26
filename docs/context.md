@@ -75,7 +75,7 @@ The system partitions strictly into a pure functional core and an imperative she
 - **`Edit`**: Primitive buffer mutations: `Replace(Replace { offset, delete_len, insert: Doc })`, `InsertInline { offset, data: InlineBytes }` (stack-allocated `<= 16` B fast path), and `SetEol { from, to }`. Sole mutation path through `Editor::apply(Edit)` (I-31).
 - **Anchor snapping**: All cursor movements, mark placements, and edits clamp and snap `point` and `mark` within `0..=total_bytes()` to valid UTF-8 boundaries (`Doc::floor_boundary`, `ceil_boundary`, I-01).
 - **`UndoLog` & `Group`**:
-  - In-memory Emacs-style undo (`C-/`, `C-_`) recording inverse edit transactions (`Doc::apply` returns `(next_doc, inverse_replace)` directly with CoW structural sharing); no redo tree.
+  - In-memory Emacs-style undo (`C-/`, `C-_`, `C-x u`) recording inverse edit transactions (`Doc::apply` returns `(next_doc, inverse_replace)` directly with CoW structural sharing), plus `redo` (`C-M-_`, `M-x redo`) stepping forward through an active `LastCommand::Undo`/`Redo` chain; no redo tree.
   - Consecutive `self-insert` insertions amalgamate into a single group up to `amalgamating-undo-limit` (default 20 characters). Non-insert commands immediately seal the group.
   - Clean state restoration (I-41): undo groups opened while clean record save epoch. Undoing the full group restores clean status (`modified = false`) iff epoch matches.
   - Whole-buffer replacements (`Buffer::with_text`: revert, shell output) wipe undo history to prevent stale offset replay (I-34).
