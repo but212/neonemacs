@@ -621,6 +621,41 @@ fn recompute_summary<T, S: Summary>(
     (bytes, backing_bytes, summary)
 }
 
+fn mutate_vec_item<T, R>(
+    mut items: Vec<T>,
+    offset: usize,
+    inclusive_end: bool,
+    item_len: impl Fn(&T) -> usize,
+    f: impl FnOnce(T, usize) -> Result<(T, R), T>,
+) -> Result<(Vec<T>, R), Vec<T>> {
+    let mut acc = 0usize;
+    let Some(target_idx) = items.iter().position(|item| {
+        let len = item_len(item);
+        let hit = if inclusive_end {
+            offset <= acc + len
+        } else {
+            offset < acc + len
+        };
+        if !hit {
+            acc += len;
+        }
+        hit
+    }) else {
+        return Err(items);
+    };
+    let item = items.remove(target_idx);
+    match f(item, offset - acc) {
+        Ok((updated, out)) => {
+            items.insert(target_idx, updated);
+            Ok((items, out))
+        }
+        Err(orig) => {
+            items.insert(target_idx, orig);
+            Err(items)
+        }
+    }
+}
+
 fn mutate_internal_child<S: Summary, R>(
     mut entry: ChildEntry<S>,
     offset: usize,
@@ -630,27 +665,10 @@ fn mutate_internal_child<S: Summary, R>(
     let Some(SliceNode::Internal { children }) = Arc::get_mut(&mut entry.node) else {
         return Err(entry);
     };
-    let mut acc = 0usize;
-    let mut target_idx = None;
-    for (idx, child) in children.iter().enumerate() {
-        let hit = if inclusive_end {
-            offset <= acc + child.bytes
-        } else {
-            offset < acc + child.bytes
-        };
-        if hit {
-            target_idx = Some(idx);
-            break;
-        }
-        acc += child.bytes;
-    }
-    let Some(idx) = target_idx else {
-        return Err(entry);
-    };
-    let child = children.remove(idx);
-    match f(child, offset - acc) {
+    let taken = core::mem::take(children);
+    match mutate_vec_item(taken, offset, inclusive_end, |c| c.bytes, f) {
         Ok((updated, out)) => {
-            children.insert(idx, updated);
+            *children = updated;
             let (total_bytes, total_backing, total_summary) =
                 recompute_summary(children, |c| (c.bytes, c.backing_bytes, &c.summary));
             entry.bytes = total_bytes;
@@ -659,7 +677,7 @@ fn mutate_internal_child<S: Summary, R>(
             Ok((entry, out))
         }
         Err(orig) => {
-            children.insert(idx, orig);
+            *children = orig;
             Err(entry)
         }
     }
@@ -676,8 +694,30 @@ fn with_refreshed_leaf_entry<S: Summary>(mut entry: ChildEntry<S>) -> ChildEntry
     entry
 }
 
-pub(crate) fn try_insert_in_place<S: Summary>(
+fn mutate_leaf_slice<S: Summary, R>(
     mut entry: ChildEntry<S>,
+    offset: usize,
+    inclusive_end: bool,
+    f: impl FnOnce(ByteSlice<S>, usize) -> Result<(ByteSlice<S>, R), ByteSlice<S>>,
+) -> Result<(ChildEntry<S>, R), ChildEntry<S>> {
+    let Some(SliceNode::Leaf { slices }) = Arc::get_mut(&mut entry.node) else {
+        return Err(entry);
+    };
+    let taken = core::mem::take(slices);
+    match mutate_vec_item(taken, offset, inclusive_end, ByteSlice::len, f) {
+        Ok((updated, out)) => {
+            *slices = updated;
+            Ok((with_refreshed_leaf_entry(entry), out))
+        }
+        Err(orig) => {
+            *slices = orig;
+            Err(entry)
+        }
+    }
+}
+
+pub(crate) fn try_insert_in_place<S: Summary>(
+    entry: ChildEntry<S>,
     offset: usize,
     bytes: &[u8],
 ) -> Result<ChildEntry<S>, ChildEntry<S>> {
@@ -687,33 +727,25 @@ pub(crate) fn try_insert_in_place<S: Summary>(
         })
         .map(|(updated, ())| updated);
     }
-    let Some(SliceNode::Leaf { slices }) = Arc::get_mut(&mut entry.node) else {
-        return Err(entry);
-    };
-    let mut acc = 0usize;
-    for slice in slices.iter_mut() {
-        let len = slice.len();
-        if offset <= acc + len {
-            let local = offset - acc;
-            if local == len
-                && usize::from(slice.end) + bytes.len() <= MAX_SLICE_BYTES
-                && let Some(buf) = Arc::get_mut(&mut slice.buf)
-            {
-                buf.truncate(usize::from(slice.end));
-                buf.extend_from_slice(bytes);
-                slice.end += u16::try_from(bytes.len()).expect("slice end fits in u16");
-                slice.summary = slice.summary.combine(&S::from_slice(bytes));
-                return Ok(with_refreshed_leaf_entry(entry));
-            }
-            return Err(entry);
+    mutate_leaf_slice(entry, offset, true, |mut slice, local| {
+        if local == slice.len()
+            && usize::from(slice.end) + bytes.len() <= MAX_SLICE_BYTES
+            && let Some(buf) = Arc::get_mut(&mut slice.buf)
+        {
+            buf.truncate(usize::from(slice.end));
+            buf.extend_from_slice(bytes);
+            slice.end += u16::try_from(bytes.len()).expect("slice end fits in u16");
+            slice.summary = slice.summary.combine(&S::from_slice(bytes));
+            Ok((slice, ()))
+        } else {
+            Err(slice)
         }
-        acc += len;
-    }
-    Err(entry)
+    })
+    .map(|(updated, ())| updated)
 }
 
 pub(crate) fn try_delete_in_place<S: Summary>(
-    mut entry: ChildEntry<S>,
+    entry: ChildEntry<S>,
     offset: usize,
     delete_len: usize,
 ) -> Result<(ChildEntry<S>, Vec<u8>), ChildEntry<S>> {
@@ -722,43 +754,35 @@ pub(crate) fn try_delete_in_place<S: Summary>(
             try_delete_in_place(child, local_off, delete_len)
         });
     }
-    let Some(SliceNode::Leaf { slices }) = Arc::get_mut(&mut entry.node) else {
-        return Err(entry);
-    };
-    let mut acc = 0usize;
-    for slice in slices.iter_mut() {
+    mutate_leaf_slice(entry, offset, false, |mut slice, local_start| {
         let len = slice.len();
-        if offset < acc + len {
-            let local_start = offset - acc;
-            let local_end = local_start + delete_len;
-            if local_end <= len && delete_len < len && (local_end == len || local_start == 0) {
-                let start = usize::from(slice.start);
-                let end = usize::from(slice.end);
-                let abs_start = start + local_start;
-                let abs_end = start + local_end;
-                let deleted = slice.buf[abs_start..abs_end].to_vec();
-                let delta = u16::try_from(delete_len).expect("delete_len fits in u16");
-                if local_end == len {
-                    let kept_range = start..abs_start;
-                    let (kept_s, _) = slice.summary.split_pair(&slice.buf[kept_range], &deleted);
-                    slice.end -= delta;
-                    if let Some(buf) = Arc::get_mut(&mut slice.buf) {
-                        buf.truncate(usize::from(slice.end));
-                    }
-                    slice.summary = kept_s;
-                } else {
-                    let kept_range = abs_end..end;
-                    let (_, kept_s) = slice.summary.split_pair(&deleted, &slice.buf[kept_range]);
-                    slice.start += delta;
-                    slice.summary = kept_s;
+        let local_end = local_start + delete_len;
+        if local_end <= len && delete_len < len && (local_end == len || local_start == 0) {
+            let start = usize::from(slice.start);
+            let end = usize::from(slice.end);
+            let abs_start = start + local_start;
+            let abs_end = start + local_end;
+            let deleted = slice.buf[abs_start..abs_end].to_vec();
+            let delta = u16::try_from(delete_len).expect("delete_len fits in u16");
+            if local_end == len {
+                let kept_range = start..abs_start;
+                let (kept_s, _) = slice.summary.split_pair(&slice.buf[kept_range], &deleted);
+                slice.end -= delta;
+                if let Some(buf) = Arc::get_mut(&mut slice.buf) {
+                    buf.truncate(usize::from(slice.end));
                 }
-                return Ok((with_refreshed_leaf_entry(entry), deleted));
+                slice.summary = kept_s;
+            } else {
+                let kept_range = abs_end..end;
+                let (_, kept_s) = slice.summary.split_pair(&deleted, &slice.buf[kept_range]);
+                slice.start += delta;
+                slice.summary = kept_s;
             }
-            return Err(entry);
+            Ok((slice, deleted))
+        } else {
+            Err(slice)
         }
-        acc += len;
-    }
-    Err(entry)
+    })
 }
 
 fn descend_to_byte<S: Summary>(
@@ -843,91 +867,83 @@ pub(crate) fn byte_to_metric<S: Summary>(root: &ChildEntry<S>, offset: usize) ->
     metric_acc + S::from_byte_offset(slice.bytes(), offset - slice_start)
 }
 
+fn visit_dir_items<const REV: bool, T, B, St>(
+    items: &[T],
+    base: usize,
+    total_bytes: usize,
+    range: &Range<usize>,
+    mut state: St,
+    item_len: impl Fn(&T) -> usize,
+    mut visit: impl FnMut(&T, usize, usize, St) -> (ControlFlow<B>, St),
+) -> (ControlFlow<B>, St) {
+    if REV {
+        let mut cur_end = base + total_bytes;
+        for item in items.iter().rev() {
+            let item_start = cur_end - item_len(item);
+            if cur_end > range.start && item_start < range.end {
+                let (flow, next_state) = visit(item, item_start, cur_end, state);
+                state = next_state;
+                if let ControlFlow::Break(b) = flow {
+                    return (ControlFlow::Break(b), state);
+                }
+            }
+            cur_end = item_start;
+            if cur_end <= range.start {
+                break;
+            }
+        }
+    } else {
+        let mut cur_base = base;
+        for item in items {
+            let item_end = cur_base + item_len(item);
+            if item_end > range.start && cur_base < range.end {
+                let (flow, next_state) = visit(item, cur_base, item_end, state);
+                state = next_state;
+                if let ControlFlow::Break(b) = flow {
+                    return (ControlFlow::Break(b), state);
+                }
+            }
+            cur_base = item_end;
+            if cur_base >= range.end {
+                break;
+            }
+        }
+    }
+    (ControlFlow::Continue(()), state)
+}
+
 pub(crate) fn visit_slices<const REV: bool, B, S: Summary, F: FnMut(&[u8]) -> ControlFlow<B>>(
     entry: &ChildEntry<S>,
     base: usize,
     range: &Range<usize>,
-    mut f: F,
+    f: F,
 ) -> (ControlFlow<B>, F) {
     match entry.node.as_ref() {
-        SliceNode::Internal { children } => {
-            if REV {
-                let mut cur_end = base + entry.bytes;
-                for child in children.iter().rev() {
-                    let child_start = cur_end - child.bytes;
-                    if cur_end > range.start && child_start < range.end {
-                        let (flow, next_f) =
-                            visit_slices::<true, B, S, F>(child, child_start, range, f);
-                        f = next_f;
-                        if let ControlFlow::Break(b) = flow {
-                            return (ControlFlow::Break(b), f);
-                        }
-                    }
-                    cur_end = child_start;
-                    if cur_end <= range.start {
-                        break;
-                    }
-                }
-            } else {
-                let mut cur_base = base;
-                for child in children {
-                    let child_end = cur_base + child.bytes;
-                    if child_end > range.start && cur_base < range.end {
-                        let (flow, next_f) =
-                            visit_slices::<false, B, S, F>(child, cur_base, range, f);
-                        f = next_f;
-                        if let ControlFlow::Break(b) = flow {
-                            return (ControlFlow::Break(b), f);
-                        }
-                    }
-                    cur_base = child_end;
-                    if cur_base >= range.end {
-                        break;
-                    }
-                }
-            }
-            (ControlFlow::Continue(()), f)
-        }
-        SliceNode::Leaf { slices } => {
-            if REV {
-                let mut cur_end = base + entry.bytes;
-                for slice in slices.iter().rev() {
-                    let len = slice.len();
-                    let slice_start = cur_end - len;
-                    if cur_end > range.start && slice_start < range.end {
-                        let lo = range.start.saturating_sub(slice_start);
-                        let hi = (range.end - slice_start).min(len);
-                        let sub = &slice.bytes()[lo..hi];
-                        if let ControlFlow::Break(b) = f(sub) {
-                            return (ControlFlow::Break(b), f);
-                        }
-                    }
-                    cur_end = slice_start;
-                    if cur_end <= range.start {
-                        break;
-                    }
-                }
-            } else {
-                let mut cur_base = base;
-                for slice in slices {
-                    let len = slice.len();
-                    let slice_end = cur_base + len;
-                    if slice_end > range.start && cur_base < range.end {
-                        let lo = range.start.saturating_sub(cur_base);
-                        let hi = (range.end - cur_base).min(len);
-                        let sub = &slice.bytes()[lo..hi];
-                        if let ControlFlow::Break(b) = f(sub) {
-                            return (ControlFlow::Break(b), f);
-                        }
-                    }
-                    cur_base = slice_end;
-                    if cur_base >= range.end {
-                        break;
-                    }
-                }
-            }
-            (ControlFlow::Continue(()), f)
-        }
+        SliceNode::Internal { children } => visit_dir_items::<REV, _, B, F>(
+            children,
+            base,
+            entry.bytes,
+            range,
+            f,
+            |c| c.bytes,
+            |child, child_start, _, next_f| {
+                visit_slices::<REV, B, S, F>(child, child_start, range, next_f)
+            },
+        ),
+        SliceNode::Leaf { slices } => visit_dir_items::<REV, _, B, F>(
+            slices,
+            base,
+            entry.bytes,
+            range,
+            f,
+            ByteSlice::len,
+            |slice, slice_start, slice_end, mut next_f| {
+                let lo = range.start.saturating_sub(slice_start);
+                let hi = (range.end - slice_start).min(slice_end - slice_start);
+                let flow = next_f(&slice.bytes()[lo..hi]);
+                (flow, next_f)
+            },
+        ),
     }
 }
 

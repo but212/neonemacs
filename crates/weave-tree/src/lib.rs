@@ -253,21 +253,8 @@ impl<S: Summary> WeaveTree<S> {
                 },
             ));
         };
-        if end > total {
-            return Err((
-                self,
-                DocError::OutOfBounds {
-                    offset,
-                    len: delete_len,
-                    total,
-                },
-            ));
-        }
-        if !self.is_boundary(offset) {
-            return Err((self, DocError::InvalidBoundary { offset }));
-        }
-        if !self.is_boundary(end) {
-            return Err((self, DocError::InvalidBoundary { offset: end }));
+        if let Err(err) = self.validate_range(&(offset..end)) {
+            return Err((self, err));
         }
 
         let insert_len = insert.len();
