@@ -113,6 +113,10 @@ pub const BUILTINS: &[(&str, BuiltinFn)] = &[
     }),
     ("split-window-below", |ed, fx| (split(ed, Dir::Below), fx)),
     ("split-window-right", |ed, fx| (split(ed, Dir::Right), fx)),
+    ("suspend-emacs", |ed, mut fx| {
+        fx.push(Effect::Suspend);
+        (ed, fx)
+    }),
     ("switch-to-buffer", |ed, fx| {
         (prompt(ed, "Switch to buffer: ", Purpose::SwitchBuffer), fx)
     }),

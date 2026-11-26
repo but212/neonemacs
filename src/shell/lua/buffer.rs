@@ -6,6 +6,56 @@ use mlua::{Lua, Scope, Table};
 use neonemacs_core::{line_end, line_start};
 use std::cell::RefCell;
 
+#[derive(Clone, Copy)]
+enum CaseMode {
+    Up,
+    Down,
+    Cap,
+}
+
+impl CaseMode {
+    fn parse(mode: &str) -> mlua::Result<Self> {
+        match mode {
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            "cap" => Ok(Self::Cap),
+            _ => Err(mlua::Error::RuntimeError(format!(
+                "invalid case mode: {mode}"
+            ))),
+        }
+    }
+}
+
+/// Converts valid UTF-8 chunks according to `mode`, preserving raw non-UTF-8 bytes.
+fn convert_utf8_case(mode: CaseMode, bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut first_char = true;
+    let mut buf = [0u8; 4];
+    for chunk in bytes.utf8_chunks() {
+        let valid = chunk.valid();
+        match mode {
+            CaseMode::Up => out.extend_from_slice(valid.to_uppercase().as_bytes()),
+            CaseMode::Down => out.extend_from_slice(valid.to_lowercase().as_bytes()),
+            CaseMode::Cap => {
+                for ch in valid.chars() {
+                    if first_char {
+                        first_char = false;
+                        for u in ch.to_uppercase() {
+                            out.extend_from_slice(u.encode_utf8(&mut buf).as_bytes());
+                        }
+                    } else {
+                        for l in ch.to_lowercase() {
+                            out.extend_from_slice(l.encode_utf8(&mut buf).as_bytes());
+                        }
+                    }
+                }
+            }
+        }
+        out.extend_from_slice(chunk.invalid());
+    }
+    out
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn install_buffer_api<'lua, 'scope>(
     lua: &'lua Lua,
@@ -87,10 +137,18 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
         "replace",
         scope.create_function(|_, (start, end, text): (usize, usize, mlua::LuaString)| {
             let bytes = text.as_bytes();
-            mutate_editor(cell, |ed| {
-                ed.delete_only(start, end).insert_at(start, &bytes)
-            });
-            Ok(())
+            let applied =
+                crate::shell::with_editor_cell(cell, |ed| ed.replace_range(start, end, &bytes));
+            Ok(applied)
+        })?,
+    )?;
+    buffer_table.set(
+        "case_convert",
+        scope.create_function(|lua, (mode, text): (String, mlua::LuaString)| {
+            let mode = CaseMode::parse(&mode)?;
+            let bytes = text.as_bytes();
+            let out = convert_utf8_case(mode, &bytes);
+            lua.create_string(&out)
         })?,
     )?;
     buffer_table.set(
@@ -273,5 +331,78 @@ mod tests {
             "#,
         );
         res.unwrap();
+    }
+
+    #[test]
+    fn replace_is_single_undo_step_and_word_case_commands_work() {
+        use crate::core::Doc;
+        use crate::core::effect::Event;
+        use crate::shell::handle;
+
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let ed =
+            ed.with_current_buffer(|b| b.with_text(Doc::from_bytes("  café BAR baz".as_bytes())));
+        let ed = ed.with_window(|w| crate::core::Window { point: 0, ..w });
+
+        // M-u: skips leading spaces, upcases "café" -> "CAFÉ", moves point to end of word
+        let ed = handle(ed, Some(&lua), Event::Run("upcase-word".to_owned()));
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  CAFÉ BAR baz".as_bytes())
+        );
+        assert_eq!(ed.window().point, 7);
+
+        // Single undo restores the entire word in one step
+        let (ed, _) = ed.undo(Vec::new());
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  café BAR baz".as_bytes())
+        );
+
+        // M-l on "BAR"
+        let ed = ed.with_window(|w| crate::core::Window { point: 8, ..w });
+        let ed = handle(ed, Some(&lua), Event::Run("downcase-word".to_owned()));
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  café bar baz".as_bytes())
+        );
+        assert_eq!(ed.window().point, 11);
+
+        // M-c from middle of "baz" (at 'a')
+        let ed = ed.with_window(|w| crate::core::Window { point: 13, ..w });
+        let ed = handle(ed, Some(&lua), Event::Run("capitalize-word".to_owned()));
+        assert_eq!(
+            *ed.buffer().text(),
+            Doc::from_bytes("  café bar bAz".as_bytes())
+        );
+        assert_eq!(ed.window().point, 15);
+    }
+
+    #[test]
+    fn word_case_commands_respect_read_only_and_buffer_end() {
+        use crate::core::Doc;
+        use crate::core::effect::Event;
+        use crate::shell::handle;
+
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let ed = ed.with_current_buffer(|b| {
+            b.with_text(Doc::from_bytes(b"hello   "))
+                .set_view_only(true)
+        });
+        let ed = ed.with_window(|w| crate::core::Window { point: 0, ..w });
+
+        let ed = handle(ed, Some(&lua), Event::Run("upcase-word".to_owned()));
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"hello   "));
+        assert_eq!(ed.window().point, 0);
+        assert_eq!(ed.message(), "Buffer is read-only");
+
+        // Writable buffer at trailing whitespace -> no-op
+        let ed = ed.with_current_buffer(|b| b.set_view_only(false));
+        let ed = ed.with_window(|w| crate::core::Window { point: 5, ..w });
+        let ed = handle(ed, Some(&lua), Event::Run("upcase-word".to_owned()));
+        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"hello   "));
+        assert_eq!(ed.window().point, 5);
     }
 }

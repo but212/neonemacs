@@ -58,17 +58,26 @@ impl Editor {
         (self, dropped_res)
     }
 
-    /// Deletes `start..end` without returning a copy of the removed bytes.
+    /// Replaces `start..end` with `bytes` in a single atomic undo step.
+    /// Returns the updated editor and `true` if the edit was applied (or was a no-op).
     #[must_use]
-    pub fn delete_only(self, start: usize, end: usize) -> Self {
+    pub fn replace_range(self, start: usize, end: usize, bytes: &[u8]) -> (Self, bool) {
         let text = self.buffer().text();
         let start = text.floor_boundary(start);
         let end = text.ceil_boundary(end);
-        if start >= end {
-            return self;
+        let delete_len = end.saturating_sub(start);
+        if delete_len == 0 && bytes.is_empty() {
+            return (self, true);
         }
-        let (ed, _) = self.apply(Edit::delete(start, end - start));
-        ed
+        let insert = crate::Doc::from_bytes(bytes);
+        let (ed, applied) = self.apply(Edit::replace(start, delete_len, insert));
+        (ed, applied.is_some())
+    }
+
+    /// Deletes `start..end` without returning a copy of the removed bytes.
+    #[must_use]
+    pub fn delete_only(self, start: usize, end: usize) -> Self {
+        self.replace_range(start, end, b"").0
     }
 
     /// Deletes `start..end` and pushes the removed `Doc` slice to the kill ring.

@@ -14,8 +14,8 @@ fn run(files: &[FileArg]) -> io::Result<()> {
     let (ed, lua) =
         start(env::current_dir()?, init_source()).map_err(|e| io::Error::other(e.to_string()))?;
     let ed = open_files(ed, Some(&lua), files);
-    let _guard = TerminalGuard::enter()?;
-    ShellSession::new(ed, lua).run(&mut io::stdout())
+    let mut guard = TerminalGuard::enter()?;
+    ShellSession::new(ed, lua).run(&mut io::stdout(), &mut guard)
 }
 
 fn main() {
