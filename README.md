@@ -9,6 +9,7 @@ Emacs 키 바인딩과 명령 흐름을 따르되 Elisp 에뮬레이션 없이 �
 - **Functional Core / Imperative Shell**: `crates/neonemacs-core` (`#![no_std]` + `alloc`)의 순수 상태 전이와 `src/shell`의 터미널·파일·프로세스 I/O를 분리했습니다.
 - **Unicode / CJK 폭 처리**: 한글, CJK 전각 문자, 결합 문자 등의 터미널 표시 폭을 계산해 정렬을 유지합니다.
 - **Zero-Overhead 원자적 영속화 (Registore)**: 사전 쓰기 로그(WAL) 없이 `Doc` 슬라이스를 임시 파일에 단일 순차 스트리밍(`WAF = 1.0`)한 뒤 `sync_data`와 `rename`으로 원자적 교체를 수행합니다.
+- **크래시 복구 백업 (Recovery)**: 수정된 버퍼를 유휴 상태(기본 5초)에서 `XDG_STATE_HOME`(또는 `HOME` / `USERPROFILE` 기준 `.local/state`) 아래 `neonemacs/recovery/`에 원자적 `.rec` 파일로 자동 백업합니다. `SIGHUP`/`SIGTERM` 수신 시 즉시 긴급 덤프(`emergency_dump`)를 수행하는 기능은 Unix 전용이며, Windows 등 비-Unix 환경에서는 유휴 자동 백업과 저장·삭제·정상 종료 시 정리만 동작합니다.
 - **Lua 5.4 설정**: 샌드박스된 내장 Lua 런타임(`init.lua`)으로 키맵과 설정을 구성합니다.
 
 ## 빌드 및 실행

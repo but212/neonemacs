@@ -310,7 +310,6 @@ mod tests {
             panic!("expected StatDisk, got {fx:?}");
         };
         let (ed, fx) = disk_checked(ed, *target, path, DiskState::Unknown, Vec::new());
-        // Only the write is requested. The old WAL goes only after the write succeeds (I-36).
         assert!(matches!(fx.as_slice(), [Effect::WriteFile { .. }]));
 
         let (ed, fx) = written(

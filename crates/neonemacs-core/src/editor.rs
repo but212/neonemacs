@@ -175,7 +175,9 @@ impl Editor {
     /// the interaction state (I-58).
     #[must_use]
     pub fn adopt_settings(self, from: Self) -> Self {
-        self.update_settings(|_| from.settings)
+        let mut ed = self.update_settings(|_| from.settings);
+        ed.buffers = ed.buffers.clear_syntax_caches();
+        ed
     }
 
     /// The absolute path that `input` names, resolved against the working directory (I-37).
@@ -195,6 +197,7 @@ impl Editor {
         f: impl FnOnce(SyntaxRegistry) -> SyntaxRegistry,
     ) -> Self {
         self.settings.syntax_registry = f(self.settings.syntax_registry);
+        self.buffers = self.buffers.clear_syntax_caches();
         self
     }
 
@@ -518,5 +521,58 @@ mod tests {
             .snap_windows_for_buffer(id);
         assert_eq!(ed.window().point, 3);
         assert_eq!(ed.window().top, 0);
+    }
+
+    #[test]
+    fn syntax_registry_update_and_adopt_settings_invalidate_buffer_syntax_cache() {
+        use crate::render;
+        use crate::syntax::{SyntaxDef, TokenKind};
+        use alloc::vec;
+        use alloc::vec::Vec;
+
+        let c_style = SyntaxDef::new(
+            "demo",
+            vec!["demo".to_owned()],
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .with_block_comment("/*", "*/");
+        let pascal_style = SyntaxDef::new(
+            "demo",
+            vec!["demo".to_owned()],
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .with_block_comment("(*", "*)");
+
+        let ed = Editor::new(Config::default())
+            .with_syntax_registry(|reg| reg.register(c_style.clone()))
+            .with_current_buffer(|b| {
+                b.set_name("test.demo")
+                    .with_text(Doc::from_bytes(b"/* open\nx"))
+            });
+        let ed = render::scroll(ed, 20, 6);
+        let frame = render::frame(&ed, 20, 6);
+        assert_eq!(frame.row(1)[0].style, TokenKind::Comment);
+
+        // Replacing syntax definition via with_syntax_registry clears cached LexState.
+        let ed = ed.with_syntax_registry(|reg| reg.register(pascal_style));
+        let ed = render::scroll(ed, 20, 6);
+        let frame = render::frame(&ed, 20, 6);
+        assert_eq!(frame.row(1)[0].style, TokenKind::Normal);
+
+        // Replacing settings via adopt_settings also clears cached LexState.
+        let fresh =
+            Editor::new(Config::default()).with_syntax_registry(|reg| reg.register(c_style));
+        let ed = ed.adopt_settings(fresh);
+        let ed = render::scroll(ed, 20, 6);
+        let frame = render::frame(&ed, 20, 6);
+        assert_eq!(frame.row(1)[0].style, TokenKind::Comment);
     }
 }

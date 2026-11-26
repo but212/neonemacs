@@ -1,7 +1,6 @@
 //! Lua `command`, `message`, and `run`: registers Lua commands and runs built-in or Lua commands by name.
 
 use super::{COMMANDS, mutate_editor};
-use crate::core::Editor;
 use crate::core::effect::Event;
 use crate::core::is_builtin;
 use crate::shell::{perform_in, with_editor_cell};
@@ -14,7 +13,7 @@ const MAX_RUN_DEPTH: usize = 50;
 pub(super) fn install_command_api<'lua, 'scope>(
     scope: &'lua Scope<'lua, 'scope>,
     g: &Table,
-    cell: &'scope RefCell<Option<Editor>>,
+    cell: &'scope RefCell<crate::shell::EditorSlot>,
     depth: &'scope Cell<usize>,
 ) -> mlua::Result<()> {
     g.set(

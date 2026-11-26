@@ -16,6 +16,17 @@ pub(crate) fn persist_with(
     eol: Eol,
     permissions: Option<Permissions>,
 ) -> io::Result<()> {
+    persist_with_header(path, &[], doc, eol, permissions)
+}
+
+/// Single-pass atomic persistence writing `header` bytes followed by `doc` slices.
+pub(crate) fn persist_with_header(
+    path: &Path,
+    header: &[u8],
+    doc: &Doc,
+    eol: Eol,
+    permissions: Option<Permissions>,
+) -> io::Result<()> {
     let parent = match path.parent() {
         Some(p) if p.as_os_str().is_empty() => Path::new("."),
         Some(p) if p.is_dir() => p,
@@ -52,6 +63,9 @@ pub(crate) fn persist_with(
     let mut w = BufWriter::with_capacity(64 * 1024, file);
 
     let result = (|| -> io::Result<()> {
+        if !header.is_empty() {
+            w.write_all(header)?;
+        }
         let flow = doc
             .try_for_each_slice(0..doc.total_bytes(), |chunk| {
                 let res = match eol {
@@ -169,5 +183,15 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"fresh content\n");
         let first_stale = dir.path().join(format!(".note.txt.{pid}_{base_seq}.tmp"));
         assert_eq!(fs::read(&first_stale).unwrap(), b"stale orphan bytes");
+    }
+
+    #[test]
+    fn persist_with_header_writes_prefix_before_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rec.bin");
+        let doc = Doc::from_bytes(b"line1\nline2");
+
+        persist_with_header(&path, b"HDR\x01", &doc, Eol::Crlf, None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"HDR\x01line1\r\nline2");
     }
 }

@@ -92,24 +92,24 @@ fn styled_render_preserves_column_and_cursor_positions() {
     let frame = render::frame(&ed, cols, rows);
 
     // Rows must be exactly formatted text without ANSI codes embedded
-    assert_eq!(frame.rows.len(), rows);
+    assert_eq!(frame.row_count(), rows);
     let row_texts = frame.row_strings();
     assert!(row_texts[0].starts_with("fn main() {"));
     assert!(row_texts[1].starts_with("    let x = 42;"));
 
     // Style in Cell grid must be populated with 1:1 cell alignment
-    assert_eq!(frame.rows[0][0].style, TokenKind::Keyword); // "f"
-    assert_eq!(frame.rows[0][1].style, TokenKind::Keyword); // "n"
-    assert_eq!(frame.rows[0][2].style, TokenKind::Normal); // " "
-    assert_eq!(frame.rows[0][3].style, TokenKind::Normal); // "m"
+    assert_eq!(frame.row(0)[0].style, TokenKind::Keyword); // "f"
+    assert_eq!(frame.row(0)[1].style, TokenKind::Keyword); // "n"
+    assert_eq!(frame.row(0)[2].style, TokenKind::Normal); // " "
+    assert_eq!(frame.row(0)[3].style, TokenKind::Normal); // "m"
 
     // "    let"
-    assert_eq!(frame.rows[1][4].style, TokenKind::Keyword); // "l"
-    assert_eq!(frame.rows[1][5].style, TokenKind::Keyword); // "e"
-    assert_eq!(frame.rows[1][6].style, TokenKind::Keyword); // "t"
+    assert_eq!(frame.row(1)[4].style, TokenKind::Keyword); // "l"
+    assert_eq!(frame.row(1)[5].style, TokenKind::Keyword); // "e"
+    assert_eq!(frame.row(1)[6].style, TokenKind::Keyword); // "t"
     let pos_42 = row_texts[1].find("42").unwrap();
-    assert_eq!(frame.rows[1][pos_42].style, TokenKind::Number);
-    assert_eq!(frame.rows[1][pos_42 + 1].style, TokenKind::Number);
+    assert_eq!(frame.row(1)[pos_42].style, TokenKind::Number);
+    assert_eq!(frame.row(1)[pos_42 + 1].style, TokenKind::Number);
 
     // Cursor position remains unaffected (I-22)
     assert_eq!(frame.cursor, (0, 0));
@@ -185,7 +185,7 @@ fn raw_non_utf8_bytes_do_not_shift_syntax_highlighting() {
 
     let (cols, rows) = (40, 5);
     let frame = render::frame(&ed, cols, rows);
-    let first_row = &frame.rows[0];
+    let first_row = frame.row(0);
 
     // Find "let x = 7;" in first_row
     let _row_str: String = first_row.iter().map(|c| c.glyph.as_str()).collect();

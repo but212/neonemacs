@@ -1,7 +1,6 @@
 //! Lua `syntax.register`: declares syntax definitions from Lua.
 
 use super::mutate_editor;
-use crate::core::Editor;
 use crate::core::SyntaxDef;
 use mlua::{Lua, Scope, Table};
 use std::cell::RefCell;
@@ -10,7 +9,7 @@ pub(super) fn install_syntax_api<'lua, 'scope>(
     lua: &'lua Lua,
     scope: &'lua Scope<'lua, 'scope>,
     g: &Table,
-    cell: &'scope RefCell<Option<Editor>>,
+    cell: &'scope RefCell<crate::shell::EditorSlot>,
 ) -> mlua::Result<()> {
     let syntax_table = lua.create_table()?;
     syntax_table.set(

@@ -15,6 +15,7 @@ weave-tree = { path = "../weave-tree" }
 [dev-dependencies]
 criterion = "0.5"
 proptest = "1"
+syn = { version = "2", features = ["full", "visit"] }
 
 [[bench]]
 name = "editor_perf_bench"

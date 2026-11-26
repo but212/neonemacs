@@ -71,14 +71,12 @@ pub fn new_state() -> mlua::Result<Lua> {
 }
 
 /// The editor in `cell`. The cell is full whenever Lua runs (I-21).
-fn editor_ref(cell: &RefCell<Option<Editor>>) -> Ref<'_, Editor> {
-    Ref::map(cell.borrow(), |slot| {
-        slot.as_ref().expect("editor is in the cell (I-21)")
-    })
+fn editor_ref(cell: &RefCell<crate::shell::EditorSlot>) -> Ref<'_, Editor> {
+    Ref::map(cell.borrow(), crate::shell::EditorSlot::as_ref)
 }
 
 /// Applies an infallible transition `f` to the editor inside `cell`.
-fn mutate_editor(cell: &RefCell<Option<Editor>>, f: impl FnOnce(Editor) -> Editor) {
+fn mutate_editor(cell: &RefCell<crate::shell::EditorSlot>, f: impl FnOnce(Editor) -> Editor) {
     crate::shell::with_editor_cell(cell, |ed| (f(ed), ()));
 }
 
@@ -88,7 +86,7 @@ fn mutate_editor(cell: &RefCell<Option<Editor>>, f: impl FnOnce(Editor) -> Edito
 /// Returns `mlua::Error` if binding any Lua API or executing `body` fails.
 pub fn with_api<R>(
     lua: &Lua,
-    cell: &RefCell<Option<Editor>>,
+    cell: &RefCell<crate::shell::EditorSlot>,
     body: impl FnOnce(&Lua) -> mlua::Result<R>,
 ) -> mlua::Result<R> {
     let depth = Cell::new(0);

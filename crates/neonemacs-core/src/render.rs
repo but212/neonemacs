@@ -3,20 +3,145 @@
 
 use crate::config::Toggles;
 use crate::editor::{Buffer, Dir, Editor, Layout, Mode, Prefix, Window};
-use crate::syntax::{SyntaxDef, TokenKind, highlight_line};
+use crate::syntax::{LexState, SyntaxDef, TokenKind, highlight_line, highlight_line_with_state};
 use crate::width::{Metrics, column, pos_and_column, unit_width};
 use crate::{Doc, line_to_offset, offset_to_line, total_lines, unit_char};
-use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
+
+/// Inline-first UTF-8 cell glyph storage (avoids heap allocation for ASCII/single chars,
+/// falling back to `String` only when combining marks exceed 4 UTF-8 bytes).
+#[derive(Debug, Clone)]
+pub struct CellGlyph(CellGlyphInner);
+
+#[derive(Debug, Clone)]
+enum CellGlyphInner {
+    Inline { len: u8, buf: [u8; 4] },
+    Heap(String),
+}
+
+impl CellGlyph {
+    pub const SPACE: Self = Self(CellGlyphInner::Inline {
+        len: 1,
+        buf: [b' ', 0, 0, 0],
+    });
+    pub const EMPTY: Self = Self(CellGlyphInner::Inline {
+        len: 0,
+        buf: [0; 4],
+    });
+
+    #[must_use]
+    pub const fn from_ascii(b: u8) -> Self {
+        assert!(b.is_ascii(), "CellGlyph::from_ascii requires ASCII byte");
+        Self(CellGlyphInner::Inline {
+            len: 1,
+            buf: [b, 0, 0, 0],
+        })
+    }
+
+    #[must_use]
+    pub fn from_char(c: char) -> Self {
+        let mut buf = [0u8; 4];
+        let len = c.encode_utf8(&mut buf).len();
+        Self(CellGlyphInner::Inline {
+            len: len as u8,
+            buf,
+        })
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            CellGlyphInner::Inline { len, buf } => core::str::from_utf8(&buf[..usize::from(*len)])
+                .expect("inline glyph is valid UTF-8"),
+            CellGlyphInner::Heap(s) => s.as_str(),
+        }
+    }
+
+    #[must_use]
+    pub fn push(self, c: char) -> Self {
+        let char_len = c.len_utf8();
+        match self.0 {
+            CellGlyphInner::Inline { len, mut buf } => {
+                let cur = usize::from(len);
+                if cur + char_len <= 4 {
+                    c.encode_utf8(&mut buf[cur..]);
+                    Self(CellGlyphInner::Inline {
+                        len: (cur + char_len) as u8,
+                        buf,
+                    })
+                } else {
+                    let mut s = String::with_capacity(cur + char_len);
+                    s.push_str(
+                        core::str::from_utf8(&buf[..cur]).expect("inline glyph is valid UTF-8"),
+                    );
+                    s.push(c);
+                    Self(CellGlyphInner::Heap(s))
+                }
+            }
+            CellGlyphInner::Heap(mut s) => {
+                s.push(c);
+                Self(CellGlyphInner::Heap(s))
+            }
+        }
+    }
+}
+
+impl core::ops::Deref for CellGlyph {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for CellGlyph {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for CellGlyph {}
+
+impl PartialEq<str> for CellGlyph {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for CellGlyph {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for CellGlyph {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl From<&str> for CellGlyph {
+    fn from(s: &str) -> Self {
+        if s.len() <= 4 {
+            let mut buf = [0u8; 4];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            Self(CellGlyphInner::Inline {
+                len: s.len() as u8,
+                buf,
+            })
+        } else {
+            Self(CellGlyphInner::Heap(String::from(s)))
+        }
+    }
+}
 
 /// A single terminal cell containing display glyph and syntax style (I-22).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
-    pub glyph: String,
+    pub glyph: CellGlyph,
     pub style: TokenKind,
     /// Drawn in reverse video: the active region or the current search match (I-47).
     pub reverse: bool,
@@ -24,7 +149,7 @@ pub struct Cell {
 
 impl Cell {
     #[must_use]
-    pub const fn plain(glyph: String) -> Self {
+    pub const fn plain(glyph: CellGlyph) -> Self {
         Self {
             glyph,
             style: TokenKind::Normal,
@@ -33,8 +158,8 @@ impl Cell {
     }
 
     #[must_use]
-    pub fn space() -> Self {
-        Self::plain(" ".to_owned())
+    pub const fn space() -> Self {
+        Self::plain(CellGlyph::SPACE)
     }
 }
 
@@ -57,18 +182,44 @@ fn reversed_ranges(ed: &Editor) -> Vec<(usize, usize)> {
     out
 }
 
-/// A screen as cell rows of exactly the terminal width, and the cursor as `(x, y)`.
+/// A screen as a flat row-major cell grid (`cells.len() == cols * rows`, I-60), and the cursor as `(x, y)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
-    pub rows: Vec<Vec<Cell>>,
+    cells: Vec<Cell>,
+    cols: usize,
     pub cursor: (usize, usize),
 }
 
 impl Frame {
     #[must_use]
+    pub fn row_count(&self) -> usize {
+        self.cells.len().checked_div(self.cols).unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn row(&self, y: usize) -> &[Cell] {
+        if self.cols == 0 {
+            return &[];
+        }
+        let start = y * self.cols;
+        &self.cells[start..start + self.cols]
+    }
+
+    pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
+        let step = self.cols.max(1);
+        self.cells
+            .chunks_exact(step)
+            .take(if self.cols == 0 { 0 } else { usize::MAX })
+    }
+
+    #[must_use]
+    pub fn into_cells(self) -> Vec<Cell> {
+        self.cells
+    }
+
+    #[must_use]
     pub fn row_strings(&self) -> Vec<String> {
-        self.rows
-            .iter()
+        self.rows()
             .map(|row| row.iter().map(|c| c.glyph.as_str()).collect::<String>())
             .collect()
     }
@@ -128,24 +279,51 @@ fn areas(ed: &Editor, cols: usize, rows: usize) -> Vec<Rect> {
     rects(ed.windows().layout(), body)
 }
 
-/// Moves each window's `top` and `left_col` so that its point is visible.
+/// Moves each window's `top` and `left_col` so that its point is visible, and warms
+/// multi-line syntax state caches for the visible viewport.
 #[must_use]
 pub fn scroll(ed: Editor, cols: usize, rows: usize) -> Editor {
     let m = ed.config().metrics();
-    let scrolled: Vec<Window> = ed
+    let highlight_on = ed.config().toggles.contains(Toggles::SYNTAX_HIGHLIGHT);
+    let win_areas: Vec<(Window, Rect)> = ed
         .windows()
         .windows()
         .into_iter()
         .copied()
         .zip(areas(&ed, cols, rows))
-        .map(|(w, area)| scroll_window(ed.buffer_by_id(w.buffer).text(), w, area, m))
         .collect();
-    ed.with_windows(|mut win| {
-        for (i, w) in scrolled.into_iter().enumerate() {
-            win = win.set_leaf(i, w);
+    let scrolled: Vec<(Window, Rect)> = win_areas
+        .into_iter()
+        .map(|(w, area)| {
+            (
+                scroll_window(ed.buffer_by_id(w.buffer).text(), w, area, m),
+                area,
+            )
+        })
+        .collect();
+    let mut ed = ed.with_windows(|mut win| {
+        for (i, (w, _)) in scrolled.iter().enumerate() {
+            win = win.set_leaf(i, *w);
         }
         win
-    })
+    });
+    if highlight_on {
+        for (w, area) in scrolled {
+            let buf = ed.buffer_by_id(w.buffer);
+            let huge = buf.text().total_bytes() >= HUGE_FILE_SYNTAX_BYTES;
+            let syntax = ed.syntax_registry().find_by_filename(buf.name()).cloned();
+            if !huge
+                && let Some(def) = syntax
+                && def.heading_prefix.is_none()
+                && (def.block_comment.is_some() || def.raw_strings)
+            {
+                let first_line = crate::line_at(buf.text(), w.top);
+                let through = first_line.saturating_add(area.h.saturating_sub(1));
+                ed = ed.with_buffer(w.buffer, |b| b.ensure_syntax_cache(&def, through));
+            }
+        }
+    }
+    ed
 }
 
 fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
@@ -171,7 +349,7 @@ fn scroll_window(text: &Doc, mut w: Window, area: Rect, m: Metrics) -> Window {
 /// Builds the screen. Pure: call `scroll` first to bring point into view.
 pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
     let m = ed.config().metrics();
-    let mut grid = vec![vec![Cell::space(); cols]; rows];
+    let mut grid = vec![Cell::space(); cols * rows];
     let leaves = ed.windows().windows();
     let mut cursor = (0, 0);
     let reversed = reversed_ranges(ed);
@@ -191,29 +369,28 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
         };
         let point = w.point.min(buf.text().total_bytes());
         let point_col = column(buf.text(), point, m);
-        let (body, (row, col)) = window_cells(syntax, buf.text(), w, area, m, marks, point_col);
-        for (r, cells) in body.into_iter().enumerate() {
-            grid = put(grid, area.y + r, area.x, cells);
+        let (next_grid, (row, col)) =
+            window_cells_into(grid, cols, rows, syntax, buf, w, area, m, marks, point_col);
+        grid = next_grid;
+        let status_row = area.y + area.h.saturating_sub(1);
+        if status_row < rows && area.x < cols {
+            let max_w = area.w.min(cols - area.x);
+            let start = status_row * cols + area.x;
+            grid = fit_into(
+                grid,
+                start,
+                max_w,
+                &status_text_with_col(buf, w.point, point_col, area.w, m),
+                '-',
+                m,
+            );
         }
-        let status = fit(
-            &status_text_with_col(buf, w.point, point_col, area.w, m),
-            area.w,
-            '-',
-            m,
-        );
-        let status_cells: Vec<Cell> = status.into_iter().map(Cell::plain).collect();
-        grid = put(
-            grid,
-            area.y + area.h.saturating_sub(1),
-            area.x,
-            status_cells,
-        );
         if i == ed.windows().selected() {
             cursor = (area.x + col, area.y + row);
         }
     }
 
-    if rows > 0 {
+    if rows > 0 && cols > 0 {
         // While a prompt is shown, the cursor sits in the echo area and the tail of a long line stays visible.
         let message = match ed.mode() {
             Mode::Prompt(p) if p.matches_echo(ed.message()) => {
@@ -232,44 +409,40 @@ pub fn frame(ed: &Editor, cols: usize, rows: usize) -> Frame {
             } if ed.config().toggles.contains(Toggles::ECHO_PREFIX) => "ESC-",
             _ => ed.message(),
         };
-        let echo = fit(message, cols, ' ', m);
-        let echo_cells: Vec<Cell> = echo.into_iter().map(Cell::plain).collect();
-        grid = put(grid, rows - 1, 0, echo_cells);
+        let start = (rows - 1) * cols;
+        grid = fit_into(grid, start, cols, message, ' ', m);
     }
 
-    Frame { rows: grid, cursor }
-}
-
-fn put<T>(mut grid: Vec<Vec<T>>, row: usize, col: usize, items: Vec<T>) -> Vec<Vec<T>> {
-    if let Some(line) = grid.get_mut(row) {
-        for (i, item) in items.into_iter().enumerate() {
-            if let Some(slot) = line.get_mut(col + i) {
-                *slot = item;
-            }
-        }
+    Frame {
+        cells: grid,
+        cols,
+        cursor,
     }
-    grid
 }
 
-/// Cells of the text area of one window, and the cursor as `(row, col)` inside it.
-fn window_cells(
+/// Writes the text area of one window into `grid` and returns `(grid, (row, col))`.
+#[allow(clippy::too_many_arguments)]
+fn window_cells_into(
+    mut grid: Vec<Cell>,
+    grid_cols: usize,
+    grid_rows: usize,
     syntax: Option<&SyntaxDef>,
-    text: &Doc,
+    buf: &Buffer,
     window: &Window,
     area: Rect,
     metrics: Metrics,
     marks: &[(usize, usize)],
     point_col: usize,
-) -> (Vec<Vec<Cell>>, (usize, usize)) {
+) -> (Vec<Cell>, (usize, usize)) {
+    let text = buf.text();
     let height = area.h.saturating_sub(1);
     let total = text.total_bytes();
     let total_lines = total_lines(text);
     let point = window.point.min(total);
     let mut cursor = (0, 0);
-    let mut body = Vec::with_capacity(height);
     let first_line = crate::line_at(text, window.top);
     let mut start = line_to_offset(text, first_line).expect("line exists");
-    for line in (first_line..total_lines).take(height) {
+    for (drawn_rows, line) in (first_line..total_lines).take(height).enumerate() {
         let next = if line + 1 < total_lines {
             Some(line_to_offset(text, line + 1).expect("next line exists"))
         } else {
@@ -277,21 +450,29 @@ fn window_cells(
         };
         let end = next.map_or(total, |offset| offset - 1);
         if start <= point && point <= end {
-            cursor = (body.len(), point_col.saturating_sub(window.left_col));
+            cursor = (drawn_rows, point_col.saturating_sub(window.left_col));
         }
-        body.push(line_cells(
-            syntax,
-            text,
-            start..end,
-            window.left_col,
-            area.w,
-            metrics,
-            marks,
-        ));
+        let target_row = area.y + drawn_rows;
+        if target_row < grid_rows && area.x < grid_cols {
+            let max_w = area.w.min(grid_cols - area.x);
+            let row_start = target_row * grid_cols + area.x;
+            let start_state = buf.syntax_start_state(line).unwrap_or(LexState::Normal);
+            grid = line_cells_into(
+                grid,
+                row_start,
+                max_w,
+                syntax,
+                start_state,
+                text,
+                start..end,
+                window.left_col,
+                metrics,
+                marks,
+            );
+        }
         start = next.unwrap_or(total);
     }
-    body.resize_with(height, || vec![Cell::space(); area.w]);
-    (body, cursor)
+    (grid, cursor)
 }
 
 const HUGE_FILE_SYNTAX_BYTES: usize = 100 << 20;
@@ -299,19 +480,23 @@ const SYNTAX_PREFIX_BUDGET: usize = 4096;
 const LINE_SCAN_BYTES: usize = 64 * 1024;
 const CELL_GLYPH_BYTES: usize = 8 * 1024;
 
-/// Cells of one line from `left` across `width` columns. A line cut at the
-/// right edge or by the viewport scan limit shows `$` in the last column (A5).
-fn line_cells(
+/// Writes cells of one line from `left` across `width` columns at `grid[row_start..]`.
+/// A line cut at the right edge or by the viewport scan limit shows `$` in the last column (A5).
+#[allow(clippy::too_many_arguments)]
+fn line_cells_into(
+    mut grid: Vec<Cell>,
+    row_start: usize,
+    width: usize,
     syntax: Option<&SyntaxDef>,
+    start_state: LexState,
     text: &Doc,
     line: core::ops::Range<usize>,
     left: usize,
-    width: usize,
     metrics: Metrics,
     marks: &[(usize, usize)],
 ) -> Vec<Cell> {
+    let cells = &mut grid[row_start..row_start + width];
     let (start, end) = (line.start, line.end);
-    let mut cells = vec![Cell::space(); width];
     let right = left + width;
     let huge_file = text.total_bytes() >= HUGE_FILE_SYNTAX_BYTES;
     let long_line = end - start > SYNTAX_PREFIX_BUDGET;
@@ -350,7 +535,7 @@ fn line_cells(
                 scan_col += unit_width(unit, scan_col, metrics);
                 cap_end += len;
             }
-            // Finish the token so truncation cannot turn an identifier into a keyword or vice versa.
+            // Finish the token so truncation cannot turn an identifier into a keyword or versa.
             let max_word = def
                 .keywords
                 .iter()
@@ -379,7 +564,9 @@ fn line_cells(
         } else {
             Some(end)
         };
-        scan_end.map_or_else(Vec::new, |end| highlight_line(syntax, text, start..end))
+        scan_end.map_or_else(Vec::new, |end| {
+            highlight_line_with_state(syntax, text, start..end, start_state).0
+        })
     } else {
         Vec::new()
     };
@@ -405,11 +592,14 @@ fn line_cells(
         if width_of_unit == 0 {
             // Combining mark: attach to the cell before it.
             if col > left && col - left - 1 < width {
-                let glyph = &mut cells[col - left - 1].glyph;
+                let idx = col - left - 1;
+                let glyph = core::mem::replace(&mut cells[idx].glyph, CellGlyph::EMPTY);
                 let mark = unit_char(unit);
-                if glyph.len() + mark.len_utf8() <= CELL_GLYPH_BYTES {
-                    glyph.push(mark);
-                }
+                cells[idx].glyph = if glyph.len() + mark.len_utf8() <= CELL_GLYPH_BYTES {
+                    glyph.push(mark)
+                } else {
+                    glyph
+                };
             }
         } else if col + width_of_unit > right {
             // Do not place a wide glyph that overflows the right edge; A5 marks the cut with `$`.
@@ -433,37 +623,63 @@ fn line_cells(
         pos += len;
     }
     if pos < end && width > 0 {
-        cells[width - 1] = Cell::plain("$".to_owned());
+        cells[width - 1] = Cell::plain(CellGlyph::from_ascii(b'$'));
     }
-    cells
+    grid
+}
+
+#[cfg(test)]
+fn line_cells(
+    syntax: Option<&SyntaxDef>,
+    text: &Doc,
+    line: core::ops::Range<usize>,
+    left: usize,
+    width: usize,
+    metrics: Metrics,
+    marks: &[(usize, usize)],
+) -> Vec<Cell> {
+    let cells = vec![Cell::space(); width];
+    line_cells_into(
+        cells,
+        0,
+        width,
+        syntax,
+        LexState::Normal,
+        text,
+        line,
+        left,
+        metrics,
+        marks,
+    )
 }
 
 /// `w` cells for one character: control characters as `^X`, C1 as `\HH`,
 /// tabs as spaces, and wide characters followed by an empty cell.
-fn glyph(c: char, w: usize) -> Vec<String> {
+fn glyph(c: char, w: usize) -> Vec<CellGlyph> {
     if c == '\t' {
-        return vec![" ".to_owned(); w];
+        return vec![CellGlyph::SPACE; w];
     }
     if let Ok(b) = u8::try_from(c)
         && b < 0x20
     {
-        return vec!["^".to_owned(), char::from(b + 64).to_string()];
+        return vec![CellGlyph::from_ascii(b'^'), CellGlyph::from_ascii(b + 64)];
     }
     let code = c as u32;
     if code == 0x7F {
-        return vec!["^".to_owned(), "?".to_owned()];
+        return vec![CellGlyph::from_ascii(b'^'), CellGlyph::from_ascii(b'?')];
     }
     if (0x80..=0x9F).contains(&code) {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
         let b = code as usize;
         return vec![
-            "\\".to_owned(),
-            char::from(HEX[b >> 4]).to_string(),
-            char::from(HEX[b & 0xF]).to_string(),
+            CellGlyph::from_ascii(b'\\'),
+            CellGlyph::from_ascii(HEX[b >> 4]),
+            CellGlyph::from_ascii(HEX[b & 0xF]),
         ];
     }
-    let mut cells = vec![c.to_string()];
-    cells.extend(core::iter::repeat_n(String::new(), w.saturating_sub(1)));
+    let mut cells = Vec::with_capacity(w);
+    cells.push(CellGlyph::from_char(c));
+    cells.extend(core::iter::repeat_n(CellGlyph::EMPTY, w.saturating_sub(1)));
     cells
 }
 
@@ -514,25 +730,40 @@ fn skip_cells(s: &str, cells: usize, m: Metrics) -> (&str, usize) {
     ("", skipped)
 }
 
-/// Fits `s` into `width` cells, padding with `fill`. Wide characters are not split.
-fn fit(s: &str, width: usize, fill: char, m: Metrics) -> Vec<String> {
-    let mut cells: Vec<String> = Vec::with_capacity(width);
+/// Fits `s` into `width` cells at `grid[start..start + width]`, padding with `fill`.
+fn fit_into(
+    mut grid: Vec<Cell>,
+    start: usize,
+    width: usize,
+    s: &str,
+    fill: char,
+    m: Metrics,
+) -> Vec<Cell> {
+    let out = &mut grid[start..start + width];
+    let mut col = 0;
     for c in s.chars() {
         let w = m.char(c);
         if w == 0 {
-            if let Some(last) = cells.last_mut() {
-                last.push(c);
+            if col > 0 {
+                let prev = core::mem::replace(&mut out[col - 1].glyph, CellGlyph::EMPTY);
+                out[col - 1].glyph = prev.push(c);
             }
             continue;
         }
-        if cells.len() + w > width {
+        if col + w > width {
             break;
         }
-        cells.push(c.to_string());
-        cells.extend(core::iter::repeat_n(String::new(), w - 1));
+        out[col] = Cell::plain(CellGlyph::from_char(c));
+        for slot in &mut out[col + 1..col + w] {
+            *slot = Cell::plain(CellGlyph::EMPTY);
+        }
+        col += w;
     }
-    cells.resize(width, fill.to_string());
-    cells
+    let fill_cell = Cell::plain(CellGlyph::from_char(fill));
+    for slot in &mut out[col..] {
+        *slot = fill_cell.clone();
+    }
+    grid
 }
 
 #[cfg(test)]
@@ -540,6 +771,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::eol::Eol;
+    use alloc::borrow::ToOwned;
 
     fn screen(text: &str, point: usize, cols: usize, rows: usize) -> Frame {
         let ed = Editor::new(Config::default())
@@ -556,7 +788,7 @@ mod tests {
     use crate::test_support::{keys, set_mark, typ};
 
     fn reversed(frame: &Frame, row: usize) -> Vec<bool> {
-        frame.rows[row].iter().map(|c| c.reverse).collect()
+        frame.row(row).iter().map(|c| c.reverse).collect()
     }
 
     fn drawn(ed: Editor, cols: usize, rows: usize) -> Frame {
@@ -583,7 +815,7 @@ mod tests {
         let ed = set_mark(keys(typ(Editor::new(Config::default()), "abc def"), "C-a"));
         let ed = keys(ed, "C-g");
         let f = drawn(ed, 10, 4);
-        assert!(f.rows.iter().flatten().all(|c| !c.reverse));
+        assert!(f.rows().flatten().all(|c| !c.reverse));
     }
 
     fn cells_of(s: &str, left: usize, width: usize) -> Vec<String> {
@@ -598,7 +830,7 @@ mod tests {
             &[],
         )
         .into_iter()
-        .map(|c| c.glyph)
+        .map(|c| c.glyph.as_str().to_owned())
         .collect()
     }
 
@@ -654,7 +886,7 @@ mod tests {
         let ed = ed.with_windows(|wm| wm.split(Dir::Below));
         let f = drawn(ed, 10, 8);
         let with_region = (0..8)
-            .filter(|&r| f.rows[r].iter().any(|c| c.reverse))
+            .filter(|&r| f.row(r).iter().any(|c| c.reverse))
             .count();
         assert_eq!(with_region, 1);
     }
@@ -728,7 +960,8 @@ mod tests {
                 point: 0,
                 ..w
             });
-            drawn(ed, 10, 4).rows[0]
+            drawn(ed, 10, 4)
+                .row(0)
                 .iter()
                 .any(|c| c.style != TokenKind::Normal)
         };
@@ -1222,5 +1455,16 @@ mod tests {
                 .all(|c| c.glyph == "x" && c.style == TokenKind::Normal)
         );
         assert_eq!(cells[79].glyph, "$");
+    }
+
+    #[test]
+    fn cell_glyph_from_ascii_accepts_ascii() {
+        assert_eq!(CellGlyph::from_ascii(b'A').as_str(), "A");
+    }
+
+    #[test]
+    #[should_panic(expected = "CellGlyph::from_ascii requires ASCII byte")]
+    fn cell_glyph_from_ascii_rejects_non_ascii() {
+        let _ = CellGlyph::from_ascii(0x80);
     }
 }

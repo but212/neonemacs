@@ -8,15 +8,35 @@ use crate::core::CANCEL_MESSAGE;
 use crate::core::effect::{Event as CoreEvent, InitLoad};
 use crate::core::render::Cell;
 use crate::core::step;
-use crate::core::{Editor, Mode};
+use crate::core::{BufferId, Doc, Editor, Eol, Mode};
+#[cfg(unix)]
+use crate::shell::recovery::emergency_dump;
+use crate::shell::recovery::{RecoverySnapshot, RecoveryWorker, recovery_dir};
 use crate::shell::startup::{InitSource, configure, init_source};
+#[cfg(unix)]
+use crate::shell::terminal::install_termination_signals;
 use crate::shell::terminal::{TerminalGuard, from_terminal};
 use crate::shell::{BUSY_NOTICE, RUNNING, ShellOutcome, handle, handle_interactive, perform_all};
 use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use mlua::Lua;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, TryRecvError};
-use std::time::Duration;
+#[cfg(unix)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
+
+const DEFAULT_IDLE_BACKUP_DELAY: Duration = Duration::from_secs(5);
+
+struct TrackedBackup {
+    doc: Doc,
+    eol: Eol,
+    path: Option<String>,
+}
 
 /// State of an active background shell command.
 pub struct ActiveShell {
@@ -83,10 +103,14 @@ pub struct ShellSession {
     pub ed: Editor,
     pub lua: Lua,
     active_shell: Option<ActiveShell>,
-    prev_rows: Vec<Vec<Cell>>,
+    prev_rows: Vec<Cell>,
     screen_size: (usize, usize),
     #[cfg(unix)]
     pending_suspend: bool,
+    recovery: Option<RecoveryWorker>,
+    tracked_backups: BTreeMap<u32, TrackedBackup>,
+    last_activity: Instant,
+    idle_backup_delay: Duration,
 }
 
 pub(super) fn update_editor(slot: &mut Editor, f: impl FnOnce(Editor) -> Editor) {
@@ -98,6 +122,13 @@ impl ShellSession {
     /// `ed` and `lua` are made together, by `startup::start` or by `lua::bootstrap`.
     #[must_use]
     pub fn new(ed: Editor, lua: Lua) -> Self {
+        Self::with_recovery_dir(ed, lua, recovery_dir())
+    }
+
+    /// Creates a session using an explicit recovery directory (`None` disables background backup).
+    #[must_use]
+    pub fn with_recovery_dir(ed: Editor, lua: Lua, dir: Option<PathBuf>) -> Self {
+        let recovery = dir.and_then(|d| RecoveryWorker::spawn(d, std::process::id()).ok());
         Self {
             ed,
             lua,
@@ -106,7 +137,16 @@ impl ShellSession {
             screen_size: (0, 0),
             #[cfg(unix)]
             pending_suspend: false,
+            recovery,
+            tracked_backups: BTreeMap::new(),
+            last_activity: Instant::now(),
+            idle_backup_delay: DEFAULT_IDLE_BACKUP_DELAY,
         }
+    }
+
+    /// Overrides the idle duration before modified buffers are backed up in the background.
+    pub fn set_idle_backup_delay(&mut self, delay: Duration) {
+        self.idle_backup_delay = delay;
     }
 
     /// Builds the settings and the Lua state again from `source`. They replace the current ones
@@ -142,6 +182,7 @@ impl ShellSession {
             && k.kind == KeyEventKind::Press
             && let Some(key) = from_terminal(k.code, k.modifiers)
         {
+            self.last_activity = Instant::now();
             let shell_busy = self.active_shell.is_some();
             let mut outcome = ShellOutcome::None;
             self.update_ed(|ed, lua| {
@@ -163,10 +204,69 @@ impl ShellSession {
                 ShellOutcome::Suspend => self.request_suspend(),
                 ShellOutcome::None => {}
             }
+            self.sync_clean_and_killed_buffers();
         }
     }
 
-    /// Periodic tick (I-24).
+    fn sync_clean_and_killed_buffers(&mut self) {
+        let mut stale = Vec::new();
+        for (&id_raw, tracked) in &self.tracked_backups {
+            let live = self.ed.buffers().iter().find(|b| b.id().0 == id_raw);
+            let keep =
+                live.is_some_and(|b| b.modified() && b.file_path() == tracked.path.as_deref());
+            if !keep {
+                stale.push(id_raw);
+            }
+        }
+        for id_raw in stale {
+            if let Some(tracked) = self.tracked_backups.remove(&id_raw)
+                && let Some(worker) = &self.recovery
+            {
+                worker.enqueue_remove(BufferId(id_raw), tracked.path);
+            }
+        }
+    }
+
+    fn maybe_enqueue_idle_backups(&mut self) {
+        if self.last_activity.elapsed() < self.idle_backup_delay {
+            return;
+        }
+        let Some(worker) = &self.recovery else {
+            return;
+        };
+        for buf in self.ed.buffers().iter() {
+            if !buf.modified() {
+                continue;
+            }
+            let path = buf.file_path();
+            let unchanged = self.tracked_backups.get(&buf.id().0).is_some_and(|prev| {
+                prev.eol == buf.eol() && prev.path.as_deref() == path && prev.doc == *buf.text()
+            });
+            if unchanged {
+                continue;
+            }
+            let doc = buf.text().clone();
+            let eol = buf.eol();
+            let owned_path = path.map(str::to_owned);
+            worker.enqueue_write(RecoverySnapshot {
+                buffer_id: buf.id(),
+                path: owned_path.clone(),
+                name: buf.name().to_owned(),
+                doc: doc.clone(),
+                eol,
+            });
+            self.tracked_backups.insert(
+                buf.id().0,
+                TrackedBackup {
+                    doc,
+                    eol,
+                    path: owned_path,
+                },
+            );
+        }
+    }
+
+    /// Periodic tick (I-24, I-64).
     pub fn tick(&mut self) {
         // 1. Check background shell task (only in Normal mode so active Prompt/Isearch/QueryReplace
         // echo state is never clobbered mid-input; completed output stays buffered in the channel).
@@ -177,6 +277,7 @@ impl ShellSession {
                 Some(result) => {
                     self.active_shell = None;
                     self.update_ed(|ed, lua| handle(ed, Some(lua), CoreEvent::ShellDone(result)));
+                    self.sync_clean_and_killed_buffers();
                 }
                 None if active.owns(self.ed.message()) => {
                     let status = active.format_status();
@@ -185,6 +286,7 @@ impl ShellSession {
                 None => {}
             }
         }
+        self.maybe_enqueue_idle_backups();
     }
 
     fn request_suspend(&mut self) {
@@ -214,7 +316,25 @@ impl ShellSession {
         out: &mut impl Write,
         #[cfg_attr(not(unix), allow(unused_variables))] guard: &mut TerminalGuard,
     ) -> io::Result<()> {
+        #[cfg(unix)]
+        let term_flag = Arc::new(AtomicBool::new(false));
+        #[cfg(unix)]
+        let _sig_ids = install_termination_signals(&term_flag).ok();
+
         loop {
+            #[cfg(unix)]
+            if term_flag.load(Ordering::Acquire) {
+                let dir = self
+                    .recovery
+                    .as_ref()
+                    .map(|w| w.dir().to_path_buf())
+                    .or_else(recovery_dir);
+                drop(self.recovery.take());
+                if let Some(dir) = dir {
+                    let _ = emergency_dump(&self.ed, &dir, std::process::id());
+                }
+                return Ok(());
+            }
             #[cfg(unix)]
             if self.pending_suspend {
                 self.pending_suspend = false;
@@ -222,16 +342,37 @@ impl ShellSession {
             }
             self.render(out)?;
             if self.is_quit() {
+                if let Some(worker) = self.recovery.take() {
+                    worker.drain_and_stop();
+                }
                 return Ok(());
             }
 
             self.tick();
 
-            if event::poll(Duration::from_millis(50))? {
-                self.handle_event(&event::read()?);
-                while event::poll(Duration::ZERO)? {
-                    self.handle_event(&event::read()?);
-                }
+            match event::poll(Duration::from_millis(50)) {
+                Ok(true) => loop {
+                    match event::read() {
+                        Ok(ev) => self.handle_event(&ev),
+                        #[cfg(unix)]
+                        Err(_) if term_flag.load(Ordering::Acquire) => break,
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
+                        Err(e) => return Err(e),
+                    }
+                    match event::poll(Duration::ZERO) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        #[cfg(unix)]
+                        Err(_) if term_flag.load(Ordering::Acquire) => break,
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
+                        Err(e) => return Err(e),
+                    }
+                },
+                Ok(false) => {}
+                #[cfg(unix)]
+                Err(_) if term_flag.load(Ordering::Acquire) => continue,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
             }
         }
     }

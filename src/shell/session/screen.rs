@@ -45,8 +45,10 @@ impl ShellSession {
             self.prev_rows.clear();
             self.screen_size = (cols, rows);
         }
-        for (row, cells) in frame.rows.iter().enumerate() {
-            if self.prev_rows.get(row) != Some(cells) {
+        for (row, cells) in frame.rows().enumerate() {
+            let prev_start = row * cols;
+            let prev = self.prev_rows.get(prev_start..prev_start + cols);
+            if prev != Some(cells) {
                 queue!(
                     out,
                     cursor::MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX))
@@ -63,7 +65,7 @@ impl ShellSession {
             cursor::Show
         )?;
         out.flush()?;
-        self.prev_rows = frame.rows;
+        self.prev_rows = frame.into_cells();
         Ok(())
     }
 }
