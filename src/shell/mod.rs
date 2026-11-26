@@ -313,14 +313,16 @@ fn perform_with_recovery_dir(
                 .map(Path::to_path_buf)
                 .or_else(recovery::recovery_dir)
                 .and_then(|dir| recovery::find_latest_recovery(&dir, &path, std::process::id()))
-                .map(|(rec_paths, _meta, doc, eol)| crate::core::effect::RecoveredFile {
-                    doc,
-                    eol,
-                    rec_paths: rec_paths
-                        .into_iter()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .collect(),
-                });
+                .map(
+                    |(rec_paths, _meta, doc, eol)| crate::core::effect::RecoveredFile {
+                        doc,
+                        eol,
+                        rec_paths: rec_paths
+                            .into_iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect(),
+                    },
+                );
             Event::RecoveryProbed { id, rec }
         }
         Effect::DeleteRecovery { rec_paths } => {

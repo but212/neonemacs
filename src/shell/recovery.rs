@@ -583,7 +583,9 @@ mod tests {
             doc: Doc::from_bytes(b"old"),
             eol: Eol::Lf,
         };
-        let older_file = dir.path().join(recovery_file_name(101, BufferId(2), Some(target_path)));
+        let older_file = dir
+            .path()
+            .join(recovery_file_name(101, BufferId(2), Some(target_path)));
         registore::persist_with_header(
             &older_file,
             &encode_header(101, &older_snap, 10),
@@ -601,7 +603,9 @@ mod tests {
             doc: Doc::from_bytes(b"line1\nline2"),
             eol: Eol::Crlf,
         };
-        let newer_file = dir.path().join(recovery_file_name(102, BufferId(3), Some(target_path)));
+        let newer_file = dir
+            .path()
+            .join(recovery_file_name(102, BufferId(3), Some(target_path)));
         registore::persist_with_header(
             &newer_file,
             &encode_header(102, &newer_snap, 20),

@@ -382,13 +382,7 @@ mod tests {
             eol: Eol::Crlf,
             rec_paths: alloc::vec!["/state/1-1-abc.rec".to_owned()],
         };
-        let (ed, fx) = step(
-            ed,
-            Event::RecoveryProbed {
-                id,
-                rec: Some(rec),
-            },
-        );
+        let (ed, fx) = step(ed, Event::RecoveryProbed { id, rec: Some(rec) });
         assert!(fx.is_empty());
         assert!(matches!(
             ed.mode(),

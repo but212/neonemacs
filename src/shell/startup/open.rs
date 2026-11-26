@@ -170,6 +170,9 @@ mod tests {
         assert!(matches!(ed.mode(), Mode::Confirm { .. }));
         assert!(ed.message().contains("init.lua: boom"));
         assert!(ed.message().contains("Cannot open"));
-        assert!(ed.message().contains("Recover a.txt from crash backup? (y or n)"));
+        assert!(
+            ed.message()
+                .contains("Recover a.txt from crash backup? (y or n)")
+        );
     }
 }
