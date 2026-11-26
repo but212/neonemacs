@@ -21,7 +21,6 @@ neonemacs-core = { path = "crates/neonemacs-core" }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", default-features = false, features = ["signal"] }
-signal-hook = "0.3"
 
 [features]
 # Exposes `test_support` to integration tests. Off by default, so release builds do not carry it.

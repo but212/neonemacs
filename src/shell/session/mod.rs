@@ -9,12 +9,8 @@ use crate::core::effect::{Event as CoreEvent, InitLoad};
 use crate::core::render::Cell;
 use crate::core::step;
 use crate::core::{BufferId, Doc, Editor, Eol, Mode};
-#[cfg(unix)]
-use crate::shell::recovery::emergency_dump;
 use crate::shell::recovery::{RecoverySnapshot, RecoveryWorker, recovery_dir};
 use crate::shell::startup::{InitSource, configure, init_source};
-#[cfg(unix)]
-use crate::shell::terminal::install_termination_signals;
 use crate::shell::terminal::{TerminalGuard, from_terminal};
 use crate::shell::{BUSY_NOTICE, RUNNING, ShellOutcome, handle, handle_interactive, perform_all};
 use crossterm::event::{self, Event as TermEvent, KeyEventKind};
@@ -23,11 +19,6 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, TryRecvError};
-#[cfg(unix)]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
 use std::time::{Duration, Instant};
 
 const DEFAULT_IDLE_BACKUP_DELAY: Duration = Duration::from_secs(5);
@@ -316,25 +307,7 @@ impl ShellSession {
         out: &mut impl Write,
         #[cfg_attr(not(unix), allow(unused_variables))] guard: &mut TerminalGuard,
     ) -> io::Result<()> {
-        #[cfg(unix)]
-        let term_flag = Arc::new(AtomicBool::new(false));
-        #[cfg(unix)]
-        let _sig_ids = install_termination_signals(&term_flag).ok();
-
         loop {
-            #[cfg(unix)]
-            if term_flag.load(Ordering::Acquire) {
-                let dir = self
-                    .recovery
-                    .as_ref()
-                    .map(|w| w.dir().to_path_buf())
-                    .or_else(recovery_dir);
-                drop(self.recovery.take());
-                if let Some(dir) = dir {
-                    let _ = emergency_dump(&self.ed, &dir, std::process::id());
-                }
-                return Ok(());
-            }
             #[cfg(unix)]
             if self.pending_suspend {
                 self.pending_suspend = false;
@@ -354,23 +327,17 @@ impl ShellSession {
                 Ok(true) => loop {
                     match event::read() {
                         Ok(ev) => self.handle_event(&ev),
-                        #[cfg(unix)]
-                        Err(_) if term_flag.load(Ordering::Acquire) => break,
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
                         Err(e) => return Err(e),
                     }
                     match event::poll(Duration::ZERO) {
                         Ok(true) => {}
                         Ok(false) => break,
-                        #[cfg(unix)]
-                        Err(_) if term_flag.load(Ordering::Acquire) => break,
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
                         Err(e) => return Err(e),
                     }
                 },
                 Ok(false) => {}
-                #[cfg(unix)]
-                Err(_) if term_flag.load(Ordering::Acquire) => continue,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             }

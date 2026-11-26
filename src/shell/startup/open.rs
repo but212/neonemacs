@@ -1,16 +1,25 @@
 //! Opens the startup files. Each one is read like `find-file` does (§12).
 
 use super::args::FileArg;
-use crate::core::Buffer;
-use crate::core::Editor;
-use crate::core::{request_open, switch_to};
-use crate::shell::perform_all;
+use crate::core::{Buffer, Editor, Mode, request_open, switch_to};
+use crate::shell::perform_all_with_recovery_dir;
+use std::path::Path;
 
 /// Opens every file in the background. The first one that opens is shown. A `+n` sets its starting line.
 ///
 /// The notices of all files follow the earlier message (for example an `init.lua` error), joined
 /// by `; ` (I-56).
-pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Editor {
+pub fn open_files(ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) -> Editor {
+    open_files_with_recovery_dir(ed, lua, files, None)
+}
+
+/// Like [`open_files`], but uses `rec_dir` when probing for orphan `.rec` files.
+pub fn open_files_with_recovery_dir(
+    mut ed: Editor,
+    lua: Option<&mlua::Lua>,
+    files: &[FileArg],
+    rec_dir: Option<&Path>,
+) -> Editor {
     let first_new = ed.buffers().len();
     let before = ed.message().to_owned();
     let mut notes = Vec::new();
@@ -20,21 +29,30 @@ pub fn open_files(mut ed: Editor, lua: Option<&mlua::Lua>, files: &[FileArg]) ->
         ed = if let Some(raw_path) = f.path.to_str() {
             let path = ed.resolve_path(raw_path);
             let fx = request_open(&ed, path.as_str(), f.line, false, Vec::new());
-            perform_all(ed, lua, fx)
+            perform_all_with_recovery_dir(ed, lua, fx, rec_dir)
         } else {
             ed.append_message(format!(
                 "Cannot open {}: path is not valid UTF-8",
                 f.path.display()
             ))
         };
-        if !ed.message().is_empty() {
+        let is_confirm_prompt =
+            matches!(ed.mode(), Mode::Confirm { text, .. } if text == ed.message());
+        if !ed.message().is_empty() && !is_confirm_prompt {
             notes.push(ed.message().to_owned());
         }
     }
 
+    let confirm_text = match ed.mode() {
+        Mode::Confirm { text, .. } => Some(text.clone()),
+        _ => None,
+    };
     ed = ed.set_message(before);
     for note in notes {
         ed = ed.append_message(note);
+    }
+    if let Some(text) = confirm_text {
+        ed = ed.append_message(text);
     }
 
     match ed.buffers().iter().nth(first_new).map(Buffer::id) {
@@ -107,5 +125,51 @@ mod tests {
         let ed = Editor::new(Config::default()).set_message("init.lua: boom");
         let ed = open_files(ed, None, &files);
         assert_eq!(ed.message(), "init.lua: boom");
+    }
+
+    #[test]
+    fn recovery_prompt_preserves_prior_message_and_later_open_errors() {
+        use crate::core::{BufferId, Doc, Eol, FilePath};
+        use crate::shell::recovery::{RecoverySnapshot, write_recovery_file};
+
+        let dir = tempfile::tempdir().unwrap();
+        let rec_dir = dir.path().join("rec");
+        fs::create_dir_all(&rec_dir).unwrap();
+
+        let good = dir.path().join("a.txt");
+        fs::write(&good, b"disk").unwrap();
+        let bad_dir = dir.path().join("subdir");
+        fs::create_dir_all(&bad_dir).unwrap();
+
+        let resolved = FilePath::resolve("", good.to_str().unwrap());
+        write_recovery_file(
+            &rec_dir,
+            std::process::id().wrapping_add(1),
+            &RecoverySnapshot {
+                buffer_id: BufferId(1),
+                path: Some(resolved.as_str().to_owned()),
+                name: "a.txt".to_owned(),
+                doc: Doc::from_bytes(b"recovered"),
+                eol: Eol::Lf,
+            },
+        )
+        .unwrap();
+
+        let files = vec![
+            FileArg {
+                path: good,
+                line: None,
+            },
+            FileArg {
+                path: bad_dir,
+                line: None,
+            },
+        ];
+        let ed = Editor::new(Config::default()).set_message("init.lua: boom");
+        let ed = open_files_with_recovery_dir(ed, None, &files, Some(&rec_dir));
+        assert!(matches!(ed.mode(), Mode::Confirm { .. }));
+        assert!(ed.message().contains("init.lua: boom"));
+        assert!(ed.message().contains("Cannot open"));
+        assert!(ed.message().contains("Recover a.txt from crash backup? (y or n)"));
     }
 }

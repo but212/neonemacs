@@ -84,7 +84,7 @@ The system partitions strictly into a pure functional core and an imperative she
 
 ### 2.3 Zero-Overhead Atomic Persistence (Registore)
 
-- **Single-Pass Atomic Rename Swap (`src/shell/registore.rs`)**: Replaces WAL and recovery replay with `registore::persist_with`. Writes stream `Doc::try_for_each_slice` directly to a PID- and sequence-isolated sibling `.filename.<pid>_<seq>.tmp` file (`OpenOptions::create_new(true)`) without intermediate heap copies or double-writes (`WAF = 1.0`), call `file.sync_data()` (`fdatasync`), atomically replace the target via `fs::rename`, and best-effort `sync_all()` the parent directory.
+- **Single-Pass Atomic Rename Swap (`src/shell/registore.rs`)**: Replaces WAL and recovery replay with `registore::persist_with`. Writes stream `Doc::try_for_each_slice` directly to a PID- and sequence-isolated sibling `.filename.<pid>_<seq>.tmp` file (`OpenOptions::create_new(true)`) without intermediate heap copies or double-writes (single-pass `1x` write), call `file.sync_data()` (`fdatasync`), atomically replace the target via `fs::rename`, and best-effort `sync_all()` the parent directory.
 - **Explicit Save Only**: Persistence occurs strictly on explicit `Effect::WriteFile` (`C-x C-s`, `write-file`), delegated from `file::save_doc` (which preserves symlink canonicalization, permissions, and `Eol::Crlf` encoding). `*scratch*` is ephemeral in memory.
 - **Zero-Code Recovery**: Reading loads the canonical target file directly; failed writes clean up their isolated `.tmp` file while preserving the original target.
 
@@ -244,9 +244,9 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-58** | Successful `reload-init` swaps configuration and Lua runtime while preserving buffers, windows, and kill ring. Rejected or Lua-invoked reloads preserve existing state. | Type (`Editor::adopt_settings`) + Runtime (`reload_init`) |
 | **I-59** | Core top-level crate module references are strictly acyclic, except the documented cycle between `commands` and `dispatch`. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
 | **I-60** | `Frame` stores a flat row-major grid where `cells.len() == cols * rows`. | Runtime (`render::Frame`) |
-| **I-61** | Recovery, signal, and idle timer state never leaks into `neonemacs-core`; `tests/purity.rs` passes unmodified. | Boundary (`src/shell/recovery.rs`) + Purity scan |
-| **I-62** | Idle backups and emergency dumps never write to `Backing::File` original paths; they target `$XDG_STATE_HOME/neonemacs/recovery/` only. | Boundary (`recovery_dir`, `write_recovery_file`) |
-| **I-63** | Unix signal handlers (`SIGHUP`, `SIGTERM`) only set an `AtomicBool` flag via `signal-hook` without allocation, locks, or I/O. Signal-triggered `emergency_dump` is Unix-only (`#[cfg(unix)]`); on non-Unix platforms (e.g. Windows), only idle auto-backup (`I-64`) and clean/exit cleanup (`I-65`) run. | Boundary (`terminal::install_termination_signals`, `ShellSession::run`) |
+| **I-61** | Recovery and idle timer state never leaks into `neonemacs-core`; `tests/purity.rs` passes unmodified. | Boundary (`src/shell/recovery.rs`) + Purity scan |
+| **I-62** | Idle backups never write to `Backing::File` original paths; they target `$XDG_STATE_HOME/neonemacs/recovery/` only. | Boundary (`recovery_dir`, `write_recovery_file`) |
+| **I-63** | *Retired*: Unix-only `SIGHUP`/`SIGTERM` signal-triggered `emergency_dump` and `signal-hook` removed in favor of unified cross-platform idle auto-backup (`I-64`) and clean/exit cleanup (`I-65`). | - |
 | **I-64** | Idle backup triggers only clone `Doc` ($O(1)$ CoW) and enqueue into a non-blocking coalescing queue without blocking the main loop on disk I/O. | Runtime (`RecoveryWorker::enqueue_write`) |
 | **I-65** | Clean buffers (`!modified`) and killed buffers (`kill-buffer`) have their `.rec` artifacts removed; normal exit cleans all `.rec` files for the current `pid`. | Runtime (`ShellSession::sync_clean_and_killed_buffers`, `drain_and_stop`) |
 | **I-66** | Every `.rec` recovery file is written atomically via `registore::persist_with_header` (`tmp` + `sync_data` + `rename`). | Schema (`registore::persist_with_header`) |

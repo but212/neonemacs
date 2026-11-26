@@ -7,8 +7,6 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute};
 use std::io;
 use std::sync::Once;
-#[cfg(unix)]
-use std::sync::{Arc, atomic::AtomicBool};
 
 /// Enters raw mode and the alternate screen.
 fn enter_terminal() -> io::Result<()> {
@@ -66,18 +64,6 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         restore_terminal();
     }
-}
-
-/// Registers safe `SIGHUP` and `SIGTERM` flag handlers using `signal-hook` (`I-63`).
-///
-/// # Errors
-/// Returns `io::Error` if registering either signal handler fails.
-#[cfg(unix)]
-pub fn install_termination_signals(flag: &Arc<AtomicBool>) -> io::Result<Vec<signal_hook::SigId>> {
-    use signal_hook::consts::signal::{SIGHUP, SIGTERM};
-    let hup = signal_hook::flag::register(SIGHUP, Arc::clone(flag))?;
-    let term = signal_hook::flag::register(SIGTERM, Arc::clone(flag))?;
-    Ok(vec![hup, term])
 }
 
 /// Canonical key for a terminal event (I-12). Several terminal encodings

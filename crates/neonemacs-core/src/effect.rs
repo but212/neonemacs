@@ -1,9 +1,11 @@
 //! What the core asks the shell to do (`Effect`) and what the shell reports back (`Event`).
-//! The core performs no I/O. Each `Effect` is answered by exactly one `Event` (I-15), except that an interactive session answers
-//! `RunShell`, `ReloadInit`, and `Suspend` itself: a `RunShell` refused while another runs gets no `Event`.
+//! The core performs no I/O. Each `Effect` is answered by at most one `Event` (I-15): `DeleteRecovery` yields no `Event`,
+//! and an interactive session answers `RunShell`, `ReloadInit`, and `Suspend` itself (a refused `RunShell` gets no `Event`).
 
+use crate::Doc;
 use crate::buffer::BufferId;
 use crate::config::ShellSpec;
+use crate::eol::Eol;
 use crate::file::{DiskState, RawFile};
 use crate::keymap::Key;
 use alloc::string::String;
@@ -28,6 +30,15 @@ pub enum Effect {
         target: ReadTarget,
         path: String,
         max_size: u64,
+    },
+    /// Probes for an orphan `.rec` crash recovery file matching `path` for buffer `id`.
+    ProbeRecovery {
+        id: BufferId,
+        path: String,
+    },
+    /// Removes `.rec` crash recovery files after user confirmation or explicit decline.
+    DeleteRecovery {
+        rec_paths: Vec<String>,
     },
     RunShell {
         command: String,
@@ -82,6 +93,14 @@ pub enum InitLoad {
     Rejected(String),
 }
 
+/// Decoded crash recovery snapshot returned by `Event::RecoveryProbed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredFile {
+    pub doc: Doc,
+    pub eol: Eol,
+    pub rec_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Key(Key),
@@ -101,6 +120,10 @@ pub enum Event {
         target: ReadTarget,
         path: String,
         result: Result<Option<RawFile>, String>,
+    },
+    RecoveryProbed {
+        id: BufferId,
+        rec: Option<RecoveredFile>,
     },
     /// Raw stdout and stderr of a shell command, or the reason it did not start.
     ShellDone(Result<String, String>),

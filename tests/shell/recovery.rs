@@ -1,10 +1,13 @@
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
-use neonemacs::core::{Backing, Config, Doc, Editor, FilePath};
+use neonemacs::core::{Backing, BufferId, Config, Doc, Editor, Eol, FilePath, Mode};
 use neonemacs::shell::lua;
-use neonemacs::shell::recovery::{parse_recovery_file, recovery_file_name};
+use neonemacs::shell::recovery::{
+    RecoverySnapshot, parse_recovery_file, recovery_file_name, write_recovery_file,
+};
 use neonemacs::shell::session::ShellSession;
+use neonemacs::shell::startup::{FileArg, open_files_with_recovery_dir};
 use std::fs;
 use std::path::Path;
 use std::thread;
@@ -107,60 +110,104 @@ fn idle_backup_writes_rec_and_removes_on_save_and_kill() {
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn pty_sighup_triggers_emergency_dump() {
-    use nix::sys::signal::{Signal, kill};
-    use nix::unistd::Pid;
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-    use std::io::Write;
-
-    let bin = env!("CARGO_BIN_EXE_neonemacs");
+fn open_files_prompts_and_restores_orphan_rec_files_sequentially() {
     let state_dir = tempfile::tempdir().unwrap();
     let work_dir = tempfile::tempdir().unwrap();
-    let target = work_dir.path().join("unsaved.txt");
-    fs::write(&target, b"original").unwrap();
+    let file_a = work_dir.path().join("crash_a.txt");
+    let file_b = work_dir.path().join("crash_b.txt");
+    fs::write(&file_a, b"on-disk-a").unwrap();
+    fs::write(&file_b, b"on-disk-b").unwrap();
 
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
-
-    let mut cmd = CommandBuilder::new(bin);
-    cmd.arg(&target);
-    cmd.env("XDG_STATE_HOME", state_dir.path());
-    cmd.env("XDG_CONFIG_HOME", state_dir.path());
-
-    let mut child = pair.slave.spawn_command(cmd).unwrap();
-    drop(pair.slave);
-    let pid = child.process_id().expect("child pid");
-    let mut writer = pair.master.take_writer().unwrap();
-
-    thread::sleep(Duration::from_millis(200));
-    writer.write_all(b"Z").unwrap();
-    writer.flush().unwrap();
-    thread::sleep(Duration::from_millis(200));
-
-    kill(Pid::from_raw(pid as i32), Signal::SIGHUP).unwrap();
-    let status = child.wait().unwrap();
-    assert!(
-        status.success(),
-        "expected clean exit on SIGHUP: {status:?}"
-    );
-    assert_eq!(fs::read(&target).unwrap(), b"original");
-
+    let resolved_a = FilePath::resolve("", file_a.to_str().unwrap());
+    let resolved_b = FilePath::resolve("", file_b.to_str().unwrap());
     let rec_dir = state_dir.path().join("neonemacs").join("recovery");
-    let entries: Vec<_> = fs::read_dir(&rec_dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".rec"))
-        .collect();
-    assert_eq!(entries.len(), 1);
-    let raw = fs::read(entries[0].path()).unwrap();
-    let (_, body) = parse_recovery_file(&raw).unwrap();
-    assert_eq!(body, b"Zoriginal");
+    fs::create_dir_all(&rec_dir).unwrap();
+
+    // Two orphan .rec files for crash_a.txt (older + newer) and one for crash_b.txt.
+    let rec_a1 = write_recovery_file(
+        &rec_dir,
+        std::process::id().wrapping_add(1),
+        &RecoverySnapshot {
+            buffer_id: BufferId(1),
+            path: Some(resolved_a.as_str().to_owned()),
+            name: "crash_a.txt".to_owned(),
+            doc: Doc::from_bytes(b"recovered-a"),
+            eol: Eol::Lf,
+        },
+    )
+    .unwrap();
+    let rec_a2 = write_recovery_file(
+        &rec_dir,
+        std::process::id().wrapping_add(2),
+        &RecoverySnapshot {
+            buffer_id: BufferId(1),
+            path: Some(resolved_a.as_str().to_owned()),
+            name: "crash_a.txt".to_owned(),
+            doc: Doc::from_bytes(b"recovered-a"),
+            eol: Eol::Lf,
+        },
+    )
+    .unwrap();
+    let rec_b = write_recovery_file(
+        &rec_dir,
+        std::process::id().wrapping_add(3),
+        &RecoverySnapshot {
+            buffer_id: BufferId(2),
+            path: Some(resolved_b.as_str().to_owned()),
+            name: "crash_b.txt".to_owned(),
+            doc: Doc::from_bytes(b"recovered-b"),
+            eol: Eol::Lf,
+        },
+    )
+    .unwrap();
+    assert!(rec_a1.exists() && rec_a2.exists() && rec_b.exists());
+
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let ed = open_files_with_recovery_dir(
+        ed,
+        Some(&lua),
+        &[
+            FileArg {
+                path: file_a,
+                line: None,
+            },
+            FileArg {
+                path: file_b,
+                line: None,
+            },
+        ],
+        Some(&rec_dir),
+    );
+    assert!(matches!(ed.mode(), Mode::Confirm { .. }));
+    assert!(ed.message().contains("crash_a.txt"));
+
+    let mut session = ShellSession::with_recovery_dir(ed, lua, None);
+    // Confirm first file: restores crash_a.txt, deletes both .rec files for it, and advances to crash_b.txt.
+    session.handle_event(&press(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert!(!rec_a1.exists() && !rec_a2.exists());
+    assert!(matches!(session.ed.mode(), Mode::Confirm { .. }));
+    assert!(session.ed.message().contains("crash_b.txt"));
+
+    // Decline second file: keeps on-disk-b, deletes rec_b, and returns to Normal mode.
+    session.handle_event(&press(KeyCode::Char('n'), KeyModifiers::NONE));
+    assert!(!rec_b.exists());
+    assert!(matches!(session.ed.mode(), Mode::Normal { .. }));
+
+    let buf_a = session
+        .ed
+        .buffers()
+        .find_by_path(resolved_a.as_str())
+        .unwrap();
+    assert_eq!(*buf_a.text(), Doc::from_bytes(b"recovered-a"));
+    assert!(buf_a.modified());
+
+    let buf_b = session
+        .ed
+        .buffers()
+        .find_by_path(resolved_b.as_str())
+        .unwrap();
+    assert_eq!(*buf_b.text(), Doc::from_bytes(b"on-disk-b"));
+    assert!(!buf_b.modified());
 }

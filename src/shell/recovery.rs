@@ -1,6 +1,6 @@
-//! Crash-safe idle auto-backup and emergency dump persistence (`I-61` ~ `I-66`).
+//! Crash-safe idle auto-backup persistence (`I-61` ~ `I-66`).
 
-use crate::core::{BufferId, Doc, Editor, Eol};
+use crate::core::{BufferId, Doc, Eol, EolStreamDecoder};
 use crate::shell::{home_dir, registore, xdg_path};
 use std::collections::BTreeMap;
 use std::env;
@@ -359,31 +359,6 @@ pub fn write_recovery_file(dir: &Path, pid: u32, snap: &RecoverySnapshot) -> io:
     Ok(target)
 }
 
-/// Synchronously dumps all `modified` buffers in `ed` to `dir` (`I-62`, `I-66`).
-/// Returns the number of buffers successfully dumped; I/O errors on individual buffers are skipped.
-pub fn emergency_dump(ed: &Editor, dir: &Path, pid: u32) -> usize {
-    if fs::create_dir_all(dir).is_err() {
-        return 0;
-    }
-    let mut dumped = 0;
-    for buf in ed.buffers().iter() {
-        if !buf.modified() {
-            continue;
-        }
-        let snap = RecoverySnapshot {
-            buffer_id: buf.id(),
-            path: buf.file_path().map(str::to_owned),
-            name: buf.name().to_owned(),
-            doc: buf.text().clone(),
-            eol: buf.eol(),
-        };
-        if write_recovery_file(dir, pid, &snap).is_ok() {
-            dumped += 1;
-        }
-    }
-    dumped
-}
-
 /// Removes all `.rec` files belonging to `pid` in `dir` (`I-65`).
 pub fn cleanup_pid_files(dir: &Path, pid: u32) {
     let prefix = format!("{pid}-");
@@ -399,10 +374,48 @@ pub fn cleanup_pid_files(dir: &Path, pid: u32) {
     }
 }
 
+/// Finds the newest orphan `.rec` file in `dir` matching `path` (excluding `self_pid`),
+/// decoding its body back to `\n`-normalized `Doc` while preserving `meta.eol`,
+/// and returns all matching orphan `.rec` paths for cleanup.
+#[must_use]
+pub fn find_latest_recovery(
+    dir: &Path,
+    path: &str,
+    self_pid: u32,
+) -> Option<(Vec<PathBuf>, RecoveryMeta, Doc, Eol)> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut matching_paths = Vec::new();
+    let mut best: Option<(RecoveryMeta, Doc, Eol)> = None;
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        if entry_path.extension().and_then(|e| e.to_str()) != Some("rec") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&entry_path) else {
+            continue;
+        };
+        let Ok((meta, body)) = parse_recovery_file(&bytes) else {
+            continue;
+        };
+        if meta.pid == self_pid || meta.path.as_deref() != Some(path) {
+            continue;
+        }
+        matching_paths.push(entry_path);
+        let replace = best
+            .as_ref()
+            .is_none_or(|(prev, _, _)| meta.timestamp_secs >= prev.timestamp_secs);
+        if replace {
+            let (doc, _) = EolStreamDecoder::new().push_chunk(body).finish();
+            let eol = meta.eol;
+            best = Some((meta, doc, eol));
+        }
+    }
+    best.map(|(meta, doc, eol)| (matching_paths, meta, doc, eol))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Backing, Config, FilePath};
 
     #[test]
     fn recovery_file_roundtrip_preserves_metadata_and_body() {
@@ -468,50 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn emergency_dump_writes_only_modified_buffers_and_never_touches_originals() {
-        let rec_dir = tempfile::tempdir().unwrap();
-        let orig_dir = tempfile::tempdir().unwrap();
-        let orig_path = orig_dir.path().join("orig.txt");
-        fs::write(&orig_path, b"original-on-disk").unwrap();
-
-        let ed = Editor::new(Config::default());
-        let (ed, b1) = ed.add_buffer(
-            "orig.txt",
-            Doc::from_bytes(b"modified-unsaved"),
-            Backing::file(
-                FilePath::resolve("", orig_path.to_str().unwrap()),
-                crate::core::DiskState::Unknown,
-            ),
-        );
-        let ed = ed.with_buffer(b1, |b| b.mark_modified());
-        let (ed, _b2) = ed.add_buffer("clean.txt", Doc::from_bytes(b"clean"), Backing::None);
-
-        let count = emergency_dump(&ed, rec_dir.path(), 777);
-        assert_eq!(count, 1);
-        assert_eq!(fs::read(&orig_path).unwrap(), b"original-on-disk");
-
-        let rec_file =
-            rec_dir
-                .path()
-                .join(recovery_file_name(777, b1, ed.buffer_by_id(b1).file_path()));
-        let raw = fs::read(&rec_file).unwrap();
-        let (meta, body) = parse_recovery_file(&raw).unwrap();
-        assert_eq!(meta.buffer_id, b1);
-        assert_eq!(body, b"modified-unsaved");
-    }
-
-    #[test]
-    fn write_recovery_failure_does_not_panic_in_emergency_dump() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_as_dir = dir.path().join("not_a_dir");
-        fs::write(&file_as_dir, b"blocker").unwrap();
-
-        let ed = Editor::new(Config::default())
-            .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"unsaved")).mark_modified());
-        assert_eq!(emergency_dump(&ed, &file_as_dir, 123), 0);
-    }
-
-    #[test]
     fn worker_keeps_remove_for_old_path_when_write_for_new_path_is_pending() {
         let dir = tempfile::tempdir().unwrap();
         let worker = RecoveryWorker::spawn(dir.path().to_path_buf(), 9002).unwrap();
@@ -568,5 +537,86 @@ mod tests {
         assert!(!old_file.exists(), "old .rec file should be removed");
         assert!(new_file.exists(), "new .rec file should be written");
         worker.drain_and_stop();
+    }
+
+    #[test]
+    fn find_latest_recovery_filters_self_pid_scratch_and_picks_newest_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_path = "/work/note.txt";
+
+        // Same PID -> ignored.
+        write_recovery_file(
+            dir.path(),
+            500,
+            &RecoverySnapshot {
+                buffer_id: BufferId(1),
+                path: Some(target_path.to_owned()),
+                name: "note.txt".to_owned(),
+                doc: Doc::from_bytes(b"same-pid"),
+                eol: Eol::Lf,
+            },
+        )
+        .unwrap();
+
+        // No path (*scratch*) -> ignored.
+        write_recovery_file(
+            dir.path(),
+            100,
+            &RecoverySnapshot {
+                buffer_id: BufferId(1),
+                path: None,
+                name: "*scratch*".to_owned(),
+                doc: Doc::from_bytes(b"scratch"),
+                eol: Eol::Lf,
+            },
+        )
+        .unwrap();
+
+        // Corrupt .rec -> skipped.
+        fs::write(dir.path().join("99-1-deadbeef.rec"), b"BAD").unwrap();
+
+        // Older foreign PID with explicit timestamp 10.
+        let older_snap = RecoverySnapshot {
+            buffer_id: BufferId(2),
+            path: Some(target_path.to_owned()),
+            name: "note.txt".to_owned(),
+            doc: Doc::from_bytes(b"old"),
+            eol: Eol::Lf,
+        };
+        let older_file = dir.path().join(recovery_file_name(101, BufferId(2), Some(target_path)));
+        registore::persist_with_header(
+            &older_file,
+            &encode_header(101, &older_snap, 10),
+            &older_snap.doc,
+            older_snap.eol,
+            None,
+        )
+        .unwrap();
+
+        // Newer foreign PID with CRLF and explicit timestamp 20.
+        let newer_snap = RecoverySnapshot {
+            buffer_id: BufferId(3),
+            path: Some(target_path.to_owned()),
+            name: "note.txt".to_owned(),
+            doc: Doc::from_bytes(b"line1\nline2"),
+            eol: Eol::Crlf,
+        };
+        let newer_file = dir.path().join(recovery_file_name(102, BufferId(3), Some(target_path)));
+        registore::persist_with_header(
+            &newer_file,
+            &encode_header(102, &newer_snap, 20),
+            &newer_snap.doc,
+            newer_snap.eol,
+            None,
+        )
+        .unwrap();
+
+        let found = find_latest_recovery(dir.path(), target_path, 500).unwrap();
+        assert_eq!(found.0.len(), 2);
+        assert!(found.0.contains(&older_file));
+        assert!(found.0.contains(&newer_file));
+        assert_eq!(found.1.pid, 102);
+        assert_eq!(found.2, Doc::from_bytes(b"line1\nline2"));
+        assert_eq!(found.3, Eol::Crlf);
     }
 }

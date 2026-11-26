@@ -163,6 +163,7 @@ pub fn step(ed: Editor, event: Event) -> (Editor, Effects) {
             path,
             result,
         } => commands::file_read(ed, target, path, result, fx),
+        Event::RecoveryProbed { id, rec } => (commands::recovery_probed(ed, id, rec), fx),
         Event::ShellDone(result) => (commands::shell_done(ed, result), fx),
         Event::LuaDone(result) => (commands::lua_done(ed, result), fx),
         Event::InitLoaded(load) => (commands::init_loaded(ed, load), fx),

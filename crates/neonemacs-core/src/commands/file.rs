@@ -118,7 +118,30 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
         Confirm::QuitUnsaved => (ed.set_quit(true), fx),
         Confirm::KillModified(id) => super::basic::kill_buffer_now(ed, id, fx),
         Confirm::RevertModified(id) => revert_now(ed, id, fx),
+        Confirm::RecoverFile {
+            id,
+            doc,
+            eol,
+            rec_paths,
+        } => {
+            let mut fx = fx;
+            fx.push(Effect::DeleteRecovery { rec_paths });
+            let ed = ed
+                .with_buffer(id, |b| b.with_text(doc).set_eol(eol).mark_modified())
+                .snap_windows_for_buffer(id)
+                .set_message("Recovered from crash backup");
+            (ed, fx)
+        }
     }
+}
+
+/// Runs the cleanup action when a `n` answer declines `question`.
+#[must_use]
+pub fn declined(ed: Editor, question: Confirm, mut fx: Effects) -> (Editor, Effects) {
+    if let Confirm::RecoverFile { rec_paths, .. } = question {
+        fx.push(Effect::DeleteRecovery { rec_paths });
+    }
+    (ed, fx)
 }
 
 /// Asks the shell to write the buffer to its file. The result comes back as `Written` (I-04).

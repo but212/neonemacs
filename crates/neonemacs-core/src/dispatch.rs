@@ -61,10 +61,18 @@ pub fn answer(
     let choice = answer_char(ed.key_aliases(), key);
     if choice == Some('y') {
         ed = ed.set_mode(Mode::normal());
-        return commands::confirmed(ed, kind, fx);
+        let (ed, fx) = commands::confirmed(ed, kind, fx);
+        return (ed.next_pending_recovery(), fx);
     }
-    ed = if choice == Some('n') || key.is_cancel() {
-        ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE)
+    if choice == Some('n') {
+        ed = ed.set_mode(Mode::normal()).set_message(CANCEL_MESSAGE);
+        let (ed, fx) = commands::declined(ed, kind, fx);
+        return (ed.next_pending_recovery(), fx);
+    }
+    ed = if key.is_cancel() {
+        ed.set_mode(Mode::normal())
+            .set_message(CANCEL_MESSAGE)
+            .next_pending_recovery()
     } else {
         ed.set_message(format!("Please answer y or n. {text}"))
     };

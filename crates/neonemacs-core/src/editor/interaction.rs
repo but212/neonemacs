@@ -8,6 +8,7 @@ use crate::width::Metrics;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// Kind of a command, for commands that chain (§6, §7, I-09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +143,12 @@ pub enum Confirm {
     QuitUnsaved,
     KillModified(BufferId),
     RevertModified(BufferId),
+    RecoverFile {
+        id: BufferId,
+        doc: crate::Doc,
+        eol: crate::Eol,
+        rec_paths: Vec<String>,
+    },
 }
 
 /// An incremental search in progress (§9).

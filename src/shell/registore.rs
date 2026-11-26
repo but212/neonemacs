@@ -1,4 +1,4 @@
-//! Registore: Zero-Overhead Atomic Persistence (`WAF = 1.0`).
+//! Registore: Zero-Overhead Single-Pass Atomic Persistence (`1x` sequential write).
 
 use crate::core::{Doc, Eol};
 use std::fs::{self, File, OpenOptions, Permissions};

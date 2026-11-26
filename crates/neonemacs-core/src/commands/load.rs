@@ -3,7 +3,7 @@
 
 use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::effect::{Effect, Effects, ReadTarget};
+use crate::effect::{Effect, Effects, ReadTarget, RecoveredFile};
 use crate::file::{RawFile, loaded_from};
 use crate::goto_line_offset;
 use alloc::borrow::ToOwned;
@@ -82,7 +82,7 @@ pub fn file_read(
     target: ReadTarget,
     path: String,
     result: Result<Option<RawFile>, String>,
-    fx: Effects,
+    mut fx: Effects,
 ) -> (Editor, Effects) {
     let max_size = ed.config().max_file_size;
     let default_eol = ed.config().default_eol;
@@ -105,6 +105,10 @@ pub fn file_read(
                     if show {
                         ed = switch_to(ed, id);
                     }
+                    fx.push(Effect::ProbeRecovery {
+                        id,
+                        path: file.as_str().to_owned(),
+                    });
                     (ed, fx)
                 }
                 Err(e) => (ed.set_message(e), fx),
@@ -137,6 +141,23 @@ pub fn file_read(
             (ed, fx)
         }
     }
+}
+
+/// Prompts the user to restore an orphan `.rec` backup when a newly opened buffer has one.
+#[must_use]
+pub fn recovery_probed(ed: Editor, id: BufferId, rec: Option<RecoveredFile>) -> Editor {
+    let Some(rec) = rec else {
+        return ed;
+    };
+    if !ed.buffers().iter().any(|b| b.id() == id) {
+        return ed;
+    }
+    let name = ed.buffer_by_id(id).name().to_owned();
+    ed.enqueue_recovery(
+        id,
+        rec,
+        format!("Recover {name} from crash backup? (y or n)"),
+    )
 }
 
 #[cfg(test)]
@@ -323,5 +344,88 @@ mod tests {
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "Revert failed: f.txt does not exist");
         assert_eq!(fx, [] as [Effect; 0]);
+    }
+
+    #[test]
+    fn open_emits_probe_recovery_and_confirm_handles_yes_no_cancel() {
+        use crate::effect::{Event, RecoveredFile};
+        use crate::keymap::{Code, Key};
+        use crate::step;
+        use core::time::Duration;
+
+        let disk = DiskState::Known {
+            mtime: Duration::from_secs(10),
+            size: 4,
+        };
+        let read = Some(RawFile::from_bytes(4, disk, b"disk"));
+        let (ed, fx) = file_read(
+            editor(),
+            ReadTarget::Open {
+                line: None,
+                show: true,
+            },
+            "/w/note.txt".to_owned(),
+            Ok(read),
+            Vec::new(),
+        );
+        let id = ed.buffer().id();
+        assert_eq!(
+            fx,
+            [Effect::ProbeRecovery {
+                id,
+                path: "/w/note.txt".to_owned(),
+            }]
+        );
+
+        let rec = RecoveredFile {
+            doc: Doc::from_bytes(b"recovered"),
+            eol: Eol::Crlf,
+            rec_paths: alloc::vec!["/state/1-1-abc.rec".to_owned()],
+        };
+        let (ed, fx) = step(
+            ed,
+            Event::RecoveryProbed {
+                id,
+                rec: Some(rec),
+            },
+        );
+        assert!(fx.is_empty());
+        assert!(matches!(
+            ed.mode(),
+            crate::editor::Mode::Confirm {
+                kind: Confirm::RecoverFile { .. },
+                ..
+            }
+        ));
+
+        // C-g cancels without deleting .rec and keeps disk content.
+        let (ed_cancel, fx_cancel) = step(ed.clone(), Event::Key(Key::ctrl('g')));
+        assert_eq!(*ed_cancel.buffer().text(), Doc::from_bytes(b"disk"));
+        assert!(!ed_cancel.buffer().modified());
+        assert!(fx_cancel.is_empty());
+
+        // 'n' declines and deletes .rec while keeping disk content.
+        let (ed_no, fx_no) = step(ed.clone(), Event::Key(Key::plain(Code::Char('n'))));
+        assert_eq!(*ed_no.buffer().text(), Doc::from_bytes(b"disk"));
+        assert!(!ed_no.buffer().modified());
+        assert_eq!(
+            fx_no,
+            [Effect::DeleteRecovery {
+                rec_paths: alloc::vec!["/state/1-1-abc.rec".to_owned()],
+            }]
+        );
+
+        // 'y' restores doc & eol, marks modified, preserves disk Backing, and deletes .rec.
+        let (ed_yes, fx_yes) = step(ed, Event::Key(Key::plain(Code::Char('y'))));
+        assert_eq!(*ed_yes.buffer().text(), Doc::from_bytes(b"recovered"));
+        assert_eq!(ed_yes.buffer().eol(), Eol::Crlf);
+        assert!(ed_yes.buffer().modified());
+        assert_eq!(ed_yes.buffer().backing().disk(), disk);
+        assert_eq!(
+            fx_yes,
+            [Effect::DeleteRecovery {
+                rec_paths: alloc::vec!["/state/1-1-abc.rec".to_owned()],
+            }]
+        );
     }
 }

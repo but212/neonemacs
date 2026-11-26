@@ -6,6 +6,7 @@
 
 use alloc::collections::BTreeSet;
 use alloc::string::String;
+use alloc::vec::Vec;
 mod documents;
 mod edit;
 mod interaction;
@@ -45,6 +46,7 @@ pub struct Editor {
     message: String,
     quit: bool,
     settings: Settings,
+    pending_recoveries: Vec<(BufferId, crate::effect::RecoveredFile, String)>,
 }
 
 impl Default for Editor {
@@ -73,6 +75,7 @@ impl Editor {
             message: String::new(),
             quit: false,
             settings: Settings::new(config),
+            pending_recoveries: Vec::new(),
         }
     }
 
@@ -126,6 +129,52 @@ impl Editor {
             text: text.clone(),
         })
         .set_message(text)
+    }
+
+    /// Prompts immediately if not already in `Mode::Confirm`, otherwise queues the recovery prompt.
+    #[must_use]
+    pub fn enqueue_recovery(
+        mut self,
+        id: BufferId,
+        rec: crate::effect::RecoveredFile,
+        message: impl Into<String>,
+    ) -> Self {
+        let text = message.into();
+        if matches!(self.mode, Mode::Confirm { .. }) {
+            self.pending_recoveries.push((id, rec, text));
+            self
+        } else {
+            self.confirm_recovery(id, rec, text)
+        }
+    }
+
+    fn confirm_recovery(
+        self,
+        id: BufferId,
+        rec: crate::effect::RecoveredFile,
+        text: String,
+    ) -> Self {
+        self.confirm(
+            Confirm::RecoverFile {
+                id,
+                doc: rec.doc,
+                eol: rec.eol,
+                rec_paths: rec.rec_paths,
+            },
+            text,
+        )
+    }
+
+    /// Advances to the next queued recovery prompt whose buffer still exists, if any.
+    #[must_use]
+    pub fn next_pending_recovery(mut self) -> Self {
+        while !self.pending_recoveries.is_empty() {
+            let (id, rec, text) = self.pending_recoveries.remove(0);
+            if self.buffers.iter().any(|b| b.id() == id) {
+                return self.confirm_recovery(id, rec, text);
+            }
+        }
+        self
     }
 
     #[must_use]

@@ -9,8 +9,8 @@ pub mod search;
 pub mod shell_output;
 
 pub use basic::switch_to;
-pub use file::{confirmed, disk_checked, written};
-pub use load::{file_read, request_open};
+pub use file::{confirmed, declined, disk_checked, written};
+pub use load::{file_read, recovery_probed, request_open};
 pub use prompt::prompt_key;
 pub use search::{isearch_key, query_key};
 pub use shell_output::{init_loaded, lua_done, record_init_error, shell_done};

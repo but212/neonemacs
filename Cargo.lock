@@ -649,7 +649,6 @@ dependencies = [
  "neonemacs-core",
  "nix 0.29.0",
  "portable-pty",
- "signal-hook",
  "tempfile",
 ]
 

@@ -176,15 +176,26 @@ impl EditorSlot {
 /// Performs `effects` in order, until none are left. Returns the new editor.
 #[must_use]
 pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
+    perform_all_with_recovery_dir(ed, lua, effects, None)
+}
+
+/// Performs `effects` in order with an explicit recovery directory override (for tests).
+#[must_use]
+pub(crate) fn perform_all_with_recovery_dir(
+    ed: Editor,
+    lua: Option<&Lua>,
+    effects: Effects,
+    rec_dir: Option<&Path>,
+) -> Editor {
     let cell = RefCell::new(EditorSlot::new(ed));
     let bound = if let Some(lua) = lua {
         // The API stays bound for all of `effects`, so every Lua call in them sees the same editor.
         lua::with_api(lua, &cell, |lua| {
-            perform_in(&cell, Some(lua), effects);
+            perform_in_with_recovery_dir(&cell, Some(lua), effects, rec_dir);
             Ok(())
         })
     } else {
-        perform_in(&cell, None, effects);
+        perform_in_with_recovery_dir(&cell, None, effects, rec_dir);
         Ok(())
     };
     let ed = cell.into_inner().into_editor();
@@ -230,10 +241,19 @@ pub(crate) fn with_editor_cell<R>(
 /// Performs `effects` against the editor in `cell`. Each event goes back to the core.
 /// No `RefCell` borrow is held while an effect runs (I-21).
 pub fn perform_in(cell: &RefCell<EditorSlot>, lua: Option<&Lua>, effects: Effects) {
+    perform_in_with_recovery_dir(cell, lua, effects, None);
+}
+
+fn perform_in_with_recovery_dir(
+    cell: &RefCell<EditorSlot>,
+    lua: Option<&Lua>,
+    effects: Effects,
+    rec_dir: Option<&Path>,
+) {
     for effect in effects {
-        if let Some(event) = perform(cell, effect, lua) {
+        if let Some(event) = perform_with_recovery_dir(cell, effect, lua, rec_dir) {
             let next = with_editor_cell(cell, |ed| step(ed, event));
-            perform_in(cell, lua, next);
+            perform_in_with_recovery_dir(cell, lua, next, rec_dir);
         }
     }
 }
@@ -252,6 +272,15 @@ pub fn run_source(ed: Editor, lua: &Lua, name: &str, source: &str) -> (Editor, m
 /// Panics if `cell` does not contain a `Ready` editor (violating I-21 or poisoned).
 #[must_use]
 pub fn perform(cell: &RefCell<EditorSlot>, effect: Effect, lua: Option<&Lua>) -> Option<Event> {
+    perform_with_recovery_dir(cell, effect, lua, None)
+}
+
+fn perform_with_recovery_dir(
+    cell: &RefCell<EditorSlot>,
+    effect: Effect,
+    lua: Option<&Lua>,
+    rec_dir: Option<&Path>,
+) -> Option<Event> {
     let event = match effect {
         Effect::StatDisk { target, path } => Event::Disk {
             target,
@@ -278,6 +307,27 @@ pub fn perform(cell: &RefCell<EditorSlot>, effect: Effect, lua: Option<&Lua>) ->
                 path,
                 result,
             }
+        }
+        Effect::ProbeRecovery { id, path } => {
+            let rec = rec_dir
+                .map(Path::to_path_buf)
+                .or_else(recovery::recovery_dir)
+                .and_then(|dir| recovery::find_latest_recovery(&dir, &path, std::process::id()))
+                .map(|(rec_paths, _meta, doc, eol)| crate::core::effect::RecoveredFile {
+                    doc,
+                    eol,
+                    rec_paths: rec_paths
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect(),
+                });
+            Event::RecoveryProbed { id, rec }
+        }
+        Effect::DeleteRecovery { rec_paths } => {
+            for rec_path in rec_paths {
+                let _ = std::fs::remove_file(rec_path);
+            }
+            return None;
         }
         Effect::RunShell { command, shell } => {
             Event::ShellDone(run_shell_capped(&command, &shell, MAX_SHELL_OUTPUT))
