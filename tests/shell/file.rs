@@ -2,7 +2,7 @@
 //! They run against real files in a temporary directory.
 
 use neonemacs::core::Config;
-use neonemacs::core::effect::{Effect, Event, StatTarget, WalTarget};
+use neonemacs::core::effect::{Effect, Event, StatTarget};
 use neonemacs::core::parse_keys;
 use neonemacs::core::step;
 use neonemacs::core::{Backing, FilePath};
@@ -294,13 +294,7 @@ fn written_records_disk_and_reports_wrote() {
         *buf.backing(),
         Backing::file(FilePath::resolve("", path.to_str().unwrap()), disk)
     );
-    // The save made the WAL obsolete, so the core asks for its removal (I-25).
-    assert_eq!(
-        fx,
-        vec![Effect::RemoveWal {
-            target: WalTarget::Sibling(cp.clone())
-        }]
-    );
+    assert_eq!(fx, [] as [Effect; 0]);
     assert_eq!(ed.message(), format!("Wrote {cp}"));
 }
 

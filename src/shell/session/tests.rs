@@ -1,21 +1,17 @@
 use super::screen::print_styled_row;
 use super::*;
 use crate::core::Config;
-use crate::core::Confirm;
 use crate::core::Doc;
 use crate::core::Editor;
 use crate::core::TokenKind;
-use crate::core::request_open;
 use crate::shell::lua;
 use crate::shell::startup::InitSource;
-use crate::shell::wal;
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent,
     MouseEventKind,
 };
 use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
-use std::fs;
 use std::sync::mpsc;
 
 fn make_session() -> ShellSession {
@@ -39,7 +35,6 @@ fn press(code: KeyCode, modifiers: KeyModifiers) -> TermEvent {
 #[test]
 fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys() {
     let mut session = make_session();
-    let t0 = Instant::now();
 
     let ignored_events = [
         key_event(
@@ -62,20 +57,16 @@ fn hostile_event_filtering_ignores_release_repeat_mouse_resize_and_unmapped_keys
         }),
     ];
 
-    for (i, ev) in ignored_events.into_iter().enumerate() {
-        session.handle_event_at(&ev, t0 + Duration::from_secs(i as u64 + 1));
+    for ev in ignored_events {
+        session.handle_event(&ev);
     }
 
     assert_eq!(*session.ed.buffer().text(), Doc::from_bytes(b""));
     assert!(!session.ed.buffer().modified());
-    assert!(session.wal_deadline.is_none());
     assert!(!session.is_quit());
 
     // Only KeyEventKind::Press with a mapped key takes effect
-    session.handle_event_at(
-        &press(KeyCode::Char('x'), KeyModifiers::NONE),
-        t0 + Duration::from_secs(10),
-    );
+    session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::NONE));
     assert_eq!(*session.ed.buffer().text(), Doc::from_bytes(b"x"));
 }
 
@@ -88,25 +79,24 @@ fn spinner_tick_wrapping_and_prompt_mode_echo_preservation() {
     session.active_shell = Some(active);
 
     // 1. usize::MAX wrapping does not panic
-    let t0 = Instant::now();
-    session.tick_at(t0);
+    session.tick();
     assert_eq!(session.ed.message(), "[Running... |]");
 
     // 2. Entering M-x prompt while shell is running must NOT be overwritten by tick()
-    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::ALT));
     assert!(matches!(session.ed.mode(), Mode::Prompt(_)));
-    session.handle_event_at(&press(KeyCode::Char('g'), KeyModifiers::NONE), t0);
+    session.handle_event(&press(KeyCode::Char('g'), KeyModifiers::NONE));
     assert_eq!(session.ed.message(), "M-x g");
 
     // Tick multiple times while user is typing in prompt: prompt message stays intact
-    session.tick_at(t0 + Duration::from_millis(50));
-    session.tick_at(t0 + Duration::from_millis(100));
+    session.tick();
+    session.tick();
     assert_eq!(session.ed.message(), "M-x g");
 
     // 3. Cancel prompt with C-g -> back to Mode::Normal -> next tick resumes spinner
-    session.handle_event_at(&press(KeyCode::Char('g'), KeyModifiers::CONTROL), t0);
+    session.handle_event(&press(KeyCode::Char('g'), KeyModifiers::CONTROL));
     assert!(matches!(session.ed.mode(), Mode::Normal { .. }));
-    session.tick_at(t0 + Duration::from_millis(150));
+    session.tick();
     assert!(session.ed.message().starts_with("[Running... "));
 
     drop(tx);
@@ -117,20 +107,19 @@ fn spinner_never_overwrites_a_message_it_did_not_write() {
     let mut session = make_session();
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     session.active_shell = Some(ActiveShell::new(rx));
-    let t0 = Instant::now();
 
-    session.tick_at(t0);
+    session.tick();
     assert_eq!(session.ed.message(), "[Running... /]");
 
     // A message from anything else, here the echo of a Lua `message` call, stays until replaced.
     session.ed = session.ed.set_message("Wrote notes.txt");
-    session.tick_at(t0 + Duration::from_millis(50));
-    session.tick_at(t0 + Duration::from_millis(100));
+    session.tick();
+    session.tick();
     assert_eq!(session.ed.message(), "Wrote notes.txt");
 
     // An empty echo area gets the spinner back.
     session.ed = session.ed.clear_message();
-    session.tick_at(t0 + Duration::from_millis(150));
+    session.tick();
     assert!(session.ed.message().starts_with("[Running... "));
 
     drop(tx);
@@ -146,7 +135,7 @@ fn background_shell_disconnect_clears_active_shell_and_reports_error() {
     // Simulate worker thread panic / abrupt channel drop without sending
     drop(tx);
 
-    session.tick_at(Instant::now());
+    session.tick();
     assert!(session.active_shell.is_none());
     assert_eq!(
         session.ed.message(),
@@ -157,20 +146,19 @@ fn background_shell_disconnect_clears_active_shell_and_reports_error() {
 #[test]
 fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
     let mut session = make_session();
-    let t0 = Instant::now();
     let (tx, rx) = mpsc::channel();
     session.active_shell = Some(ActiveShell::new(rx));
 
     // Attempt to run a second shell command while first is active: M-x shell-command RET echo 2 RET
-    session.handle_event_at(&press(KeyCode::Char('x'), KeyModifiers::ALT), t0);
+    session.handle_event(&press(KeyCode::Char('x'), KeyModifiers::ALT));
     for c in "shell-command".chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event(&press(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event(&press(KeyCode::Enter, KeyModifiers::NONE));
     for c in "echo 2".chars() {
-        session.handle_event_at(&press(KeyCode::Char(c), KeyModifiers::NONE), t0);
+        session.handle_event(&press(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    session.handle_event_at(&press(KeyCode::Enter, KeyModifiers::NONE), t0);
+    session.handle_event(&press(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_eq!(
         session.ed.message(),
@@ -178,7 +166,7 @@ fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
     );
 
     // Next tick keeps the AlreadyRunning notice while advancing the spinner
-    session.tick_at(t0 + Duration::from_millis(50));
+    session.tick();
     assert!(
         session
             .ed
@@ -188,7 +176,7 @@ fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
 
     // Complete the first task with multiline output -> creates *Shell Command Output* buffer
     tx.send(Ok("line1\nline2\n".to_owned())).unwrap();
-    session.tick_at(t0 + Duration::from_millis(100));
+    session.tick();
     assert!(session.active_shell.is_none());
     assert!(
         session
@@ -198,189 +186,6 @@ fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
             .any(|b| b.name() == "*Shell Command Output*"
                 && *b.text() == Doc::from_bytes(b"line1\nline2"))
     );
-}
-
-#[test]
-fn deterministic_wal_flush_boundaries_debounce_and_save_cancellation() {
-    let dir = tempfile::tempdir().unwrap();
-    let file_a = dir.path().join("a.txt");
-    let file_b = dir.path().join("b.txt");
-    fs::write(&file_a, "init_a").unwrap();
-    fs::write(&file_b, "init_b").unwrap();
-
-    let mut session = make_session();
-    let fx_a = request_open(
-        &session.ed,
-        file_a.to_str().unwrap(),
-        None,
-        true,
-        Vec::new(),
-    );
-    session.ed = perform_all(session.ed, Some(&session.lua), fx_a);
-    let fx_b = request_open(
-        &session.ed,
-        file_b.to_str().unwrap(),
-        None,
-        false,
-        Vec::new(),
-    );
-    session.ed = perform_all(session.ed, Some(&session.lua), fx_b);
-
-    let t0 = Instant::now();
-
-    // 1. Non-modifying cursor key in clean file buffer does NOT arm WAL
-    session.handle_event_at(&press(KeyCode::Right, KeyModifiers::NONE), t0);
-    assert!(session.wal_deadline.is_none());
-
-    // 2. Edit file_a at t0, then again at t0 + 600ms (debounce)
-    session.handle_event_at(&press(KeyCode::Char('!'), KeyModifiers::NONE), t0);
-    assert!(session.wal_deadline.is_some());
-
-    let t_edit2 = t0 + Duration::from_millis(600);
-    session.handle_event_at(&press(KeyCode::Char('?'), KeyModifiers::NONE), t_edit2);
-
-    // At t_edit2 + 999ms (1599ms after t0): still 1ms short of 1s idle threshold
-    session.tick_at(t_edit2 + Duration::from_millis(999));
-    assert!(!wal::has_wal(&file_a));
-    assert!(session.wal_deadline.is_some());
-
-    // At exact t_edit2 + 1000ms: flushes only modified file_a, not clean file_b
-    session.tick_at(t_edit2 + Duration::from_millis(1000));
-    assert!(wal::has_wal(&file_a));
-    assert!(!wal::has_wal(&file_b));
-    assert!(session.wal_deadline.is_none());
-    assert_eq!(
-        wal::read_wal(&file_a, crate::shell::file::disk_state(&file_a))
-            .unwrap()
-            .doc,
-        Doc::from_bytes(b"i!?nit_a")
-    );
-
-    // 3. Edit again, then save (C-x C-s) before 1s elapses -> disarms WAL flush & removes .wal
-    let t_edit3 = t0 + Duration::from_secs(3);
-    session.handle_event_at(&press(KeyCode::Char('#'), KeyModifiers::NONE), t_edit3);
-    assert!(session.wal_deadline.is_some());
-
-    session.handle_event_at(
-        &press(KeyCode::Char('x'), KeyModifiers::CONTROL),
-        t_edit3 + Duration::from_millis(100),
-    );
-    session.handle_event_at(
-        &press(KeyCode::Char('s'), KeyModifiers::CONTROL),
-        t_edit3 + Duration::from_millis(150),
-    );
-    assert!(!wal::has_wal(&file_a));
-    assert!(session.wal_deadline.is_none());
-
-    // Even after 2 seconds pass, tick_at must NOT recreate .wal for saved buffer
-    session.tick_at(t_edit3 + Duration::from_secs(5));
-    assert!(!wal::has_wal(&file_a));
-}
-
-#[test]
-fn cursor_motion_does_not_retrigger_or_delay_wal_flush() {
-    let dir = tempfile::tempdir().unwrap();
-    let file_a = dir.path().join("cursor_test.txt");
-    fs::write(&file_a, "init_text").unwrap();
-
-    let mut session = make_session();
-    let fx = request_open(
-        &session.ed,
-        file_a.to_str().unwrap(),
-        None,
-        true,
-        Vec::new(),
-    );
-    session.ed = perform_all(session.ed, Some(&session.lua), fx);
-
-    let t0 = Instant::now();
-    // 1. Edit buffer at t0
-    session.handle_event_at(&press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
-    assert!(session.wal_deadline.is_some());
-
-    // 2. Move cursor at t0 + 500ms: must NOT postpone the 1s flush timeout!
-    session.handle_event_at(
-        &press(KeyCode::Right, KeyModifiers::NONE),
-        t0 + Duration::from_millis(500),
-    );
-    assert!(session.wal_deadline.is_some());
-
-    // At t0 + 1000ms: flush must happen (not delayed by Right arrow!)
-    session.tick_at(t0 + Duration::from_millis(1000));
-    assert!(wal::has_wal(&file_a));
-    assert!(session.wal_deadline.is_none());
-
-    // 3. Move cursor at t0 + 2000ms: must NOT re-arm the WAL deadline or re-write WAL!
-    session.handle_event_at(
-        &press(KeyCode::Right, KeyModifiers::NONE),
-        t0 + Duration::from_millis(2000),
-    );
-    assert!(
-        session.wal_deadline.is_none(),
-        "cursor movement on already-flushed buffer re-armed WAL flush!"
-    );
-}
-
-#[test]
-fn wal_write_failure_is_reported_and_retried() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("retry.txt");
-    fs::write(&file, "init").unwrap();
-    // A directory at the WAL path makes the atomic rename fail on every platform.
-    let blocker = wal::wal_path(&file);
-    fs::create_dir(&blocker).unwrap();
-
-    let mut session = make_session();
-    let fx = request_open(&session.ed, file.to_str().unwrap(), None, true, Vec::new());
-    session.ed = perform_all(session.ed, Some(&session.lua), fx);
-
-    let t0 = Instant::now();
-    session.handle_event_at(&press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
-
-    // The write fails: the user is told, and the buffer stays queued for another try.
-    let t1 = t0 + Duration::from_millis(1000);
-    session.tick_at(t1);
-    assert!(session.ed.message().starts_with("WAL write failed: "));
-    assert!(session.ed.message().contains("retry.txt"));
-    assert!(session.wal_deadline.is_some());
-    assert!(session.has_wal_dirty_file_buffer());
-
-    // No retry before another second has passed.
-    fs::remove_dir(&blocker).unwrap();
-    session.tick_at(t1 + Duration::from_millis(999));
-    assert!(!wal::has_wal(&file));
-
-    session.tick_at(t1 + Duration::from_millis(1000));
-    assert!(wal::has_wal(&file));
-    assert!(session.wal_deadline.is_none());
-    assert!(!session.has_wal_dirty_file_buffer());
-}
-
-#[test]
-fn wal_write_failure_keeps_a_pending_confirmation_question() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("ask.txt");
-    fs::write(&file, "init").unwrap();
-    fs::create_dir(wal::wal_path(&file)).unwrap();
-
-    let mut session = make_session();
-    let fx = request_open(&session.ed, file.to_str().unwrap(), None, true, Vec::new());
-    session.ed = perform_all(session.ed, Some(&session.lua), fx);
-
-    let t0 = Instant::now();
-    session.handle_event_at(&press(KeyCode::Char('X'), KeyModifiers::NONE), t0);
-    session.ed = session.ed.confirm(
-        Confirm::QuitUnsaved,
-        "Modified buffers exist; quit? (y or n)",
-    );
-
-    session.tick_at(t0 + Duration::from_millis(1000));
-    assert_eq!(
-        session.ed.message(),
-        "Modified buffers exist; quit? (y or n)"
-    );
-    // The failure is still retried.
-    assert!(session.wal_deadline.is_some());
 }
 
 #[test]

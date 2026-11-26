@@ -16,7 +16,7 @@ use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use mlua::Lua;
 use std::io::{self, Write};
 use std::sync::mpsc::{self, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// State of an active background shell command.
 pub struct ActiveShell {
@@ -78,17 +78,11 @@ impl ActiveShell {
     }
 }
 
-/// The idle time after an edit that the WAL waits for (I-23).
-const WAL_IDLE: Duration = Duration::from_secs(1);
-
-/// Manages interactive editor state, background tasks, idle WAL scheduling, and screen updates.
+/// Manages interactive editor state, background tasks, and screen updates.
 pub struct ShellSession {
     pub ed: Editor,
     pub lua: Lua,
     active_shell: Option<ActiveShell>,
-    /// When the core is told that input has been idle: one second after the last edit that left
-    /// unsaved text, or after a failed flush. `None` when no WAL is due (I-23).
-    wal_deadline: Option<Instant>,
     prev_rows: Vec<Vec<Cell>>,
     screen_size: (usize, usize),
 }
@@ -106,7 +100,6 @@ impl ShellSession {
             ed,
             lua,
             active_shell: None,
-            wal_deadline: None,
             prev_rows: Vec::new(),
             screen_size: (0, 0),
         }
@@ -134,12 +127,6 @@ impl ShellSession {
         self.ed.quit()
     }
 
-    fn has_wal_dirty_file_buffer(&self) -> bool {
-        self.ed
-            .buffers()
-            .iter()
-            .any(crate::core::Buffer::is_wal_dirty)
-    }
     fn update_ed(&mut self, f: impl FnOnce(Editor, &Lua) -> Editor) {
         let lua = &self.lua;
         update_editor(&mut self.ed, |ed| f(ed, lua));
@@ -147,16 +134,10 @@ impl ShellSession {
 
     /// Handles a terminal event (e.g. key press).
     pub fn handle_event(&mut self, event: &TermEvent) {
-        self.handle_event_at(event, Instant::now());
-    }
-
-    /// Handles a terminal event with an explicit timestamp for deterministic idle WAL scheduling.
-    pub fn handle_event_at(&mut self, event: &TermEvent, now: Instant) {
         if let TermEvent::Key(k) = event
             && k.kind == KeyEventKind::Press
             && let Some(key) = from_terminal(k.code, k.modifiers)
         {
-            let prev_seq = self.ed.edit_seq();
             let shell_busy = self.active_shell.is_some();
             let mut outcome = ShellOutcome::None;
             self.update_ed(|ed, lua| {
@@ -177,16 +158,11 @@ impl ShellSession {
                 ShellOutcome::ReloadInit => self.reload_init(init_source()),
                 ShellOutcome::None => {}
             }
-            if !self.has_wal_dirty_file_buffer() {
-                self.wal_deadline = None;
-            } else if self.ed.edit_seq() != prev_seq {
-                self.wal_deadline = Some(now + WAL_IDLE);
-            }
         }
     }
 
-    /// Periodic tick at an explicit timestamp `now` (I-23, I-24).
-    pub fn tick_at(&mut self, now: Instant) {
+    /// Periodic tick (I-24).
+    pub fn tick(&mut self) {
         // 1. Check background shell task (only in Normal mode so active Prompt/Isearch/QueryReplace
         // echo state is never clobbered mid-input; completed output stays buffered in the channel).
         if matches!(self.ed.mode(), Mode::Normal { .. })
@@ -204,16 +180,9 @@ impl ShellSession {
                 None => {}
             }
         }
-
-        // 2. Idle WAL flush (1s after edit). The core decides what to write and what a failure shows.
-        if self.wal_deadline.is_some_and(|due| now >= due) {
-            self.update_ed(|ed, lua| handle(ed, Some(lua), CoreEvent::Idle));
-            // A buffer whose write failed stays dirty, so the flush is tried again after another second.
-            self.wal_deadline = self.has_wal_dirty_file_buffer().then(|| now + WAL_IDLE);
-        }
     }
 
-    /// Draws, then handles waiting events, background tasks, and WAL flush in a loop (I-22, I-24).
+    /// Draws, then handles waiting events and background tasks in a loop (I-22, I-24).
     ///
     /// # Errors
     /// Returns `io::Error` if terminal rendering, event polling, or reading fails.
@@ -224,7 +193,7 @@ impl ShellSession {
                 return Ok(());
             }
 
-            self.tick_at(Instant::now());
+            self.tick();
 
             if event::poll(Duration::from_millis(50))? {
                 self.handle_event(&event::read()?);

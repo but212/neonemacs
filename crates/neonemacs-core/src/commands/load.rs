@@ -1,9 +1,9 @@
-//! Opening and reading files: asking the shell to read, applying what it read (new buffer or
-//! revert), and applying what it found in a WAL (docs/context.md §3.2, §4.2).
+//! Opening and reading files: asking the shell to read and applying what it read (new buffer or
+//! revert) (docs/context.md §3.2, §4.2).
 
 use crate::commands::basic::switch_to;
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::effect::{Effect, Effects, ReadTarget, WalProbe, WalTarget};
+use crate::effect::{Effect, Effects, ReadTarget};
 use crate::file::{RawFile, loaded_from};
 use crate::goto_line_offset;
 use alloc::borrow::ToOwned;
@@ -76,13 +76,13 @@ pub(crate) fn revert_now(ed: Editor, id: BufferId, mut fx: Effects) -> (Editor, 
 
 /// Applies the result of a file read: a new buffer for `Open`, a reload for `Revert` (C-11, C-12).
 /// A file over `max-file-size` is refused: `Open` makes no buffer, `Revert` keeps the buffer
-/// and its WAL (I-04).
+/// unchanged (I-04).
 pub fn file_read(
     ed: Editor,
     target: ReadTarget,
     path: String,
     result: Result<Option<RawFile>, String>,
-    mut fx: Effects,
+    fx: Effects,
 ) -> (Editor, Effects) {
     let max_size = ed.config().max_file_size;
     let default_eol = ed.config().default_eol;
@@ -105,12 +105,6 @@ pub fn file_read(
                     if show {
                         ed = switch_to(ed, id);
                     }
-                    // The only place a WAL is looked for, so every way to open a file recovers (I-45).
-                    fx.push(Effect::ProbeWal {
-                        path: file.as_str().to_owned(),
-                        disk: ed.buffer_by_id(id).backing().disk(),
-                        line,
-                    });
                     (ed, fx)
                 }
                 Err(e) => (ed.set_message(e), fx),
@@ -120,7 +114,7 @@ pub fn file_read(
             let ed = ed.set_message(format!("Cannot open {path}: {e}"));
             (ed, fx)
         }
-        // A deleted file is not an empty one: keep the buffer and its WAL.
+        // A deleted file is not an empty one: keep the buffer.
         (ReadTarget::Revert(_), Ok(None)) => {
             let ed = ed.set_message(format!("Revert failed: {path} does not exist"));
             (ed, fx)
@@ -128,19 +122,12 @@ pub fn file_read(
         (ReadTarget::Revert(id), Ok(read)) => match loaded_from(&file, read, max_size, default_eol)
         {
             Ok(loaded) => {
-                let track = ed.tracks_wal_deltas();
                 let ed = ed
                     .with_buffer(id, |b| {
                         b.replace_from_disk(loaded.text, loaded.backing, loaded.eol)
-                            .track_wal_baseline(track)
                     })
                     .snap_windows_for_buffer(id)
                     .set_message("Reverted");
-                // The WAL goes only after the reload succeeds, so a refused revert keeps
-                // the unsaved edits recoverable.
-                fx.push(Effect::RemoveWal {
-                    target: WalTarget::Sibling(path),
-                });
                 (ed, fx)
             }
             Err(e) => (ed.set_message(e), fx),
@@ -152,45 +139,17 @@ pub fn file_read(
     }
 }
 
-/// Applies what the shell found when it looked for the WAL of the file at `path` (I-44, I-45).
-#[must_use]
-pub fn wal_probed(
-    ed: Editor,
-    path: &str,
-    line: Option<usize>,
-    probe: WalProbe,
-    fx: Effects,
-) -> (Editor, Effects) {
-    let name = name_of(path);
-    let ed = match probe {
-        WalProbe::Absent => ed,
-        WalProbe::Valid(recovered) => ed
-            .restore_buffer_content(path, recovered.doc, recovered.eol, line)
-            .set_message(format!("[Recovered {name} from WAL]")),
-        WalProbe::ValidDelta(delta) => ed
-            .restore_buffer_deltas(path, delta, line)
-            .set_message(format!("[Recovered {name} from WAL]")),
-        WalProbe::Stale(Ok(kept)) => {
-            ed.set_message(format!("Stale WAL kept as {}", name_of(&kept)))
-        }
-        WalProbe::Stale(Err(e)) => ed.set_message(format!("Stale WAL for {name} not kept: {e}")),
-    };
-    (ed, fx)
-}
-
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
     use alloc::vec::Vec;
 
     use super::*;
     use crate::Doc;
     use crate::config::Config;
-    use crate::effect::Recovered;
     use crate::eol::Eol;
     use crate::file::RawFile;
     use crate::file::{Backing, DiskState, FilePath};
-    use crate::test_support::{editor, file_buffer, known, saved_bytes};
+    use crate::test_support::{editor, file_buffer, saved_bytes};
 
     /// An editor whose `max-file-size` is 4 bytes.
     fn small_limit() -> Editor {
@@ -251,95 +210,6 @@ mod tests {
         assert_eq!(saved_bytes(&ed, id), b"a\r\nb\r\n");
     }
 
-    fn found(bytes: &[u8], disk: DiskState) -> Option<RawFile> {
-        Some(RawFile::from_bytes(bytes.len() as u64, disk, bytes))
-    }
-
-    #[test]
-    fn open_of_a_new_buffer_probes_its_wal() {
-        // I-45: the one place a WAL is looked for.
-        let disk = known(3);
-        let target = ReadTarget::Open {
-            line: Some(2),
-            show: false,
-        };
-        let (_, fx) = file_read(
-            editor(),
-            target,
-            "f.txt".to_owned(),
-            Ok(found(b"abc", disk)),
-            Vec::new(),
-        );
-        assert_eq!(
-            fx,
-            vec![Effect::ProbeWal {
-                path: "f.txt".to_owned(),
-                disk,
-                line: Some(2),
-            }]
-        );
-    }
-
-    fn probed(probe: WalProbe) -> Editor {
-        let ed = file_buffer(editor(), b"disk", Eol::Lf);
-        let (ed, fx) = wal_probed(ed, "f.txt", None, probe, Vec::new());
-        assert_eq!(fx, [] as [Effect; 0]);
-        ed
-    }
-
-    #[test]
-    fn no_wal_changes_nothing() {
-        let ed = probed(WalProbe::Absent);
-        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"disk"));
-        assert!(!ed.buffer().modified());
-        assert_eq!(ed.message(), "");
-    }
-
-    #[test]
-    fn valid_wal_restores_text_and_eol_and_says_so() {
-        let ed = probed(WalProbe::Valid(Recovered {
-            eol: Eol::Crlf,
-            doc: Doc::from_bytes(b"draft"),
-        }));
-        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"draft"));
-        assert_eq!(ed.buffer().eol(), Eol::Crlf);
-        assert!(ed.buffer().modified());
-        assert_eq!(ed.message(), "[Recovered f.txt from WAL]");
-    }
-
-    #[test]
-    fn replayed_delta_wal_restores_text_and_eol() {
-        use crate::Replace;
-        use crate::effect::RecoveredDelta;
-        let delta = RecoveredDelta::replay(
-            Doc::from_bytes(b"disk"),
-            Eol::Crlf,
-            vec![Replace {
-                offset: 0,
-                delete_len: 0,
-                insert: Doc::from_bytes(b"X"),
-            }],
-        )
-        .unwrap();
-        let ed = probed(WalProbe::ValidDelta(delta));
-        assert_eq!(*ed.buffer().text(), Doc::from_bytes(b"Xdisk"));
-        assert_eq!(ed.buffer().eol(), Eol::Crlf);
-        assert!(ed.buffer().modified());
-        assert!(!ed.buffer().is_wal_dirty());
-        assert_eq!(ed.message(), "[Recovered f.txt from WAL]");
-    }
-
-    #[test]
-    fn unusable_wal_is_reported_and_leaves_the_text() {
-        let ed = probed(WalProbe::Stale(Ok("dir/.f.txt.wal.stale".to_owned())));
-        assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"disk"));
-        assert!(!ed.buffer().modified());
-        assert_eq!(ed.message(), "Stale WAL kept as .f.txt.wal.stale");
-
-        let ed = probed(WalProbe::Stale(Err("denied".to_owned())));
-        assert_eq!(ed.message(), "Stale WAL for f.txt not kept: denied");
-    }
-
     #[test]
     fn oversized_open_creates_no_buffer() {
         let ed = small_limit();
@@ -376,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_revert_removes_wal_after_reload() {
+    fn successful_revert_reloads_text() {
         let ed = file_buffer(editor(), b"a\nb\n", Eol::Lf);
         let id = ed.window().buffer;
         let read = Some(RawFile::from_bytes(2, DiskState::Unknown, b"x\n"));
@@ -388,9 +258,7 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"x\n"));
-        assert!(
-            matches!(fx.as_slice(), [Effect::RemoveWal { target }] if target.path() == "f.txt")
-        );
+        assert_eq!(fx, [] as [Effect; 0]);
     }
 
     #[test]

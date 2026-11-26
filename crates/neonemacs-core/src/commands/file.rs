@@ -3,7 +3,7 @@
 
 use crate::commands::load::{name_of, revert_now};
 use crate::editor::{Buffer, BufferId, Confirm, Editor};
-use crate::effect::{Effect, Effects, StatTarget, WalTarget};
+use crate::effect::{Effect, Effects, StatTarget};
 use crate::file::{Backing, DiskState};
 use crate::undo::Edit;
 use alloc::borrow::ToOwned;
@@ -115,13 +115,7 @@ pub fn confirmed(ed: Editor, question: Confirm, fx: Effects) -> (Editor, Effects
             fx.push(Effect::WriteFile { id, path });
             (ed, fx)
         }
-        Confirm::QuitUnsaved => {
-            let mut fx = fx;
-            for buf in ed.buffers() {
-                fx.extend(ed.remove_wal_effect(buf.id()));
-            }
-            (ed.set_quit(true), fx)
-        }
+        Confirm::QuitUnsaved => (ed.set_quit(true), fx),
         Confirm::KillModified(id) => super::basic::kill_buffer_now(ed, id, fx),
         Confirm::RevertModified(id) => revert_now(ed, id, fx),
     }
@@ -139,33 +133,25 @@ pub(crate) fn write_buffer(ed: &Editor, id: BufferId, mut fx: Effects) -> Effect
 }
 
 /// Records a finished write (I-05) and reports it in the echo area. A write to a new path moves
-/// the buffer there and removes the WAL of the old path (I-25, I-36). A failed write changes nothing.
+/// the buffer there. A failed write changes nothing.
 #[must_use]
 pub fn written(
     mut ed: Editor,
     id: BufferId,
     path: &str,
     result: Result<DiskState, String>,
-    mut fx: Effects,
+    fx: Effects,
 ) -> (Editor, Effects) {
     let message = match result {
         Ok(new_disk) => {
             let file = ed.resolve_path(path);
             if ed.buffer_by_id(id).file_path() != Some(file.as_str()) {
-                fx.extend(ed.remove_wal_effect(id));
                 let name = name_of(file.as_str());
                 ed = ed.with_buffer(id, |b| {
                     b.set_name(name).set_backing(Backing::file(file, new_disk))
                 });
             }
-            let track = ed.tracks_wal_deltas();
-            ed = ed.with_buffer(id, |b| {
-                let track = track && b.eol().preserves_saved_doc(b.text());
-                b.record_saved(new_disk).track_wal_baseline(track)
-            });
-            fx.push(Effect::RemoveWal {
-                target: WalTarget::Sibling(path.to_owned()),
-            });
+            ed = ed.with_buffer(id, |b| b.record_saved(new_disk));
             format!("Wrote {path}")
         }
         Err(e) => format!("Save failed: {e}"),
@@ -180,7 +166,7 @@ pub(crate) fn write_file(ed: Editor, input: &str, mut fx: Effects) -> (Editor, E
     }
     let id = ed.window().buffer;
     let path = ed.resolve_path(input);
-    // Another buffer visits this path, so writing here would give two buffers one WAL (I-37).
+    // Another buffer visits this path, so writing here would give two buffers the same path (I-37).
     if let Some(other) = ed
         .buffers()
         .find_by_path(path.as_str())
@@ -252,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_eol_flips_mode_marks_wal_dirty_and_saves_bytes() {
+    fn toggle_eol_flips_mode_and_saves_bytes() {
         for (initial, expected_eol, expected_bytes) in [
             (Eol::Lf, Eol::Crlf, &b"a\r\nb\r\n"[..]),
             (Eol::Crlf, Eol::Lf, &b"a\nb\n"[..]),
@@ -262,7 +248,6 @@ mod tests {
             let (ed, _) = toggle_eol(ed, Vec::new());
             assert_eq!(ed.buffer().eol(), expected_eol);
             assert!(ed.buffer().modified());
-            assert!(ed.buffer().backing().is_wal_dirty());
             assert_eq!(saved_bytes(&ed, id), expected_bytes);
         }
     }
@@ -357,17 +342,7 @@ mod tests {
             size: 3,
         };
         let (ed, fx) = written(ed, id, "b.txt", Ok(disk), Vec::new());
-        assert_eq!(
-            fx,
-            vec![
-                Effect::RemoveWal {
-                    target: WalTarget::Sibling("f.txt".to_owned())
-                },
-                Effect::RemoveWal {
-                    target: WalTarget::Sibling("b.txt".to_owned())
-                },
-            ]
-        );
+        assert_eq!(fx, [] as [Effect; 0]);
         assert_eq!(
             *ed.buffer().backing(),
             Backing::file(FilePath::resolve("", "b.txt"), disk)

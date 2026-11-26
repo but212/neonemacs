@@ -7,14 +7,14 @@
 
 pub mod file;
 pub mod lua;
+pub mod registore;
 pub mod session;
 pub mod startup;
 pub mod terminal;
-pub mod wal;
 
 use crate::core::Editor;
 use crate::core::ShellSpec;
-use crate::core::effect::{Effect, Effects, Event, WalTarget, WalWrite};
+use crate::core::effect::{Effect, Effects, Event};
 use crate::core::step;
 use mlua::Lua;
 use std::cell::RefCell;
@@ -49,12 +49,6 @@ pub(crate) fn xdg_path(
         |xdg| Some(PathBuf::from(xdg)),
     )?;
     Some(base.join("neonemacs").join(file))
-}
-
-pub(crate) fn xdg_env_path(var: &str, fallback: &[&str], file: &str) -> Option<PathBuf> {
-    let xdg = env::var_os(var);
-    let home = home_dir();
-    xdg_path(xdg.as_deref(), home.as_deref(), fallback, file)
 }
 
 /// The echo-area message while a background shell command runs, before the spinner's first frame.
@@ -226,62 +220,6 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
                 target,
                 path,
                 result,
-            }
-        }
-        Effect::RemoveWal { target } => {
-            let wp = match target {
-                WalTarget::Sibling(path) => wal::wal_path(Path::new(&path)),
-                WalTarget::Slot(slot) => PathBuf::from(slot),
-            };
-            let _ = std::fs::remove_file(&wp);
-            return None;
-        }
-        Effect::FlushWal { entries } => {
-            let guard = cell.borrow();
-            let ed = guard.as_ref().expect("editor is in the cell (I-21)");
-            let allow_deltas = ed
-                .config()
-                .toggles
-                .contains(crate::core::Toggles::WAL_DELTAS);
-            let writes = entries
-                .into_iter()
-                .map(|e| {
-                    let buf = ed.buffer_by_id(e.id);
-                    let doc = buf.text();
-                    let result = match &e.target {
-                        WalTarget::Sibling(path) => {
-                            let path = Path::new(path);
-                            if allow_deltas
-                                && matches!(e.disk, crate::core::DiskState::Known { .. })
-                                && let Some((base, deltas)) = buf.wal_deltas()
-                            {
-                                wal::write_wal_deltas(path, e.disk, e.eol, base, deltas)
-                            } else {
-                                wal::write_wal_doc(path, e.disk, e.eol, doc)
-                            }
-                        }
-                        WalTarget::Slot(slot) => {
-                            wal::write_scratch_doc(Path::new(slot), e.eol, doc)
-                        }
-                    };
-                    WalWrite {
-                        id: e.id,
-                        target: e.target,
-                        result: result.map_err(|err| err.to_string()),
-                    }
-                })
-                .collect();
-            Event::WalFlushed(writes)
-        }
-        Effect::ProbeWal { path, disk, line } => {
-            let base = cell
-                .borrow()
-                .as_ref()
-                .and_then(|ed| ed.buffers().find_by_path(&path).map(|b| b.text().clone()));
-            Event::WalProbed {
-                probe: wal::probe_with_base(Path::new(&path), disk, base.as_ref()),
-                path,
-                line,
             }
         }
         Effect::RunShell { command, shell } => {

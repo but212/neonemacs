@@ -182,34 +182,6 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
 }
 
 #[test]
-fn wal_flush_streams_edited_doc_without_full_copy() {
-    let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path().join("split.txt");
-    let initial = b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec();
-    std::fs::write(&file_path, &initial).unwrap();
-
-    let ed = Editor::new(Config::default());
-    let fx =
-        neonemacs::core::request_open(&ed, file_path.to_str().unwrap(), None, true, Vec::new());
-    let ed = neonemacs::shell::perform_all(ed, None, fx);
-    let disk = neonemacs::shell::file::disk_state(&file_path);
-
-    let (ed, _) = ed.apply(Edit::insert(10, b"[MID]".as_slice()));
-    let (ed, fx) = neonemacs::core::step(ed, neonemacs::core::effect::Event::Idle);
-    assert!(
-        fx.iter()
-            .any(|e| matches!(e, neonemacs::core::effect::Effect::FlushWal { .. }))
-    );
-
-    let _ed = neonemacs::shell::perform_all(ed, None, fx);
-    let wal = neonemacs::shell::wal::read_wal(&file_path, disk).unwrap();
-    assert_eq!(
-        wal.doc,
-        Doc::from_bytes(b"0123456789[MID]abcdefghijklmnopqrstuvwxyz")
-    );
-}
-
-#[test]
 fn large_eol_stream_decoder_is_simd_chunked() {
     let line = b"abcdefghijklmnopqrstuvwxyz0123456789\r\n";
     let mut raw = Vec::with_capacity(line.len() * 200_000);

@@ -8,7 +8,7 @@ Emacs 키 바인딩과 명령 흐름을 따르되 Elisp 에뮬레이션 없이 �
 
 - **Functional Core / Imperative Shell**: `crates/neonemacs-core` (`#![no_std]` + `alloc`)의 순수 상태 전이와 `src/shell`의 터미널·파일·프로세스 I/O를 분리했습니다.
 - **Unicode / CJK 폭 처리**: 한글, CJK 전각 문자, 결합 문자 등의 터미널 표시 폭을 계산해 정렬을 유지합니다.
-- **WAL 기반 크래시 복구**: 유휴 상태 디바운스 후 `.wal` 파일 및 `*scratch*` 상태를 기록해 비정상 종료 시 복구합니다.
+- **Zero-Overhead 원자적 영속화 (Registore)**: 사전 쓰기 로그(WAL) 없이 `Doc` 슬라이스를 임시 파일에 단일 순차 스트리밍(`WAF = 1.0`)한 뒤 `sync_data`와 `rename`으로 원자적 교체를 수행합니다.
 - **Lua 5.4 설정**: 샌드박스된 내장 Lua 런타임(`init.lua`)으로 키맵과 설정을 구성합니다.
 
 ## 빌드 및 실행

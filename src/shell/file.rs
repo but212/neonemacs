@@ -1,50 +1,9 @@
 //! File I/O for the shell: reads, atomic saves, and disk state (§8, A2, A12).
 
 use crate::core::{DiskState, Doc, Eol, EolStreamDecoder, RawFile};
-use std::fs::{self, File, OpenOptions, Permissions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(1);
-
-/// Atomically writes to `target` via a PID- and sequence-isolated temporary file using `write_fn`.
-/// Calls `sync_all` before renaming over `target`, and cleans up the temporary file on error.
-///
-/// # Errors
-/// Returns `io::Error` if creating, writing, flushing, or renaming the temporary file fails.
-pub fn atomic_write_with(
-    target: &Path,
-    prefix: &str,
-    suffix: &str,
-    permissions: Option<Permissions>,
-    write_fn: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
-) -> io::Result<()> {
-    let dir = target
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let name = target.file_name().unwrap_or_default().to_string_lossy();
-    let pid = std::process::id();
-    let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = dir.join(format!("{prefix}{name}.{pid}_{seq}{suffix}"));
-
-    let result = (|| {
-        let f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        let mut w = BufWriter::with_capacity(64 * 1024, f);
-        write_fn(&mut w)?;
-        w.flush()?;
-        w.get_ref().sync_all()?;
-        if let Some(perms) = permissions {
-            let _ = fs::set_permissions(&tmp, perms);
-        }
-        fs::rename(&tmp, target)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
 
 fn state_of(meta: &fs::Metadata) -> DiskState {
     meta.modified()
@@ -129,25 +88,6 @@ pub fn save(path: &Path, bytes: &[u8]) -> io::Result<DiskState> {
     save_doc(path, Eol::Lf, &crate::core::Doc::from_bytes(bytes))
 }
 
-/// Streams `doc` slices to `f`, propagating the first `io::Error` via `ControlFlow::Break`.
-pub(crate) fn write_doc_slices(
-    doc: &Doc,
-    mut f: impl FnMut(&[u8]) -> io::Result<()>,
-) -> io::Result<()> {
-    use std::ops::ControlFlow;
-
-    let flow = doc
-        .try_for_each_slice(0..doc.total_bytes(), |chunk| match f(chunk) {
-            Ok(()) => ControlFlow::Continue(()),
-            Err(e) => ControlFlow::Break(e),
-        })
-        .expect("full range is valid");
-    match flow {
-        ControlFlow::Continue(()) => Ok(()),
-        ControlFlow::Break(e) => Err(e),
-    }
-}
-
 /// Streams `doc` slices to `path` atomically, encoding line endings according to `eol`.
 /// Symlinks are followed; permissions are kept (A2).
 ///
@@ -160,25 +100,8 @@ pub fn save_doc(path: &Path, eol: Eol, doc: &crate::core::Doc) -> io::Result<Dis
         path.to_path_buf()
     };
     let permissions = fs::metadata(&target).ok().map(|m| m.permissions());
-    atomic_write_with(&target, ".", ".tmp", permissions, |w| {
-        write_doc_slices(doc, |chunk| match eol {
-            Eol::Lf => w.write_all(chunk),
-            Eol::Crlf => write_crlf_slice(w, chunk),
-        })
-    })?;
+    crate::shell::registore::persist_with(&target, doc, eol, permissions)?;
     Ok(disk_state(&target))
-}
-
-fn write_crlf_slice(w: &mut impl Write, slice: &[u8]) -> io::Result<()> {
-    for (i, part) in slice.split(|&b| b == b'\n').enumerate() {
-        if i > 0 {
-            w.write_all(b"\r\n")?;
-        }
-        if !part.is_empty() {
-            w.write_all(part)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

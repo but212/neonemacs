@@ -1,6 +1,5 @@
-//! Documents group: the buffers, the window layout, the kill ring, and the edit counter (I-32).
-//! `edit_seq` belongs here, so `Editor::apply` changes it in the same group it changes buffers
-//! and windows (I-31). Fields are visible only to `editor`.
+//! Documents group: the buffers, the window layout, and the kill ring (I-32).
+//! Fields are visible only to `editor`.
 
 use crate::{Doc, Replace};
 use alloc::vec::Vec;
