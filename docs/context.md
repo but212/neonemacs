@@ -234,7 +234,7 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-48** | Key aliases map a single character to an ASCII graphic character. Applied strictly to modal confirmation prompts and fallback prefix/modifier lookups; never to regular text insertion, prompts, or search queries. | Type (`AliasTarget`) + Runtime (`answer_char`, `lookup_binding`) |
 | **I-49** | `SyntaxDef` requires at least one extension or filename. Filename exact match takes precedence over extension. `heading` prefix colors entire line as keyword without further tokenization. | Runtime (`SyntaxDef::new`, `highlight_line`) |
 | **I-50** | `SyntaxDef` maintains keyword and type token lists sorted and deduplicated for binary search lookup. | Runtime (`SyntaxDef::new`) |
-| **I-51** | Line lexer is stateless and operates strictly on one line at a time. | Runtime (`LineLexer`) |
+| **I-51** | Line lexer is a pure state-transition function (`LexState -> (Vec<TokenKind>, LexState)`) operating one line at a time. | Runtime (`LineLexer`) |
 | **I-52** | Configuration settings are members of the closed `Setting` enum. `get` is total, `set` is exhaustive, and `set(s, get(s))` preserves state equality. | Type (`Setting`) + Runtime round-trip tests |
 | **I-53** | Panic room invariants (terminal restoration, save conflict checks, confirmations, `C-g`/`Esc` cancel) cannot be disabled by configuration, Lua code, or key unbinding. | Type (`Setting` closed set) + Runtime (`C-g` priority) |
 | **I-54** | Starting configuration and Lua state is either bundled scripts plus entire `init.lua`, or bundled scripts alone. `reload-init` results in either entire new state or existing state. Partial execution is never observed. | Runtime (`configure`, `ShellSession::reload_init`) |
@@ -243,6 +243,13 @@ This table consolidates all operational and structural invariants governing `neo
 | **I-57** | Lua runtime accesses host filesystem and processes strictly via exposed editor APIs; sandbox restricts access to base, `string`, `table`, `math`, and `utf8` without `dofile` or `loadfile`. | Boundary (`lua::new_state`) |
 | **I-58** | Successful `reload-init` swaps configuration and Lua runtime while preserving buffers, windows, and kill ring. Rejected or Lua-invoked reloads preserve existing state. | Type (`Editor::adopt_settings`) + Runtime (`reload_init`) |
 | **I-59** | Core top-level crate module references are strictly acyclic, except the documented cycle between `commands` and `dispatch`. | Purity scan (`crates/neonemacs-core/tests/purity.rs`) |
+| **I-60** | `Frame` stores a flat row-major grid where `cells.len() == cols * rows`. | Runtime (`render::Frame`) |
+| **I-61** | Recovery, signal, and idle timer state never leaks into `neonemacs-core`; `tests/purity.rs` passes unmodified. | Boundary (`src/shell/recovery.rs`) + Purity scan |
+| **I-62** | Idle backups and emergency dumps never write to `Backing::File` original paths; they target `$XDG_STATE_HOME/neonemacs/recovery/` only. | Boundary (`recovery_dir`, `write_recovery_file`) |
+| **I-63** | Unix signal handlers (`SIGHUP`, `SIGTERM`) only set an `AtomicBool` flag via `signal-hook` without allocation, locks, or I/O. Signal-triggered `emergency_dump` is Unix-only (`#[cfg(unix)]`); on non-Unix platforms (e.g. Windows), only idle auto-backup (`I-64`) and clean/exit cleanup (`I-65`) run. | Boundary (`terminal::install_termination_signals`, `ShellSession::run`) |
+| **I-64** | Idle backup triggers only clone `Doc` ($O(1)$ CoW) and enqueue into a non-blocking coalescing queue without blocking the main loop on disk I/O. | Runtime (`RecoveryWorker::enqueue_write`) |
+| **I-65** | Clean buffers (`!modified`) and killed buffers (`kill-buffer`) have their `.rec` artifacts removed; normal exit cleans all `.rec` files for the current `pid`. | Runtime (`ShellSession::sync_clean_and_killed_buffers`, `drain_and_stop`) |
+| **I-66** | Every `.rec` recovery file is written atomically via `registore::persist_with_header` (`tmp` + `sync_data` + `rename`). | Schema (`registore::persist_with_header`) |
 
 ### 5.1 Weave Tree Data Structure Invariants (`D-01`..`D-05`)
 

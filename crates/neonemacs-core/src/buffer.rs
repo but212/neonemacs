@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use crate::Doc;
 use crate::eol::Eol;
 use crate::file::{Backing, DiskState};
+use crate::syntax::{LexState, SyntaxDef, highlight_line_with_state};
 use crate::undo::{Edit, RecordedEdit, UndoLog};
 
 /// The name of the buffer that always exists (I-08, I-42).
@@ -51,6 +52,64 @@ impl Mark {
     }
 }
 
+/// Per-line end-of-line `LexState` cache for multi-line syntax highlighting.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SyntaxStateCache {
+    line_end_states: Vec<LexState>,
+    dirty_from: usize,
+}
+
+impl SyntaxStateCache {
+    #[must_use]
+    pub fn start_state(&self, line: usize) -> Option<LexState> {
+        if line == 0 {
+            Some(LexState::Normal)
+        } else if line <= self.dirty_from && line <= self.line_end_states.len() {
+            Some(self.line_end_states[line - 1])
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn invalidate_from(mut self, line: usize) -> Self {
+        self.dirty_from = self.dirty_from.min(line);
+        self
+    }
+
+    #[must_use]
+    pub fn ensure_through(mut self, doc: &Doc, syntax: &SyntaxDef, through_line: usize) -> Self {
+        let total_lines = crate::total_lines(doc);
+        let target = through_line.min(total_lines);
+        if self.dirty_from >= target && self.line_end_states.len() >= target {
+            return self;
+        }
+        let start_line = self.dirty_from.min(self.line_end_states.len());
+        self.line_end_states.truncate(start_line);
+        let mut state = if start_line == 0 {
+            LexState::Normal
+        } else {
+            self.line_end_states[start_line - 1]
+        };
+        let total = doc.total_bytes();
+        let mut start = crate::line_to_offset(doc, start_line).unwrap_or(total);
+        for line in start_line..target {
+            let next = if line + 1 < total_lines {
+                crate::line_to_offset(doc, line + 1).ok()
+            } else {
+                None
+            };
+            let end = next.map_or(total, |offset| offset.saturating_sub(1));
+            let (_, next_state) = highlight_line_with_state(Some(syntax), doc, start..end, state);
+            self.line_end_states.push(next_state);
+            state = next_state;
+            start = next.unwrap_or(total);
+        }
+        self.dirty_from = target;
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
     id: BufferId,
@@ -66,6 +125,7 @@ pub struct Buffer {
     /// Point when this buffer was last left by its window (anchor, I-01).
     saved_point: usize,
     eol: Eol,
+    syntax_cache: SyntaxStateCache,
 }
 
 impl Buffer {
@@ -83,6 +143,7 @@ impl Buffer {
             mark: Mark::Unset,
             saved_point: 0,
             eol: Eol::default(),
+            syntax_cache: SyntaxStateCache::default(),
         }
     }
 
@@ -212,8 +273,28 @@ impl Buffer {
     }
 
     #[must_use]
+    pub fn syntax_start_state(&self, line: usize) -> Option<LexState> {
+        self.syntax_cache.start_state(line)
+    }
+
+    #[must_use]
+    pub fn ensure_syntax_cache(mut self, syntax: &SyntaxDef, through_line: usize) -> Self {
+        self.syntax_cache = self
+            .syntax_cache
+            .ensure_through(&self.text, syntax, through_line);
+        self
+    }
+
+    #[must_use]
+    pub fn clear_syntax_cache(mut self) -> Self {
+        self.syntax_cache = SyntaxStateCache::default();
+        self
+    }
+
+    #[must_use]
     pub fn set_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
+        self.syntax_cache = SyntaxStateCache::default();
         self
     }
 
@@ -232,6 +313,7 @@ impl Buffer {
         self.epoch = self.epoch.wrapping_add(1);
         self.saved_point = self.text.floor_boundary(self.saved_point);
         self.mark = self.mark.map(|m| self.text.floor_boundary(m));
+        self.syntax_cache = SyntaxStateCache::default();
         self
     }
 
@@ -290,14 +372,15 @@ impl Buffer {
         remap_fn: impl Fn(usize) -> usize,
         undo_limit: usize,
     ) -> (Self, Option<usize>) {
-        let inverse = match edit {
+        let (inverse, edit_offset) = match edit {
             Edit::Replace(r) => {
+                let off = r.offset;
                 let (next_self, inv) = self.apply_text_edit(|doc| doc.apply(r));
                 let Some(inv) = inv else {
                     return (next_self, None);
                 };
                 self = next_self;
-                inv
+                (inv, Some(off))
             }
             Edit::InsertInline { offset, data } => {
                 let (next_self, inv) =
@@ -306,13 +389,17 @@ impl Buffer {
                     return (next_self, None);
                 };
                 self = next_self;
-                inv
+                (inv, Some(offset))
             }
             Edit::SetEol { from, to } => {
                 self.eol = to;
-                Edit::SetEol { from: to, to: from }
+                (Edit::SetEol { from: to, to: from }, None)
             }
         };
+        if let Some(off) = edit_offset {
+            let line = crate::line_at(&self.text, off.min(self.text.total_bytes()));
+            self.syntax_cache = self.syntax_cache.invalidate_from(line);
+        }
         let clean_epoch = (!self.modified).then_some(self.epoch);
         self.modified = true;
         let anchor = |a| self.text.floor_boundary(remap_fn(a));
@@ -424,6 +511,16 @@ impl BufferPool {
         let i = self.index_of(id);
         let buf = self.buffers.remove(i);
         self.buffers.insert(i, f(buf));
+        self
+    }
+
+    #[must_use]
+    pub fn clear_syntax_caches(mut self) -> Self {
+        self.buffers = self
+            .buffers
+            .into_iter()
+            .map(Buffer::clear_syntax_cache)
+            .collect();
         self
     }
 

@@ -15,6 +15,17 @@ pub enum TokenKind {
     Number,
 }
 
+/// Line-boundary lexer state for multi-line constructs (I-51).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LexState {
+    #[default]
+    Normal,
+    BlockComment,
+    RawString {
+        hashes: u8,
+    },
+}
+
 /// Definition of syntax highlighting rules for a language (I-27, I-49).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SyntaxDef {
@@ -22,6 +33,7 @@ pub struct SyntaxDef {
     pub extensions: Vec<String>,
     pub filenames: Vec<String>,
     pub line_comment: Option<String>,
+    pub block_comment: Option<(String, String)>,
     pub keywords: Vec<String>,
     pub types: Vec<String>,
     pub case_insensitive: bool,
@@ -31,6 +43,8 @@ pub struct SyntaxDef {
     /// When true, `'` only highlights single-character literals (`'a'`, `'\n'`) as strings so
     /// lifetimes and labels (`'a`, `'static`) are not tokenized as strings.
     pub single_quote_char_only: bool,
+    /// When true, `r#"..."#` raw strings are tokenized across lines.
+    pub raw_strings: bool,
 }
 
 impl SyntaxDef {
@@ -72,12 +86,26 @@ impl SyntaxDef {
             extensions,
             filenames,
             line_comment,
+            block_comment: None,
             keywords,
             types,
             case_insensitive,
             heading_prefix: None,
             single_quote_char_only: false,
+            raw_strings: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_block_comment(mut self, open: impl Into<String>, close: impl Into<String>) -> Self {
+        self.block_comment = Some((open.into(), close.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn with_raw_strings(mut self, enabled: bool) -> Self {
+        self.raw_strings = enabled;
+        self
     }
 
     #[must_use]
@@ -186,39 +214,60 @@ pub fn highlight_line(
     doc: &Doc,
     range: Range<usize>,
 ) -> Vec<TokenKind> {
+    highlight_line_with_state(syntax, doc, range, LexState::Normal).0
+}
+
+/// Pure state-transition line highlighter: tokenizes `range` starting from `start_state`
+/// and returns `(tokens, end_state)` (I-51).
+#[must_use]
+pub fn highlight_line_with_state(
+    syntax: Option<&SyntaxDef>,
+    doc: &Doc,
+    range: Range<usize>,
+    start_state: LexState,
+) -> (Vec<TokenKind>, LexState) {
     let total = doc.total_bytes();
     let start = range.start.min(total);
     let end = range.end.min(total);
     if start >= end {
-        return Vec::new();
+        return (Vec::new(), start_state);
     }
     let len = end - start;
     let Some(syntax) = syntax else {
-        return vec![TokenKind::Normal; len];
+        return (vec![TokenKind::Normal; len], LexState::Normal);
     };
 
     let aligned_start = doc.floor_boundary(start);
     let aligned_end = doc.ceil_boundary(end);
-    let mut tokens = highlight_aligned(syntax, doc, aligned_start..aligned_end);
+    let (mut tokens, end_state) =
+        highlight_aligned(syntax, doc, aligned_start..aligned_end, start_state);
     if start != aligned_start {
         let skip = start - aligned_start;
         tokens.copy_within(skip..skip + len, 0);
     }
     tokens.truncate(len);
-    tokens
+    (tokens, end_state)
 }
 
-fn highlight_aligned(syntax: &SyntaxDef, doc: &Doc, range: Range<usize>) -> Vec<TokenKind> {
+fn highlight_aligned(
+    syntax: &SyntaxDef,
+    doc: &Doc,
+    range: Range<usize>,
+    start_state: LexState,
+) -> (Vec<TokenKind>, LexState) {
     if let Some(prefix) = &syntax.heading_prefix {
-        return highlight_heading(doc, range, prefix.as_bytes());
+        return (
+            highlight_heading(doc, range, prefix.as_bytes()),
+            LexState::Normal,
+        );
     }
     let len = range.len();
 
-    let mut single_slice_tokens: Option<Vec<TokenKind>> = None;
+    let mut single_slice_tokens: Option<(Vec<TokenKind>, LexState)> = None;
     let mut multi_buf: Vec<u8> = Vec::new();
     let _ = doc.try_for_each_slice(range, |chunk| {
         if multi_buf.is_empty() && chunk.len() == len {
-            single_slice_tokens = Some(LineLexer::new(syntax, chunk).tokenize());
+            single_slice_tokens = Some(LineLexer::new(syntax, chunk, start_state).tokenize());
             return ControlFlow::Break(());
         }
         if multi_buf.is_empty() {
@@ -228,20 +277,22 @@ fn highlight_aligned(syntax: &SyntaxDef, doc: &Doc, range: Range<usize>) -> Vec<
         ControlFlow::Continue(())
     });
 
-    single_slice_tokens.unwrap_or_else(|| LineLexer::new(syntax, &multi_buf).tokenize())
+    single_slice_tokens
+        .unwrap_or_else(|| LineLexer::new(syntax, &multi_buf, start_state).tokenize())
 }
 
-/// Single-line stateless lexer encapsulating tokenization rules (I-51).
+/// Pure state-transition single-line lexer (I-51).
 struct LineLexer<'a> {
     bytes: &'a [u8],
     syntax: &'a SyntaxDef,
     out: Vec<TokenKind>,
     pos: usize,
+    state: LexState,
     comment_bytes: Option<&'a [u8]>,
 }
 
 impl<'a> LineLexer<'a> {
-    fn new(syntax: &'a SyntaxDef, bytes: &'a [u8]) -> Self {
+    fn new(syntax: &'a SyntaxDef, bytes: &'a [u8], state: LexState) -> Self {
         let n = bytes.len();
         let comment_bytes = syntax
             .line_comment
@@ -253,17 +304,39 @@ impl<'a> LineLexer<'a> {
             syntax,
             out: vec![TokenKind::Normal; n],
             pos: 0,
+            state,
             comment_bytes,
         }
     }
 
-    fn tokenize(mut self) -> Vec<TokenKind> {
+    fn tokenize(mut self) -> (Vec<TokenKind>, LexState) {
         let n = self.bytes.len();
         while self.pos < n {
+            match self.state {
+                LexState::BlockComment => {
+                    self = self.continue_block_comment();
+                    continue;
+                }
+                LexState::RawString { hashes } => {
+                    self = self.continue_raw_string(hashes);
+                    continue;
+                }
+                LexState::Normal => {}
+            }
+            let (next, entered_block) = self.start_block_comment();
+            self = next;
+            if entered_block {
+                continue;
+            }
             let (next, done) = self.consume_comment();
             self = next;
             if done {
                 break;
+            }
+            let (next, started_raw) = self.start_raw_string();
+            self = next;
+            if started_raw {
+                continue;
             }
             let (next, matched_str) = self.consume_string();
             self = next;
@@ -282,7 +355,102 @@ impl<'a> LineLexer<'a> {
             }
             self.pos += 1;
         }
-        self.out
+        (self.out, self.state)
+    }
+
+    fn start_block_comment(mut self) -> (Self, bool) {
+        let Some((open, _)) = &self.syntax.block_comment else {
+            return (self, false);
+        };
+        if !open.is_empty() && self.bytes[self.pos..].starts_with(open.as_bytes()) {
+            let end = self.pos + open.len();
+            self.out[self.pos..end].fill(TokenKind::Comment);
+            self.pos = end;
+            self.state = LexState::BlockComment;
+            (self, true)
+        } else {
+            (self, false)
+        }
+    }
+
+    fn continue_block_comment(mut self) -> Self {
+        let close = self
+            .syntax
+            .block_comment
+            .as_ref()
+            .map(|(_, c)| c.as_bytes())
+            .unwrap_or(b"*/");
+        if close.is_empty() {
+            self.out[self.pos..].fill(TokenKind::Comment);
+            self.pos = self.bytes.len();
+            self.state = LexState::Normal;
+            return self;
+        }
+        if let Some(rel) = self.bytes[self.pos..]
+            .windows(close.len())
+            .position(|w| w == close)
+        {
+            let end = self.pos + rel + close.len();
+            self.out[self.pos..end].fill(TokenKind::Comment);
+            self.pos = end;
+            self.state = LexState::Normal;
+        } else {
+            self.out[self.pos..].fill(TokenKind::Comment);
+            self.pos = self.bytes.len();
+        }
+        self
+    }
+
+    fn start_raw_string(mut self) -> (Self, bool) {
+        if !self.syntax.raw_strings || self.bytes[self.pos] != b'r' {
+            return (self, false);
+        }
+        let mut j = self.pos + 1;
+        let n = self.bytes.len();
+        let mut hashes: usize = 0;
+        while j < n && self.bytes[j] == b'#' {
+            hashes += 1;
+            j += 1;
+        }
+        if j < n && self.bytes[j] == b'"' && hashes <= usize::from(u8::MAX) {
+            let end = j + 1;
+            self.out[self.pos..end].fill(TokenKind::String);
+            self.pos = end;
+            self.state = LexState::RawString {
+                hashes: hashes as u8,
+            };
+            (self, true)
+        } else {
+            (self, false)
+        }
+    }
+
+    fn continue_raw_string(mut self, hashes: u8) -> Self {
+        let n = self.bytes.len();
+        let needed = usize::from(hashes);
+        let mut j = self.pos;
+        while j < n {
+            let Some(rel) = memchr::memchr(b'"', &self.bytes[j..]) else {
+                break;
+            };
+            let quote_at = j + rel;
+            let after_quote = quote_at + 1;
+            if after_quote + needed <= n
+                && self.bytes[after_quote..after_quote + needed]
+                    .iter()
+                    .all(|&b| b == b'#')
+            {
+                let end = after_quote + needed;
+                self.out[self.pos..end].fill(TokenKind::String);
+                self.pos = end;
+                self.state = LexState::Normal;
+                return self;
+            }
+            j = after_quote;
+        }
+        self.out[self.pos..].fill(TokenKind::String);
+        self.pos = n;
+        self
     }
 
     fn consume_comment(mut self) -> (Self, bool) {
@@ -785,5 +953,61 @@ mod tests {
                 TokenKind::Normal,
             ]
         );
+    }
+
+    #[test]
+    fn multiline_block_comment_and_raw_string_transitions() {
+        let def = SyntaxDef::new(
+            "rust",
+            vec!["rs".to_string()],
+            Vec::new(),
+            Some("//".to_string()),
+            vec!["let".to_string()],
+            Vec::new(),
+            false,
+        )
+        .with_block_comment("/*", "*/")
+        .with_raw_strings(true);
+
+        let l1 = "let /* open";
+        let (t1, s1) = highlight_line_with_state(
+            Some(&def),
+            &Doc::from_bytes(l1.as_bytes()),
+            0..l1.len(),
+            LexState::Normal,
+        );
+        assert_eq!(t1[0], TokenKind::Keyword);
+        assert_eq!(t1[4], TokenKind::Comment);
+        assert_eq!(s1, LexState::BlockComment);
+
+        let l2 = "still comment */ let x";
+        let (t2, s2) =
+            highlight_line_with_state(Some(&def), &Doc::from_bytes(l2.as_bytes()), 0..l2.len(), s1);
+        assert_eq!(t2[0], TokenKind::Comment);
+        assert_eq!(t2[15], TokenKind::Comment); // '/' of '*/'
+        assert_eq!(t2[17], TokenKind::Keyword); // 'let'
+        assert_eq!(s2, LexState::Normal);
+
+        let r1 = "let s = r#\"multi";
+        let (tr1, sr1) = highlight_line_with_state(
+            Some(&def),
+            &Doc::from_bytes(r1.as_bytes()),
+            0..r1.len(),
+            LexState::Normal,
+        );
+        assert_eq!(tr1[8], TokenKind::String);
+        assert_eq!(sr1, LexState::RawString { hashes: 1 });
+
+        let r2 = "line \"#; let y";
+        let (tr2, sr2) = highlight_line_with_state(
+            Some(&def),
+            &Doc::from_bytes(r2.as_bytes()),
+            0..r2.len(),
+            sr1,
+        );
+        assert_eq!(tr2[0], TokenKind::String);
+        assert_eq!(tr2[6], TokenKind::String); // '#' of '"#'
+        assert_eq!(tr2[9], TokenKind::Keyword); // 'let'
+        assert_eq!(sr2, LexState::Normal);
     }
 }

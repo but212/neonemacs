@@ -241,7 +241,6 @@ mod tests {
         assert_eq!(*ed.buffer().text(), crate::Doc::from_bytes(b"ab"));
         assert!(ed.buffer().modified());
         assert_eq!(ed.message(), "File too large: 10 bytes (max-file-size 4)");
-        // Nothing is removed: the unsaved edits stay recoverable from the WAL.
         assert_eq!(fx, [] as [Effect; 0]);
     }
 

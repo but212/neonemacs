@@ -1,7 +1,7 @@
 //! Lua configuration, keymap, and key-alias API: `get`, `set`, `bind`, `unbind`, `key_alias`, `key_unalias`.
 
 use super::{editor_ref, mutate_editor};
-use crate::core::{AliasTarget, Editor, Setting, Value, parse_key_seq, parse_single_char};
+use crate::core::{AliasTarget, Setting, Value, parse_key_seq, parse_single_char};
 use mlua::{Lua, Scope, Table, Value as LuaValue};
 use std::cell::RefCell;
 
@@ -13,7 +13,7 @@ fn single_char(s: &str) -> mlua::Result<char> {
 pub(super) fn install_settings_api<'lua, 'scope>(
     scope: &'lua Scope<'lua, 'scope>,
     g: &Table,
-    cell: &'scope RefCell<Option<Editor>>,
+    cell: &'scope RefCell<crate::shell::EditorSlot>,
 ) -> mlua::Result<()> {
     g.set(
         "get",

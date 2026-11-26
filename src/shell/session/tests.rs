@@ -253,7 +253,7 @@ fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colo
             reverse: false,
         },
         crate::core::render::Cell {
-            glyph: String::new(),
+            glyph: "".into(),
             style: TokenKind::String,
             reverse: false,
         },

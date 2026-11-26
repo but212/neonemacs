@@ -1,13 +1,15 @@
 //! I-18: no `&mut` in a `neonemacs-core` signature (parameters, return types, `&mut self`, type
 //! aliases, fields). `let mut` and `&mut` arguments inside bodies are allowed. Rust has no
-//! type-level ban on `&mut` in a signature, so this text scan is the enforcement
+//! type-level ban on `&mut` in a signature, so this `syn` AST scan is the enforcement
 //! (docs/context.md §4.1).
 //!
 //! I-14: no I/O crate in `neonemacs-core` (`std::fs`, `std::process`, `mlua`, `crossterm`). The
-//! scan reads source text, so it does not see a path reached through a macro or a re-export.
+//! scan parses source AST, so it catches multi-line signatures and grouped `use` trees, though
+//! it still does not expand macros.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use syn::visit::{self, Visit};
 
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -22,22 +24,52 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// True when the line puts `&mut` in a signature position.
-fn has_signature_mut(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("//") || trimmed.starts_with("let ") {
-        return false;
+struct MutSigVisitor {
+    hits: Vec<String>,
+}
+
+impl MutSigVisitor {
+    fn check_source(source: &str) -> Vec<String> {
+        let syntax = syn::parse_file(source).expect("valid Rust source file");
+        let mut visitor = Self { hits: Vec::new() };
+        visitor.visit_file(&syntax);
+        visitor.hits
     }
-    let Some(at) = line.find("&mut") else {
-        return false;
-    };
-    let head = &line[..at];
-    head.contains(": ")
-        || head.trim_end().ends_with(':')
-        || head.contains("->")
-        || head.contains("fn ")
-        || head.contains("fn(")
-        || line.contains("&mut self")
+}
+
+impl<'ast> Visit<'ast> for MutSigVisitor {
+    fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
+        self.visit_signature(&i.sig);
+    }
+
+    fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
+        self.visit_signature(&i.sig);
+    }
+
+    fn visit_trait_item_fn(&mut self, i: &'ast syn::TraitItemFn) {
+        self.visit_signature(&i.sig);
+    }
+
+    fn visit_item_type(&mut self, i: &'ast syn::ItemType) {
+        self.visit_type(&i.ty);
+    }
+
+    fn visit_field(&mut self, i: &'ast syn::Field) {
+        self.visit_type(&i.ty);
+    }
+
+    fn visit_receiver(&mut self, i: &'ast syn::Receiver) {
+        if i.reference.is_some() && i.mutability.is_some() {
+            self.hits.push("&mut self".to_owned());
+        }
+    }
+
+    fn visit_type_reference(&mut self, i: &'ast syn::TypeReference) {
+        if i.mutability.is_some() {
+            self.hits.push("&mut".to_owned());
+        }
+        visit::visit_type_reference(self, i);
+    }
 }
 
 #[test]
@@ -46,10 +78,8 @@ fn core_has_no_mut_signatures() {
     let mut hits = Vec::new();
     for file in rust_files(&core) {
         let source = fs::read_to_string(&file).expect("readable source file");
-        for (n, line) in source.lines().enumerate() {
-            if has_signature_mut(line) {
-                hits.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
-            }
+        for hit in MutSigVisitor::check_source(&source) {
+            hits.push(format!("{}: {hit}", file.display()));
         }
     }
     assert!(
@@ -61,38 +91,89 @@ fn core_has_no_mut_signatures() {
 
 #[test]
 fn scanner_tells_signatures_from_bodies() {
-    assert!(has_signature_mut("pub fn step(ed: &mut Editor) {"));
-    assert!(has_signature_mut("    out: &mut Vec<Rect>,"));
-    assert!(has_signature_mut("pub fn scroll(&mut self) {"));
-    assert!(has_signature_mut("pub type Builtin = fn(&mut Editor);"));
-    assert!(has_signature_mut("fn f() -> &mut Text {"));
-    assert!(!has_signature_mut("    let r = &mut buf;"));
-    assert!(!has_signature_mut("    let x = std::mem::take(&mut buf);"));
-    assert!(!has_signature_mut("    let mut t = Text::default();"));
+    let has_mut = |src: &str| !MutSigVisitor::check_source(src).is_empty();
+    assert!(has_mut("pub fn step(ed: &mut Editor) {}"));
+    assert!(has_mut(
+        "pub fn multi_line(\n    a: usize,\n    out: &mut Vec<Rect>,\n) {}"
+    ));
+    assert!(has_mut("impl Foo { pub fn scroll(&mut self) {} }"));
+    assert!(has_mut("pub type Builtin = fn(&mut Editor);"));
+    assert!(has_mut("fn f() -> &mut Text { loop {} }"));
+    assert!(has_mut("struct S { buf: &'static mut [u8] }"));
+    assert!(!has_mut("fn f(mut ed: Editor) { let r = &mut ed; }"));
+    assert!(!has_mut(
+        "fn f() { let x = std::mem::take(&mut buf); let mut t = Text::default(); }"
+    ));
 }
 
-/// True when the line names an I/O crate or module that `crates/neonemacs-core/src` must not use.
-fn has_io_import(line: &str) -> bool {
-    let code = line.split("//").next().unwrap_or("");
-    if ["std::fs", "std::process", "mlua", "crossterm"]
-        .iter()
-        .any(|path| has_word(code, path))
-    {
-        return true;
+struct IoImportVisitor {
+    hits: Vec<String>,
+}
+
+impl IoImportVisitor {
+    fn check_source(source: &str) -> Vec<String> {
+        let syntax = syn::parse_file(source).expect("valid Rust source file");
+        let mut visitor = Self { hits: Vec::new() };
+        visitor.visit_file(&syntax);
+        visitor.hits
     }
-    // `use std::{fs, process};` names the module without the `std::fs` path.
-    code.split_once("std::{")
-        .is_some_and(|(_, group)| has_word(group, "fs") || has_word(group, "process"))
+
+    fn is_forbidden(segments: &[String]) -> bool {
+        matches!(
+            segments.first().map(String::as_str),
+            Some("mlua" | "crossterm")
+        ) || (segments.first().map(String::as_str) == Some("std")
+            && matches!(segments.get(1).map(String::as_str), Some("fs" | "process")))
+    }
+
+    fn walk_use_tree(&mut self, prefix: &mut Vec<String>, tree: &syn::UseTree) {
+        match tree {
+            syn::UseTree::Path(p) => {
+                prefix.push(p.ident.to_string());
+                if Self::is_forbidden(prefix) {
+                    self.hits.push(prefix.join("::"));
+                } else {
+                    self.walk_use_tree(prefix, &p.tree);
+                }
+                prefix.pop();
+            }
+            syn::UseTree::Name(n) => {
+                prefix.push(n.ident.to_string());
+                if Self::is_forbidden(prefix) {
+                    self.hits.push(prefix.join("::"));
+                }
+                prefix.pop();
+            }
+            syn::UseTree::Rename(r) => {
+                prefix.push(r.ident.to_string());
+                if Self::is_forbidden(prefix) {
+                    self.hits.push(prefix.join("::"));
+                }
+                prefix.pop();
+            }
+            syn::UseTree::Group(g) => {
+                for item in &g.items {
+                    self.walk_use_tree(prefix, item);
+                }
+            }
+            syn::UseTree::Glob(_) => {}
+        }
+    }
 }
 
-/// True when `word` occurs in `text` with no identifier character on either side.
-fn has_word(text: &str, word: &str) -> bool {
-    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
-    text.match_indices(word).any(|(at, _)| {
-        let before = text[..at].chars().next_back();
-        let after = text[at + word.len()..].chars().next();
-        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
-    })
+impl<'ast> Visit<'ast> for IoImportVisitor {
+    fn visit_item_use(&mut self, i: &'ast syn::ItemUse) {
+        let mut prefix = Vec::new();
+        self.walk_use_tree(&mut prefix, &i.tree);
+    }
+
+    fn visit_path(&mut self, i: &'ast syn::Path) {
+        let segs: Vec<String> = i.segments.iter().map(|s| s.ident.to_string()).collect();
+        if Self::is_forbidden(&segs) {
+            self.hits.push(segs.join("::"));
+        }
+        visit::visit_path(self, i);
+    }
 }
 
 #[test]
@@ -101,10 +182,8 @@ fn core_imports_no_io_crate() {
     let mut hits = Vec::new();
     for file in rust_files(&core) {
         let source = fs::read_to_string(&file).expect("readable source file");
-        for (n, line) in source.lines().enumerate() {
-            if has_io_import(line) {
-                hits.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
-            }
+        for hit in IoImportVisitor::check_source(&source) {
+            hits.push(format!("{}: {hit}", file.display()));
         }
     }
     assert!(
@@ -116,20 +195,23 @@ fn core_imports_no_io_crate() {
 
 #[test]
 fn io_scanner_tells_imports_from_comments() {
-    assert!(has_io_import("use std::fs;"));
-    assert!(has_io_import("use std::fs::File;"));
-    assert!(has_io_import("use std::{fs, path::Path};"));
-    assert!(has_io_import("use std::{io, process};"));
-    assert!(has_io_import(
-        "let out = std::process::Command::new(\"ls\");"
+    let has_io = |src: &str| !IoImportVisitor::check_source(src).is_empty();
+    assert!(has_io("use std::fs;"));
+    assert!(has_io("use std::fs::File;"));
+    assert!(has_io("use std::{\n    io,\n    fs,\n    path::Path,\n};"));
+    assert!(has_io("use std::{io, process};"));
+    assert!(has_io(
+        "fn f() { let _ = std::process::Command::new(\"ls\"); }"
     ));
-    assert!(has_io_import("use mlua::Lua;"));
-    assert!(has_io_import("use crossterm::event::KeyCode;"));
-    assert!(!has_io_import("// use std::fs;"));
-    assert!(!has_io_import("/// Reads through `std::fs` in the shell."));
-    assert!(!has_io_import("use std::collections::BTreeMap;"));
-    assert!(!has_io_import("use std::path::{Path, PathBuf};"));
-    assert!(!has_io_import("let filesystem = 1;"));
+    assert!(has_io("use mlua::Lua;"));
+    assert!(has_io("use crossterm::event::KeyCode;"));
+    assert!(!has_io("// use std::fs;\nfn f() {}"));
+    assert!(!has_io(
+        "/// Reads through `std::fs` in the shell.\nfn f() {}"
+    ));
+    assert!(!has_io("use std::collections::BTreeMap;"));
+    assert!(!has_io("use std::path::{Path, PathBuf};"));
+    assert!(!has_io("fn f() { let filesystem = 1; }"));
 }
 
 /// I-59: the `crate::<module>` references between top-level core modules. Test code (everything from

@@ -7,6 +7,7 @@
 
 pub mod file;
 pub mod lua;
+pub mod recovery;
 pub mod registore;
 pub mod session;
 pub mod startup;
@@ -134,10 +135,48 @@ pub fn handle(ed: Editor, lua: Option<&Lua>, event: Event) -> Editor {
     perform_all(ed, lua, effects)
 }
 
+/// Explicit state machine for the shell's borrowed `Editor` slot (I-21).
+pub enum EditorSlot {
+    Ready(Box<Editor>),
+    InUse,
+    Poisoned,
+}
+
+impl EditorSlot {
+    #[must_use]
+    pub(crate) fn new(ed: Editor) -> Self {
+        Self::Ready(Box::new(ed))
+    }
+
+    pub(crate) fn take(&mut self) -> Editor {
+        match std::mem::replace(self, Self::InUse) {
+            Self::Ready(ed) => *ed,
+            Self::InUse => panic!("editor is not in the cell (re-entrant borrow, I-21)"),
+            Self::Poisoned => panic!("editor slot poisoned by prior panic"),
+        }
+    }
+
+    pub(crate) fn as_ref(&self) -> &Editor {
+        match self {
+            Self::Ready(ed) => ed,
+            Self::InUse => panic!("editor is not in the cell (I-21)"),
+            Self::Poisoned => panic!("editor slot poisoned by prior panic"),
+        }
+    }
+
+    pub(crate) fn into_editor(self) -> Editor {
+        match self {
+            Self::Ready(ed) => *ed,
+            Self::InUse => panic!("editor is not in the cell (I-21)"),
+            Self::Poisoned => panic!("editor slot poisoned by prior panic"),
+        }
+    }
+}
+
 /// Performs `effects` in order, until none are left. Returns the new editor.
 #[must_use]
 pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
-    let cell = RefCell::new(Some(ed));
+    let cell = RefCell::new(EditorSlot::new(ed));
     let bound = if let Some(lua) = lua {
         // The API stays bound for all of `effects`, so every Lua call in them sees the same editor.
         lua::with_api(lua, &cell, |lua| {
@@ -148,34 +187,49 @@ pub fn perform_all(ed: Editor, lua: Option<&Lua>, effects: Effects) -> Editor {
         perform_in(&cell, None, effects);
         Ok(())
     };
-    let ed = cell.into_inner().expect("editor is in the cell (I-21)");
+    let ed = cell.into_inner().into_editor();
     match bound {
         Ok(()) => ed,
         Err(e) => ed.set_message(e.to_string()),
     }
 }
 
-/// Runs `f` against the editor in `cell`, putting the returned editor back. The cell is empty
-/// only during this call (I-21).
+/// Runs `f` against the editor in `cell`, putting the returned editor back. The cell is `InUse`
+/// only during this call (I-21), and transitions to `Poisoned` if `f` unwinds.
 ///
 /// # Panics
-/// Panics if `cell` does not contain an editor (violating I-21).
+/// Panics if `cell` is `InUse` (violating I-21) or `Poisoned` from a prior panic.
 pub(crate) fn with_editor_cell<R>(
-    cell: &RefCell<Option<Editor>>,
+    cell: &RefCell<EditorSlot>,
     f: impl FnOnce(Editor) -> (Editor, R),
 ) -> R {
-    let ed = cell
-        .borrow_mut()
-        .take()
-        .expect("editor is in the cell (I-21)");
+    struct PoisonGuard<'a> {
+        cell: &'a RefCell<EditorSlot>,
+        restored: bool,
+    }
+
+    impl Drop for PoisonGuard<'_> {
+        fn drop(&mut self) {
+            if !self.restored {
+                *self.cell.borrow_mut() = EditorSlot::Poisoned;
+            }
+        }
+    }
+
+    let ed = cell.borrow_mut().take();
+    let mut guard = PoisonGuard {
+        cell,
+        restored: false,
+    };
     let (ed, out) = f(ed);
-    *cell.borrow_mut() = Some(ed);
+    *cell.borrow_mut() = EditorSlot::Ready(Box::new(ed));
+    guard.restored = true;
     out
 }
 
 /// Performs `effects` against the editor in `cell`. Each event goes back to the core.
 /// No `RefCell` borrow is held while an effect runs (I-21).
-pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Effects) {
+pub fn perform_in(cell: &RefCell<EditorSlot>, lua: Option<&Lua>, effects: Effects) {
     for effect in effects {
         if let Some(event) = perform(cell, effect, lua) {
             let next = with_editor_cell(cell, |ed| step(ed, event));
@@ -187,20 +241,17 @@ pub fn perform_in(cell: &RefCell<Option<Editor>>, lua: Option<&Lua>, effects: Ef
 /// Runs Lua source with the API bound to `ed`. Commands that `run` performs take effect as they do from a key.
 /// `name` is the chunk name that error messages show: `=init.lua` reads as `init.lua:<line>:` (I-55).
 pub fn run_source(ed: Editor, lua: &Lua, name: &str, source: &str) -> (Editor, mlua::Result<()>) {
-    let cell = RefCell::new(Some(ed));
+    let cell = RefCell::new(EditorSlot::new(ed));
     let result = lua::with_api(lua, &cell, |lua| lua.load(source).set_name(name).exec());
-    (
-        cell.into_inner().expect("editor is in the cell (I-21)"),
-        result,
-    )
+    (cell.into_inner().into_editor(), result)
 }
 
 /// Performs one effect and returns the event that answers it, if any.
 ///
 /// # Panics
-/// Panics if `cell` does not contain an editor (violating I-21).
+/// Panics if `cell` does not contain a `Ready` editor (violating I-21 or poisoned).
 #[must_use]
-pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>) -> Option<Event> {
+pub fn perform(cell: &RefCell<EditorSlot>, effect: Effect, lua: Option<&Lua>) -> Option<Event> {
     let event = match effect {
         Effect::StatDisk { target, path } => Event::Disk {
             target,
@@ -210,7 +261,7 @@ pub fn perform(cell: &RefCell<Option<Editor>>, effect: Effect, lua: Option<&Lua>
         Effect::WriteFile { id, path } => {
             let result = {
                 let guard = cell.borrow();
-                let ed = guard.as_ref().expect("editor is in the cell (I-21)");
+                let ed = guard.as_ref();
                 let buf = ed.buffer_by_id(id);
                 file::save_doc(Path::new(&path), buf.eol(), buf.text()).map_err(|e| e.to_string())
             };
@@ -316,7 +367,7 @@ mod tests {
         let ed = Editor::new(Config::default())
             .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"hi")));
         let id = ed.buffer().id();
-        let cell = RefCell::new(Some(ed));
+        let cell = RefCell::new(EditorSlot::new(ed));
 
         let stat = perform(
             &cell,
@@ -424,5 +475,26 @@ mod tests {
 
         let ed = handle(ed, None, Event::Run("suspend-emacs".to_owned()));
         assert_eq!(ed.message(), "suspend-emacs: not available from Lua");
+    }
+
+    #[test]
+    fn with_editor_cell_poisons_slot_on_panic() {
+        use crate::core::Config;
+        let cell = RefCell::new(EditorSlot::new(Editor::new(Config::default())));
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_editor_cell(&cell, |_ed| -> (Editor, ()) { panic!("boom") });
+        }));
+        assert!(res.is_err());
+        assert!(matches!(&*cell.borrow(), EditorSlot::Poisoned));
+
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_editor_cell(&cell, |ed| (ed, ()));
+        }));
+        let msg = second
+            .unwrap_err()
+            .downcast_ref::<&str>()
+            .copied()
+            .unwrap_or("");
+        assert!(msg.contains("poisoned"), "unexpected panic message: {msg}");
     }
 }

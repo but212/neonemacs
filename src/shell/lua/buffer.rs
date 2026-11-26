@@ -1,7 +1,6 @@
 //! Lua `buffer` table: reads and edits the selected buffer from Lua.
 
 use super::{editor_ref, mutate_editor};
-use crate::core::Editor;
 use mlua::{Lua, Scope, Table};
 use neonemacs_core::{line_end, line_start};
 use std::cell::RefCell;
@@ -61,7 +60,7 @@ pub(super) fn install_buffer_api<'lua, 'scope>(
     lua: &'lua Lua,
     scope: &'lua Scope<'lua, 'scope>,
     g: &Table,
-    cell: &'scope RefCell<Option<Editor>>,
+    cell: &'scope RefCell<crate::shell::EditorSlot>,
 ) -> mlua::Result<()> {
     let buffer_table = lua.create_table()?;
     buffer_table.set(

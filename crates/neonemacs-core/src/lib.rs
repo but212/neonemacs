@@ -39,7 +39,9 @@ pub use editor::{CANCEL_MESSAGE, Confirm, Editor, LastCommand, Mode, Prefix, Win
 pub use eol::{Eol, EolStreamDecoder};
 pub use file::{Backing, DiskState, FilePath, RawFile, loaded_from};
 pub use keymap::{AliasTarget, Code, Key, parse_key_seq, parse_keys, parse_single_char};
-pub use syntax::{SyntaxDef, SyntaxRegistry, TokenKind, highlight_line};
+pub use syntax::{
+    LexState, SyntaxDef, SyntaxRegistry, TokenKind, highlight_line, highlight_line_with_state,
+};
 pub use undo::Edit;
 pub use weave_tree::{CHUNK_CAP, DocError, MAX_SLICE_BYTES, Unit};
 pub use width::str_width;
