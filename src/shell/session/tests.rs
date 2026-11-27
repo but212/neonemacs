@@ -223,7 +223,12 @@ fn print_styled_row_reverses_exactly_the_marked_cells() {
 
     // A row that ends inside the region does not leak reverse video into the next row.
     let mut out = Vec::new();
-    print_styled_row(&mut out, &[cell("a", false), cell("b", true)], &mut String::new()).unwrap();
+    print_styled_row(
+        &mut out,
+        &[cell("a", false), cell("b", true)],
+        &mut String::new(),
+    )
+    .unwrap();
     let mut expected = Vec::new();
     queue!(
         &mut expected,

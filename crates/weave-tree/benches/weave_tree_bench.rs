@@ -115,15 +115,18 @@ fn bench_weave_tree_core(c: &mut Criterion) {
         b.iter(|| black_box(Doc::from_bytes(black_box(&raw_1mb))));
     });
 
-    group.bench_function(BenchmarkId::new("build_1mb", "streaming_64kb_chunks"), |b| {
-        b.iter(|| {
-            let mut builder = WeaveTreeBuilder::<LineBreaks>::new();
-            for chunk in black_box(&raw_1mb).chunks(64 * 1024) {
-                builder = builder.push_bytes(chunk);
-            }
-            black_box(builder.finish())
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("build_1mb", "streaming_64kb_chunks"),
+        |b| {
+            b.iter(|| {
+                let mut builder = WeaveTreeBuilder::<LineBreaks>::new();
+                for chunk in black_box(&raw_1mb).chunks(64 * 1024) {
+                    builder = builder.push_bytes(chunk);
+                }
+                black_box(builder.finish())
+            });
+        },
+    );
 
     group.bench_function("scan_1mb", |b| {
         b.iter(|| {
@@ -141,23 +144,29 @@ fn bench_weave_tree_core(c: &mut Criterion) {
     let mid_line = doc_1mb.total_metric().div_ceil(2);
     let mid_offset = doc_1mb.metric_to_byte(mid_line).expect("valid line");
 
-    group.bench_function(BenchmarkId::new("metric_lookup_1mb", "line_to_offset"), |b| {
-        b.iter(|| {
-            let off = doc_1mb
-                .metric_to_byte(black_box(mid_line))
-                .expect("valid line");
-            black_box(off)
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("metric_lookup_1mb", "line_to_offset"),
+        |b| {
+            b.iter(|| {
+                let off = doc_1mb
+                    .metric_to_byte(black_box(mid_line))
+                    .expect("valid line");
+                black_box(off)
+            });
+        },
+    );
 
-    group.bench_function(BenchmarkId::new("metric_lookup_1mb", "offset_to_line"), |b| {
-        b.iter(|| {
-            let line = doc_1mb
-                .byte_to_metric(black_box(mid_offset))
-                .expect("valid offset");
-            black_box(line)
-        });
-    });
+    group.bench_function(
+        BenchmarkId::new("metric_lookup_1mb", "offset_to_line"),
+        |b| {
+            b.iter(|| {
+                let line = doc_1mb
+                    .byte_to_metric(black_box(mid_offset))
+                    .expect("valid offset");
+                black_box(line)
+            });
+        },
+    );
 
     group.finish();
 }
