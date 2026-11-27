@@ -641,7 +641,7 @@ dependencies = [
  "memchr",
  "neobit",
  "proptest",
- "syn 2.0.119",
+ "syn 3.0.10",
  "triomphe",
  "unicode-width",
  "weave-tree",
