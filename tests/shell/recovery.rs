@@ -211,3 +211,23 @@ fn open_files_prompts_and_restores_orphan_rec_files_sequentially() {
     assert_eq!(*buf_b.text(), Doc::from_bytes(b"on-disk-b"));
     assert!(!buf_b.modified());
 }
+
+#[test]
+fn idle_backup_skips_scratch_buffer_without_path() {
+    let rec_dir = tempfile::tempdir().unwrap();
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let scratch_id = ed.buffer().id();
+    assert!(ed.buffer_by_id(scratch_id).file_path().is_none());
+
+    let mut session = ShellSession::with_recovery_dir(ed, lua, Some(rec_dir.path().to_path_buf()));
+    session.set_idle_backup_delay(Duration::from_millis(15));
+    session.handle_event(&press(KeyCode::Char('S'), KeyModifiers::NONE));
+    assert!(session.ed.buffer_by_id(scratch_id).modified());
+
+    thread::sleep(Duration::from_millis(30));
+    session.tick();
+    thread::sleep(Duration::from_millis(50));
+
+    assert_eq!(fs::read_dir(rec_dir.path()).unwrap().count(), 0);
+}

@@ -374,7 +374,44 @@ pub fn cleanup_pid_files(dir: &Path, pid: u32) {
     }
 }
 
-/// Finds the newest orphan `.rec` file in `dir` matching `path` (excluding `self_pid`),
+/// Returns whether `pid` currently refers to a live OS process.
+#[must_use]
+fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        let Ok(raw) = i32::try_from(pid) else {
+            return false;
+        };
+        matches!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None),
+            Ok(()) | Err(nix::errno::Errno::EPERM)
+        )
+    }
+    #[cfg(windows)]
+    {
+        let Ok(out) = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+        else {
+            return false;
+        };
+        if !out.status.success() {
+            return false;
+        }
+        let needle = format!(",\"{pid}\",");
+        String::from_utf8_lossy(&out.stdout).contains(&needle)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Finds the newest orphan `.rec` file in `dir` matching `path` (excluding `self_pid` and live PIDs),
 /// decoding its body back to `\n`-normalized `Doc` while preserving `meta.eol`,
 /// and returns all matching orphan `.rec` paths for cleanup.
 #[must_use]
@@ -382,6 +419,15 @@ pub fn find_latest_recovery(
     dir: &Path,
     path: &str,
     self_pid: u32,
+) -> Option<(Vec<PathBuf>, RecoveryMeta, Doc, Eol)> {
+    find_latest_recovery_with(dir, path, self_pid, is_pid_alive)
+}
+
+fn find_latest_recovery_with(
+    dir: &Path,
+    path: &str,
+    self_pid: u32,
+    is_alive: impl Fn(u32) -> bool,
 ) -> Option<(Vec<PathBuf>, RecoveryMeta, Doc, Eol)> {
     let entries = fs::read_dir(dir).ok()?;
     let mut matching_paths = Vec::new();
@@ -397,7 +443,7 @@ pub fn find_latest_recovery(
         let Ok((meta, body)) = parse_recovery_file(&bytes) else {
             continue;
         };
-        if meta.pid == self_pid || meta.path.as_deref() != Some(path) {
+        if meta.pid == self_pid || meta.path.as_deref() != Some(path) || is_alive(meta.pid) {
             continue;
         }
         matching_paths.push(entry_path);
@@ -615,12 +661,71 @@ mod tests {
         )
         .unwrap();
 
-        let found = find_latest_recovery(dir.path(), target_path, 500).unwrap();
+        let found = find_latest_recovery_with(dir.path(), target_path, 500, |_| false).unwrap();
         assert_eq!(found.0.len(), 2);
         assert!(found.0.contains(&older_file));
         assert!(found.0.contains(&newer_file));
         assert_eq!(found.1.pid, 102);
         assert_eq!(found.2, Doc::from_bytes(b"line1\nline2"));
         assert_eq!(found.3, Eol::Crlf);
+    }
+
+    #[test]
+    fn find_latest_recovery_skips_live_foreign_pid_and_checks_real_process_liveness() {
+        assert!(!is_pid_alive(0));
+        assert!(is_pid_alive(std::process::id()));
+
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit", "0"])
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("true").spawn().unwrap()
+        };
+        let dead_pid = child.id();
+        let _ = child.wait().unwrap();
+        assert!(!is_pid_alive(dead_pid));
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_path = "/work/shared.txt";
+
+        // Live foreign PID -> must be ignored even though pid != self_pid.
+        write_recovery_file(
+            dir.path(),
+            200,
+            &RecoverySnapshot {
+                buffer_id: BufferId(1),
+                path: Some(target_path.to_owned()),
+                name: "shared.txt".to_owned(),
+                doc: Doc::from_bytes(b"live-instance"),
+                eol: Eol::Lf,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            find_latest_recovery_with(dir.path(), target_path, 500, |pid| pid == 200).is_none()
+        );
+
+        // Dead foreign PID -> recovered.
+        write_recovery_file(
+            dir.path(),
+            dead_pid,
+            &RecoverySnapshot {
+                buffer_id: BufferId(2),
+                path: Some(target_path.to_owned()),
+                name: "shared.txt".to_owned(),
+                doc: Doc::from_bytes(b"crashed-instance"),
+                eol: Eol::Lf,
+            },
+        )
+        .unwrap();
+
+        let found =
+            find_latest_recovery_with(dir.path(), target_path, 500, |pid| pid == 200).unwrap();
+        assert_eq!(found.0.len(), 1);
+        assert_eq!(found.1.pid, dead_pid);
+        assert_eq!(found.2, Doc::from_bytes(b"crashed-instance"));
     }
 }

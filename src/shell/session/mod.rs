@@ -229,16 +229,20 @@ impl ShellSession {
             if !buf.modified() {
                 continue;
             }
-            let path = buf.file_path();
+            let Some(path) = buf.file_path() else {
+                continue;
+            };
             let unchanged = self.tracked_backups.get(&buf.id().0).is_some_and(|prev| {
-                prev.eol == buf.eol() && prev.path.as_deref() == path && prev.doc == *buf.text()
+                prev.eol == buf.eol()
+                    && prev.path.as_deref() == Some(path)
+                    && prev.doc == *buf.text()
             });
             if unchanged {
                 continue;
             }
             let doc = buf.text().clone();
             let eol = buf.eol();
-            let owned_path = path.map(str::to_owned);
+            let owned_path = Some(path.to_owned());
             worker.enqueue_write(RecoverySnapshot {
                 buffer_id: buf.id(),
                 path: owned_path.clone(),
