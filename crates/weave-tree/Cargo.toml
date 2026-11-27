@@ -10,7 +10,7 @@ memchr = { version = "2", default-features = false }
 triomphe = { version = "0.1", default-features = false }
 
 [dev-dependencies]
-criterion = "0.7"
+criterion = "0.8"
 proptest = "1"
 
 [[bench]]
