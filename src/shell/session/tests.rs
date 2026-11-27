@@ -363,6 +363,32 @@ fn render_sized_caches_unchanged_rows_redraws_style_changes_and_handles_resize()
     let s2 = String::from_utf8(out2).unwrap();
     assert!(!s2.contains("let x = 42;"));
 
+    // Multi-line content: row 1 must also be cached on second render (catches row * cols -> row / cols)
+    session.ed = session
+        .ed
+        .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"let x = 42;\nsecond line")));
+    let mut out_ml1 = Vec::new();
+    session.render_sized(&mut out_ml1, 20, 4).unwrap();
+    let s_ml1 = String::from_utf8(out_ml1).unwrap();
+    assert!(s_ml1.contains("second line"));
+
+    let mut out_ml2 = Vec::new();
+    session.render_sized(&mut out_ml2, 20, 4).unwrap();
+    let s_ml2 = String::from_utf8(out_ml2).unwrap();
+    assert!(!s_ml2.contains("second line"));
+
+    // Height-only change (20x4 -> 20x3) with identical top rows still invalidates cache (catches != -> ==)
+    let mut out_height = Vec::new();
+    session.render_sized(&mut out_height, 20, 3).unwrap();
+    let s_height = String::from_utf8(out_height).unwrap();
+    assert!(s_height.contains("let x = 42;"));
+
+    session.ed = session
+        .ed
+        .with_current_buffer(|b| b.with_text(Doc::from_bytes(b"let x = 42;")));
+    let mut out_reset = Vec::new();
+    session.render_sized(&mut out_reset, 20, 3).unwrap();
+
     // 3. Rename buffer to `code.rs` while keeping row 0 text identical ("let x = 42;")
     // Row 0 must be redrawn because `styles[0]` changed from Normal to Keyword/Number!
     session.ed = session.ed.with_current_buffer(|b| b.set_name("code.rs"));
@@ -511,4 +537,91 @@ fn suspend_key_and_full_redraw_behavior() {
     assert!(session.pending_suspend);
     #[cfg(not(unix))]
     assert_eq!(session.ed.message(), "Suspend is only supported on Unix");
+}
+
+#[test]
+fn idle_backup_enqueues_on_change_and_clears_when_saved_or_killed() {
+    use crate::core::Eol;
+    use crate::shell::recovery::parse_recovery_file;
+    use std::time::Duration;
+
+    let rec_dir = tempfile::tempdir().unwrap();
+    let work_dir = tempfile::tempdir().unwrap();
+    let file_path = work_dir.path().join("note.txt");
+    std::fs::write(&file_path, b"init\n").unwrap();
+
+    let lua = lua::new_state().unwrap();
+    let ed = lua::bootstrap(Editor::new(Config::default()), &lua);
+    let mut session = ShellSession::with_recovery_dir(ed, lua, Some(rec_dir.path().to_path_buf()));
+    session.idle_backup_delay = Duration::from_secs(60);
+
+    // Open file and modify it
+    let path_str = file_path.to_string_lossy().into_owned();
+    session.ed = session.ed.with_current_buffer(|b| {
+        b.set_name("note.txt")
+            .set_backing(crate::core::Backing::File {
+                path: crate::core::FilePath::resolve("", &path_str),
+                disk: crate::core::DiskState::Unknown,
+            })
+            .with_text(Doc::from_bytes(b"init\n"))
+    });
+    session.handle_event(&press(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(session.ed.buffer().modified());
+
+    // Before idle_backup_delay elapses, tick must not enqueue backup
+    session.tick();
+    assert!(session.tracked_backups.is_empty());
+
+    // After idle_backup_delay elapses, tick enqueues backup
+    session.idle_backup_delay = Duration::ZERO;
+    session.tick();
+    assert_eq!(session.tracked_backups.len(), 1);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut rec_file = None;
+    while std::time::Instant::now() < deadline {
+        if let Some(entry) = std::fs::read_dir(rec_dir.path())
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().ends_with(".rec"))
+        {
+            rec_file = Some(entry.path());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let rec_file = rec_file.expect("recovery file should be written");
+    let raw = std::fs::read(&rec_file).unwrap();
+    let (meta, _) = parse_recovery_file(&raw).unwrap();
+    assert_eq!(meta.eol, Eol::Lf);
+
+    // Changing EOL alone must enqueue a fresh backup
+    session.ed = session.ed.with_current_buffer(|b| b.set_eol(Eol::Crlf));
+    session.tick();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if let Ok(bytes) = std::fs::read(&rec_file)
+            && let Ok((m, _)) = parse_recovery_file(&bytes)
+            && m.eol == Eol::Crlf
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let (meta2, _) = parse_recovery_file(&std::fs::read(&rec_file).unwrap()).unwrap();
+    assert_eq!(meta2.eol, Eol::Crlf);
+
+    // Marking buffer clean (as after save) removes tracked backup and deletes .rec file
+    session.ed = session.ed.with_current_buffer(|b| b.mark_clean());
+    session.sync_clean_and_killed_buffers();
+    assert!(session.tracked_backups.is_empty());
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if !rec_file.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!rec_file.exists());
 }

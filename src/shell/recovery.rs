@@ -728,4 +728,67 @@ mod tests {
         assert_eq!(found.1.pid, dead_pid);
         assert_eq!(found.2, Doc::from_bytes(b"crashed-instance"));
     }
+
+    #[test]
+    fn fnv1a_64_and_escape_cr_and_short_header_and_cleanup_pid() {
+        // Distinct paths produce exact, distinct FNV-1a 64-bit hashes (catches |= / &= mutations).
+        assert_eq!(fnv1a_64(None), 0);
+        assert_eq!(fnv1a_64(Some("a")), 0xaf63_dc4c_8601_ec8c);
+        assert_ne!(fnv1a_64(Some("ab")), fnv1a_64(Some("ba")));
+
+        // `\r` in name and path round-trips through escape_field / unescape_field.
+        let dir = tempfile::tempdir().unwrap();
+        let snap = RecoverySnapshot {
+            buffer_id: BufferId(9),
+            path: Some("dir\rname\\file.txt".to_owned()),
+            name: "my\rname".to_owned(),
+            doc: Doc::from_bytes(b"body"),
+            eol: Eol::Lf,
+        };
+        let rec_path = write_recovery_file(dir.path(), 777, &snap).unwrap();
+        let raw = fs::read(&rec_path).unwrap();
+        let (meta, body) = parse_recovery_file(&raw).unwrap();
+        assert_eq!(meta.name, "my\rname");
+        assert_eq!(meta.path.as_deref(), Some("dir\rname\\file.txt"));
+        assert_eq!(body, b"body");
+
+        // Short buffers (< REC_MAGIC.len() + 4) return InvalidData rather than panicking.
+        for short in [&b"NEONREC1"[..], &b"NEONREC1\x01\x00\x00"[..]] {
+            let err = parse_recovery_file(short).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        }
+
+        // cleanup_pid_files removes only `<pid>-*.rec` and preserves other extensions or PIDs.
+        let keep_non_rec = dir.path().join("777-1-00.txt");
+        let keep_other_pid = dir.path().join("778-1-00.rec");
+        fs::write(&keep_non_rec, b"keep").unwrap();
+        fs::write(&keep_other_pid, b"keep").unwrap();
+        cleanup_pid_files(dir.path(), 777);
+        assert!(!rec_path.exists());
+        assert!(keep_non_rec.exists());
+        assert!(keep_other_pid.exists());
+    }
+
+    #[test]
+    fn worker_pid_and_drop_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec_file = write_recovery_file(
+            dir.path(),
+            4321,
+            &RecoverySnapshot {
+                buffer_id: BufferId(1),
+                path: None,
+                name: "*scratch*".to_owned(),
+                doc: Doc::from_bytes(b"x"),
+                eol: Eol::Lf,
+            },
+        )
+        .unwrap();
+        assert!(rec_file.exists());
+
+        let worker = RecoveryWorker::spawn(dir.path().to_path_buf(), 4321).unwrap();
+        assert_eq!(worker.pid(), 4321);
+        worker.drain_and_stop();
+        assert!(!rec_file.exists());
+    }
 }

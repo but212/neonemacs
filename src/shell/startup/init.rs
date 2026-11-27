@@ -315,4 +315,11 @@ mod tests {
             assert!(ed.buffers().find_by_name("*init-log*").is_none());
         }
     }
+
+    #[test]
+    fn position_requires_digits_followed_by_colon() {
+        assert_eq!(position("init.lua:12: boom"), Some("init.lua:12:"));
+        assert_eq!(position("init.lua:: boom"), None);
+        assert_eq!(position("init.lua:12x boom"), None);
+    }
 }

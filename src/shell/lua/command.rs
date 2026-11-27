@@ -214,4 +214,23 @@ mod tests {
         res.unwrap();
         assert_eq!(ed.message(), "custom exchange");
     }
+
+    #[test]
+    fn sequential_run_calls_restore_recursion_depth() {
+        let lua = new_state().unwrap();
+        let ed = bootstrap(Editor::new(Config::default()), &lua);
+        let (ed, res) = script(
+            &lua,
+            ed,
+            r#"
+            command("noop", function() end)
+            for i = 1, 70 do
+                run("noop")
+            end
+            message("ok")
+            "#,
+        );
+        res.unwrap();
+        assert_eq!(ed.message(), "ok");
+    }
 }

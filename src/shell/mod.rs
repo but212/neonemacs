@@ -501,6 +501,14 @@ mod tests {
         assert!(matches!(result, Err(e) if e.contains("exceeds 1024 bytes")));
         let ok = run_shell_capped("echo hi", &ShellSpec::default(), 1024);
         assert!(matches!(ok, Ok(s) if s.starts_with("hi")));
+
+        let exact = if cfg!(windows) {
+            "<nul set /p=12345"
+        } else {
+            "printf 12345"
+        };
+        let at_cap = run_shell_capped(exact, &ShellSpec::default(), 5);
+        assert_eq!(at_cap.unwrap(), "12345");
     }
 
     #[test]

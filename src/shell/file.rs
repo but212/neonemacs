@@ -178,4 +178,48 @@ mod tests {
         assert!(!raw.doc.is_boundary(131_071));
         assert!(!raw.doc.is_boundary(131_072));
     }
+
+    #[test]
+    fn read_raw_reads_file_at_exact_max_size_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exact.txt");
+        fs::write(&path, b"0123456789").unwrap();
+
+        let raw = read_raw(&path, 10).unwrap().expect("expected Some");
+        assert_eq!(raw.len, 10);
+        assert_eq!(raw.doc, Doc::from_bytes(b"0123456789"));
+    }
+
+    #[test]
+    fn read_doc_chunks_retries_on_interrupted() {
+        struct FlakyReader {
+            interrupted_once: bool,
+            data: &'static [u8],
+            pos: usize,
+        }
+        impl Read for FlakyReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if !self.interrupted_once {
+                    self.interrupted_once = true;
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
+                }
+                let n = buf.len().min(self.data.len() - self.pos);
+                buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+                self.pos += n;
+                Ok(n)
+            }
+        }
+
+        let reader = FlakyReader {
+            interrupted_once: false,
+            data: b"hello",
+            pos: 0,
+        };
+        let out = read_doc_chunks(reader, Vec::new(), |mut acc, chunk| -> Result<_, ()> {
+            acc.extend_from_slice(chunk);
+            Ok(acc)
+        })
+        .unwrap();
+        assert_eq!(out, b"hello");
+    }
 }
