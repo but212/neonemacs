@@ -28,7 +28,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
-pub(crate) fn home_dir() -> Option<PathBuf> {
+fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -51,6 +51,12 @@ pub(crate) fn xdg_path(
         |xdg| Some(PathBuf::from(xdg)),
     )?;
     Some(base.join("neonemacs").join(file))
+}
+
+pub(crate) fn xdg_env_path(env_var: &str, fallback: &[&str], file: &str) -> Option<PathBuf> {
+    let xdg = env::var_os(env_var);
+    let home = home_dir();
+    xdg_path(xdg.as_deref(), home.as_deref(), fallback, file)
 }
 
 /// The echo-area message while a background shell command runs, before the spinner's first frame.

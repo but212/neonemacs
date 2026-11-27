@@ -11,8 +11,6 @@ use crate::core::effect::InitLoad;
 use crate::core::record_init_error;
 use crate::shell::{lua, run_source};
 use mlua::Lua;
-use std::env;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -29,12 +27,11 @@ pub enum InitSource {
     Loaded(String),
 }
 
-/// Reads `init.lua` from the path that `xdg` and `home` give. Only a missing file is `Absent`.
-fn read_init(xdg: Option<&OsStr>, home: Option<&Path>) -> InitSource {
-    let Some(path) = crate::shell::xdg_path(xdg, home, &[".config"], "init.lua") else {
+fn read_init_path(path: Option<&Path>) -> InitSource {
+    let Some(path) = path else {
         return InitSource::Absent;
     };
-    match fs::read(&path) {
+    match fs::read(path) {
         Err(e) if e.kind() == ErrorKind::NotFound => InitSource::Absent,
         Err(e) => InitSource::Unreadable {
             reason: format!("cannot read {}: {e}", path.display()),
@@ -51,9 +48,7 @@ fn read_init(xdg: Option<&OsStr>, home: Option<&Path>) -> InitSource {
 /// Reads `init.lua` from the path that the environment gives.
 #[must_use]
 pub fn init_source() -> InitSource {
-    let xdg = env::var_os("XDG_CONFIG_HOME");
-    let home = crate::shell::home_dir();
-    read_init(xdg.as_deref(), home.as_deref())
+    read_init_path(crate::shell::xdg_env_path("XDG_CONFIG_HOME", &[".config"], "init.lua").as_deref())
 }
 
 /// The editor and Lua state with only the bundled scripts applied.
@@ -149,6 +144,11 @@ mod tests {
     use super::*;
     use crate::core::Eol;
     use crate::core::parse_key_seq;
+    use std::ffi::OsStr;
+
+    fn read_init(xdg: Option<&OsStr>, home: Option<&Path>) -> InitSource {
+        read_init_path(crate::shell::xdg_path(xdg, home, &[".config"], "init.lua").as_deref())
+    }
 
     fn loaded(src: &str) -> (Editor, Lua, InitLoad) {
         configure(PathBuf::new(), InitSource::Loaded(src.to_owned())).unwrap()

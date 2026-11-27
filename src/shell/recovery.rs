@@ -1,9 +1,8 @@
 //! Crash-safe idle auto-backup persistence (`I-61` ~ `I-66`).
 
 use crate::core::{BufferId, Doc, Eol, EolStreamDecoder};
-use crate::shell::{home_dir, registore, xdg_path};
+use crate::shell::{registore, xdg_env_path};
 use std::collections::BTreeMap;
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,7 +44,7 @@ pub struct RecoveryMeta {
 
 #[derive(Default)]
 struct QueueState {
-    pending: BTreeMap<(u32, u64), BufferBackupOp>,
+    pending: BTreeMap<(u32, Option<String>), BufferBackupOp>,
     shutdown: bool,
 }
 
@@ -97,7 +96,7 @@ impl RecoveryWorker {
             if state.shutdown {
                 return;
             }
-            let key = (snapshot.buffer_id.0, fnv1a_64(snapshot.path.as_deref()));
+            let key = (snapshot.buffer_id.0, snapshot.path.clone());
             state.pending.insert(key, BufferBackupOp::Write(snapshot));
             cvar.notify_one();
         }
@@ -110,7 +109,7 @@ impl RecoveryWorker {
             if state.shutdown {
                 return;
             }
-            let key = (buffer_id.0, fnv1a_64(path.as_deref()));
+            let key = (buffer_id.0, path.clone());
             state
                 .pending
                 .insert(key, BufferBackupOp::Remove { buffer_id, path });
@@ -181,14 +180,7 @@ fn worker_loop(dir: &Path, pid: u32, shared: &(Mutex<QueueState>, Condvar)) {
 /// Resolves `$XDG_STATE_HOME/neonemacs/recovery` (or `~/.local/state/neonemacs/recovery`).
 #[must_use]
 pub fn recovery_dir() -> Option<PathBuf> {
-    let xdg = env::var_os("XDG_STATE_HOME");
-    let home = home_dir();
-    xdg_path(
-        xdg.as_deref(),
-        home.as_deref(),
-        &[".local", "state"],
-        "recovery",
-    )
+    xdg_env_path("XDG_STATE_HOME", &[".local", "state"], "recovery")
 }
 
 /// Computes the per-instance, per-buffer recovery file name (`<pid>-<id>-<hash>.rec`).
@@ -550,14 +542,14 @@ mod tests {
             let (lock, cvar) = &*worker.shared;
             let mut state = lock.lock().unwrap();
             state.pending.insert(
-                (1, fnv1a_64(Some("a.txt"))),
+                (1, Some("a.txt".to_owned())),
                 BufferBackupOp::Remove {
                     buffer_id: BufferId(1),
                     path: Some("a.txt".to_owned()),
                 },
             );
             state.pending.insert(
-                (1, fnv1a_64(Some("b.txt"))),
+                (1, Some("b.txt".to_owned())),
                 BufferBackupOp::Write(RecoverySnapshot {
                     buffer_id: BufferId(1),
                     path: Some("b.txt".to_owned()),
