@@ -28,7 +28,7 @@ mod syntax;
 #[cfg(test)]
 mod test_support;
 mod undo;
-mod width;
+pub mod width;
 mod window;
 
 pub use buffer::{Buffer, BufferId};
@@ -41,6 +41,7 @@ pub use file::{Backing, DiskState, FilePath, RawFile, loaded_from};
 pub use keymap::{AliasTarget, Code, Key, parse_key_seq, parse_keys, parse_single_char};
 pub use syntax::{
     LexState, SyntaxDef, SyntaxRegistry, TokenKind, highlight_line, highlight_line_with_state,
+    is_ident_byte,
 };
 pub use undo::Edit;
 pub use weave_tree::{CHUNK_CAP, DocError, MAX_SLICE_BYTES, Unit};
@@ -50,7 +51,8 @@ pub type Doc = weave_tree::WeaveTree<LineBreaks>;
 pub type DocBuilder = weave_tree::WeaveTreeBuilder<LineBreaks>;
 pub type Replace = weave_tree::Replace<LineBreaks>;
 
-pub(crate) fn unit_char(unit: Unit) -> char {
+#[must_use]
+pub fn unit_char(unit: Unit) -> char {
     match unit {
         Unit::Char(c) => c,
         Unit::Raw(b) => char::from(b),
@@ -81,7 +83,7 @@ pub fn offset_to_line(doc: &Doc, offset: usize) -> Result<usize, DocError> {
 
 /// 0-based line index containing `pos` (clamped and floored to a `Unit` boundary).
 #[must_use]
-pub(crate) fn line_at(doc: &Doc, pos: usize) -> usize {
+pub fn line_at(doc: &Doc, pos: usize) -> usize {
     let p = doc.floor_boundary(pos.min(doc.total_bytes()));
     offset_to_line(doc, p).expect("floor_boundary is valid")
 }

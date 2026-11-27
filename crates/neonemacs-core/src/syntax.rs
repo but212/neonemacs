@@ -620,7 +620,8 @@ const fn is_ident_start_byte(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
 
-pub(crate) const fn is_ident_byte(b: u8) -> bool {
+#[must_use]
+pub const fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 

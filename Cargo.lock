@@ -643,6 +643,7 @@ checksum = "2af147cbc48b064bf80678495a8ebd425482077f1ef442f7cb563a97bee31efc"
 name = "neonemacs"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "crossterm",
  "mlua",
  "neonemacs",

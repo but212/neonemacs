@@ -9,6 +9,7 @@ use neonemacs::core::render;
 use neonemacs::core::{Editor, Window};
 use neonemacs::core::{TokenKind, highlight_line};
 use neonemacs::shell::lua;
+use neonemacs::shell::render as shell_render;
 use neonemacs::shell::session::ShellSession;
 
 #[test]
@@ -89,7 +90,7 @@ fn styled_render_preserves_column_and_cursor_positions() {
 
     let (cols, rows) = (40, 10);
     let ed = render::scroll(ed, cols, rows);
-    let frame = render::frame(&ed, cols, rows);
+    let frame = shell_render::frame(&ed, cols, rows);
 
     // Rows must be exactly formatted text without ANSI codes embedded
     assert_eq!(frame.row_count(), rows);
@@ -184,7 +185,7 @@ fn raw_non_utf8_bytes_do_not_shift_syntax_highlighting() {
     });
 
     let (cols, rows) = (40, 5);
-    let frame = render::frame(&ed, cols, rows);
+    let frame = shell_render::frame(&ed, cols, rows);
     let first_row = frame.row(0);
 
     // Find "let x = 7;" in first_row

@@ -9,6 +9,7 @@ pub mod file;
 pub mod lua;
 pub mod recovery;
 pub mod registore;
+pub mod render;
 pub mod session;
 pub mod startup;
 pub mod terminal;

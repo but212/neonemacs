@@ -1,6 +1,5 @@
-# Neonemacs Core 최적화 시도 기록 (`neonemacs-core`)
+# Neonemacs 최적화 시도 기록
 
-> `neonemacs-core`는 `#![no_std]` 및 `#![forbid(unsafe_code)]` 제약 아래 동작합니다.  
 > 이 문서는 성능 개선 시도마다 **무엇을 바꿨고 얼마나 빨라졌는지**, 그리고 **왜 일부 시도를 반려·보류했는지**를 기록합니다.
 
 ---
@@ -56,6 +55,20 @@
 * **개선 폭 (`before` → `after`):**
   * 새 슬라이스 첫 삽입(100 B): **235.97 ns → 120.88 ns** (**-53.9%, 약 2.0배 향상**)
   * 1 MiB 일괄 로드(`doc_from_bytes_1mb`): **126.78 µs → 125.00 µs** (메모리·속도 회귀 없음)
+
+### [수용] 시도 6: 셀 그리드 조립 셸 이전 + 더블 버퍼 재사용 + `glyph()` 스택화 (2026-11-27)
+
+* **문제:** `neonemacs-core::render::frame`은 `I-18`(`&mut` 금지) 제약으로 매 프레임 `vec![Cell::space(); cols * rows]`(120×40 = 4,800 `Cell`)를 새로 할당하고, `glyph(c, w)`가 문자마다 `Vec<CellGlyph>`를 힙 할당하며, `ShellSession::paint`가 매번 `prev_rows`를 교체함.
+* **개선 내용:**
+  * `crates/neonemacs-core/src/render.rs`: `scroll`, `areas`, `Rect`, `HUGE_FILE_SYNTAX_BYTES`만 유지하고 셀 조립 로직을 분리.
+  * `src/shell/render.rs`: `Cell`, `CellGlyph`, `Frame`, `RenderScratch`, `render_into(&Editor, cols, rows, &mut Vec<Cell>, &mut RenderScratch)` 신설. `glyph(c, w)`를 스택 배열 `([CellGlyph; 3], usize)`로 교체해 문자당 `Vec` 할당 제거.
+  * `src/shell/session/mod.rs` 및 `screen.rs`: `ShellSession`이 `curr_cells`/`prev_cells` 더블 버퍼를 영구 보유하고 `render_into` 후 `std::mem::swap`으로 교체. 리사이즈 시에만 재할당(이중 초기화 방지를 위해 `clear()` + `resize()` 단일 패스 사용).
+  * `benches/render_perf_bench.rs`: 루트 크레이트에 렌더 벤치마크 이관 (`cargo bench --bench render_perf_bench`).
+* **실측 결과 (`before` → `after`, `editor_render`):**
+  * 100 KiB 일반 화면(120×40, 버퍼 재사용 `render_into`): **328.41 µs → 155.97 µs** (**-52.5%, 약 2.11배 향상**)
+  * 20 KiB 단일 롱 라인(120×40, 버퍼 재사용 `render_into`): **50.73 µs → 38.10 µs** (**-24.9%, 약 1.33배 향상**)
+  * 100 KiB 일반 화면(120×40, 단발 `frame()`): **328.41 µs → 157.14 µs** (**-52.2%, 약 2.09배 향상**)
+  * 20 KiB 단일 롱 라인(120×40, 단발 `frame()`): **50.73 µs → 43.72 µs** (**-13.8%, 약 1.16배 향상**)
 
 ---
 

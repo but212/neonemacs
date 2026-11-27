@@ -191,7 +191,7 @@ fn busy_rejection_attaches_notice_and_completion_delivers_multiline_output() {
 #[test]
 fn print_styled_row_reverses_exactly_the_marked_cells() {
     use crossterm::style::{Attribute, SetAttribute};
-    let cell = |glyph: &str, reverse: bool| crate::core::render::Cell {
+    let cell = |glyph: &str, reverse: bool| crate::shell::render::Cell {
         glyph: glyph.into(),
         style: TokenKind::Normal,
         reverse,
@@ -205,6 +205,7 @@ fn print_styled_row_reverses_exactly_the_marked_cells() {
             cell("c", true),
             cell("d", false),
         ],
+        &mut String::new(),
     )
     .unwrap();
     let mut expected = Vec::new();
@@ -222,7 +223,7 @@ fn print_styled_row_reverses_exactly_the_marked_cells() {
 
     // A row that ends inside the region does not leak reverse video into the next row.
     let mut out = Vec::new();
-    print_styled_row(&mut out, &[cell("a", false), cell("b", true)]).unwrap();
+    print_styled_row(&mut out, &[cell("a", false), cell("b", true)], &mut String::new()).unwrap();
     let mut expected = Vec::new();
     queue!(
         &mut expected,
@@ -242,42 +243,42 @@ fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colo
     // Cell widths: `"`(1, String), `가`(2, String), `"`(1, String), ` `(1, Normal), `l`(1, Keyword), `e`(1, Keyword), `t`(1, Keyword)
     // Notice `styles` has 8 entries (2 cells for `가`), while `line` has 7 chars!
     let cells = [
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "\"".into(),
             style: TokenKind::String,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "가".into(),
             style: TokenKind::String,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "".into(),
             style: TokenKind::String,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "\"".into(),
             style: TokenKind::String,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: " ".into(),
             style: TokenKind::Normal,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "l".into(),
             style: TokenKind::Keyword,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "e".into(),
             style: TokenKind::Keyword,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "t".into(),
             style: TokenKind::Keyword,
             reverse: false,
@@ -285,7 +286,7 @@ fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colo
     ];
 
     let mut out = Vec::new();
-    print_styled_row(&mut out, &cells).unwrap();
+    print_styled_row(&mut out, &cells, &mut String::new()).unwrap();
 
     let mut expected = Vec::new();
     queue!(
@@ -304,24 +305,24 @@ fn print_styled_row_aligns_wide_hangul_and_combining_marks_without_shifting_colo
     // Combining mark (`e` + U+0301 acute accent) inside a Keyword followed by Number `1`:
     // `e\u{0301}` occupies 1 cell in `styles` (`Keyword`), `' '` occupies 1 cell (`Normal`), `'1'` occupies 1 cell (`Number`).
     let comb_cells = [
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "e\u{0301}".into(),
             style: TokenKind::Keyword,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: " ".into(),
             style: TokenKind::Normal,
             reverse: false,
         },
-        crate::core::render::Cell {
+        crate::shell::render::Cell {
             glyph: "1".into(),
             style: TokenKind::Number,
             reverse: false,
         },
     ];
     let mut comb_out = Vec::new();
-    print_styled_row(&mut comb_out, &comb_cells).unwrap();
+    print_styled_row(&mut comb_out, &comb_cells, &mut String::new()).unwrap();
 
     let mut comb_expected = Vec::new();
     queue!(
@@ -522,14 +523,14 @@ fn suspend_key_and_full_redraw_behavior() {
     let mut session = make_session();
     let mut out = Vec::new();
     session.render_sized(&mut out, 20, 4).unwrap();
-    assert!(!session.prev_rows.is_empty());
+    assert!(!session.prev_cells.is_empty());
 
-    session.prev_rows.clear();
+    session.prev_cells.clear();
     out.clear();
     session.render_sized(&mut out, 20, 4).unwrap();
     assert!(
         !out.is_empty(),
-        "clearing prev_rows must trigger a full redraw"
+        "clearing prev_cells must trigger a full redraw"
     );
 
     session.handle_event(&press(KeyCode::Char('z'), KeyModifiers::CONTROL));

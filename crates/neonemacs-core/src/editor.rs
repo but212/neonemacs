@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn syntax_registry_update_and_adopt_settings_invalidate_buffer_syntax_cache() {
         use crate::render;
-        use crate::syntax::{SyntaxDef, TokenKind};
+        use crate::syntax::SyntaxDef;
         use alloc::vec;
         use alloc::vec::Vec;
 
@@ -606,22 +606,26 @@ mod tests {
                 b.set_name("test.demo")
                     .with_text(Doc::from_bytes(b"/* open\nx"))
             });
+        use crate::syntax::LexState;
         let ed = render::scroll(ed, 20, 6);
-        let frame = render::frame(&ed, 20, 6);
-        assert_eq!(frame.row(1)[0].style, TokenKind::Comment);
+        assert_eq!(
+            ed.buffer().syntax_start_state(1),
+            Some(LexState::BlockComment)
+        );
 
         // Replacing syntax definition via with_syntax_registry clears cached LexState.
         let ed = ed.with_syntax_registry(|reg| reg.register(pascal_style));
         let ed = render::scroll(ed, 20, 6);
-        let frame = render::frame(&ed, 20, 6);
-        assert_eq!(frame.row(1)[0].style, TokenKind::Normal);
+        assert_eq!(ed.buffer().syntax_start_state(1), Some(LexState::Normal));
 
         // Replacing settings via adopt_settings also clears cached LexState.
         let fresh =
             Editor::new(Config::default()).with_syntax_registry(|reg| reg.register(c_style));
         let ed = ed.adopt_settings(fresh);
         let ed = render::scroll(ed, 20, 6);
-        let frame = render::frame(&ed, 20, 6);
-        assert_eq!(frame.row(1)[0].style, TokenKind::Comment);
+        assert_eq!(
+            ed.buffer().syntax_start_state(1),
+            Some(LexState::BlockComment)
+        );
     }
 }

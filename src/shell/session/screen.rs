@@ -2,7 +2,8 @@
 
 use super::{ShellSession, update_editor};
 use crate::core::TokenKind;
-use crate::core::render::{self, Cell, Frame};
+use crate::core::render as core_render;
+use crate::shell::render::{Cell, render_into};
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::{cursor, queue, terminal};
 use std::io::{self, Write};
@@ -27,53 +28,66 @@ impl ShellSession {
         cols: usize,
         rows: usize,
     ) -> io::Result<()> {
-        update_editor(&mut self.ed, |ed| render::scroll(ed, cols, rows));
-        let frame = render::frame(&self.ed, cols, rows);
-        self.paint(frame, out, cols, rows)
+        update_editor(&mut self.ed, |ed| core_render::scroll(ed, cols, rows));
+        let cursor_pos = render_into(
+            &self.ed,
+            cols,
+            rows,
+            &mut self.curr_cells,
+            &mut self.render_scratch,
+        );
+        self.paint(cursor_pos, out, cols, rows)
     }
 
-    /// Draws the rows of `frame` that differ from the last frame, then the cursor. A new size
+    /// Draws the rows of `curr_cells` that differ from `prev_cells`, then the cursor. A new size
     /// redraws everything.
     fn paint(
         &mut self,
-        frame: Frame,
+        cursor_pos: (usize, usize),
         out: &mut impl Write,
         cols: usize,
         rows: usize,
     ) -> io::Result<()> {
         if (cols, rows) != self.screen_size {
-            self.prev_rows.clear();
+            self.prev_cells.clear();
             self.screen_size = (cols, rows);
         }
-        for (row, cells) in frame.rows().enumerate() {
-            let prev_start = row * cols;
-            let prev = self.prev_rows.get(prev_start..prev_start + cols);
-            if prev != Some(cells) {
-                queue!(
-                    out,
-                    cursor::MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX))
-                )?;
-                print_styled_row(out, cells)?;
+        if cols > 0 {
+            let mut span = String::new();
+            for (row, cells) in self.curr_cells.chunks_exact(cols).enumerate() {
+                let prev_start = row * cols;
+                let prev = self.prev_cells.get(prev_start..prev_start + cols);
+                if prev != Some(cells) {
+                    queue!(
+                        out,
+                        cursor::MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX))
+                    )?;
+                    print_styled_row(out, cells, &mut span)?;
+                }
             }
         }
         queue!(
             out,
             cursor::MoveTo(
-                u16::try_from(frame.cursor.0).unwrap_or(u16::MAX),
-                u16::try_from(frame.cursor.1).unwrap_or(u16::MAX),
+                u16::try_from(cursor_pos.0).unwrap_or(u16::MAX),
+                u16::try_from(cursor_pos.1).unwrap_or(u16::MAX),
             ),
             cursor::Show
         )?;
         out.flush()?;
-        self.prev_rows = frame.into_cells();
+        std::mem::swap(&mut self.curr_cells, &mut self.prev_cells);
         Ok(())
     }
 }
 
-pub(super) fn print_styled_row(out: &mut impl Write, cells: &[Cell]) -> io::Result<()> {
+pub(super) fn print_styled_row(
+    out: &mut impl Write,
+    cells: &[Cell],
+    span: &mut String,
+) -> io::Result<()> {
+    span.clear();
     let mut current = TokenKind::Normal;
     let mut reversed = false;
-    let mut span = String::new();
 
     for cell in cells {
         if cell.style != current || cell.reverse != reversed {

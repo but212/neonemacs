@@ -6,10 +6,10 @@ mod tests;
 
 use crate::core::CANCEL_MESSAGE;
 use crate::core::effect::{Event as CoreEvent, InitLoad};
-use crate::core::render::Cell;
 use crate::core::step;
 use crate::core::{BufferId, Doc, Editor, Eol, Mode};
 use crate::shell::recovery::{RecoverySnapshot, RecoveryWorker, recovery_dir};
+use crate::shell::render::{Cell, RenderScratch};
 use crate::shell::startup::{InitSource, configure, init_source};
 use crate::shell::terminal::{TerminalGuard, from_terminal};
 use crate::shell::{BUSY_NOTICE, RUNNING, ShellOutcome, handle, handle_interactive, perform_all};
@@ -94,7 +94,9 @@ pub struct ShellSession {
     pub ed: Editor,
     pub lua: Lua,
     active_shell: Option<ActiveShell>,
-    prev_rows: Vec<Cell>,
+    curr_cells: Vec<Cell>,
+    prev_cells: Vec<Cell>,
+    render_scratch: RenderScratch,
     screen_size: (usize, usize),
     #[cfg(unix)]
     pending_suspend: bool,
@@ -124,7 +126,9 @@ impl ShellSession {
             ed,
             lua,
             active_shell: None,
-            prev_rows: Vec::new(),
+            curr_cells: Vec::new(),
+            prev_cells: Vec::new(),
+            render_scratch: RenderScratch::default(),
             screen_size: (0, 0),
             #[cfg(unix)]
             pending_suspend: false,
@@ -298,7 +302,7 @@ impl ShellSession {
     #[cfg(unix)]
     fn suspend(&mut self, guard: &mut TerminalGuard) -> io::Result<()> {
         guard.suspend()?;
-        self.prev_rows.clear();
+        self.prev_cells.clear();
         Ok(())
     }
 

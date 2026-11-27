@@ -88,7 +88,7 @@ pub fn column(text: &Doc, pos: usize, tab: Metrics) -> usize {
 
 /// Position and exact display column on the line starting at `line` whose column is at most `col`.
 #[must_use]
-pub(crate) fn pos_and_column(text: &Doc, line: usize, col: usize, tab: Metrics) -> (usize, usize) {
+pub fn pos_and_column(text: &Doc, line: usize, col: usize, tab: Metrics) -> (usize, usize) {
     let line = text.floor_boundary(line);
     let end = line_end(text, line);
     let (mut p, mut c) = (line, 0);

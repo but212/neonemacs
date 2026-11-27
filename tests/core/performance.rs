@@ -159,7 +159,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = ed.move_point(200);
     let start = Instant::now();
     let ed = neonemacs::core::render::scroll(ed, 120, 40);
-    let frame = neonemacs::core::render::frame(&ed, 120, 40);
+    let frame = neonemacs::shell::render::frame(&ed, 120, 40);
     let elapsed_head = start.elapsed();
     assert_ne!(frame.row_count(), 0);
     assert!(
@@ -171,7 +171,7 @@ fn ultra_long_single_line_scroll_and_frame_stay_bounded() {
     let ed = ed.move_point(size / 2);
     let start = Instant::now();
     let ed = neonemacs::core::render::scroll(ed, 120, 40);
-    let frame = neonemacs::core::render::frame(&ed, 120, 40);
+    let frame = neonemacs::shell::render::frame(&ed, 120, 40);
     let elapsed_mid = start.elapsed();
     assert_ne!(frame.row_count(), 0);
     assert!(
